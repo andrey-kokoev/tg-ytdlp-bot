@@ -59,7 +59,8 @@ def truncate_caption(
     timestamp_pattern = r'^\s*(\d{1,2}:\d{2}(?::\d{2})?|\d{1,2}\.\d{2}(?:\.\d{2})?)\s+.*'
 
     # Avoid duplicating the title as the first line of the description.
-    # Common for Twitter/X where "title" is a truncated version of the post text.
+    # Common for Twitter/X where the "title" may include an author prefix
+    # (e.g. "Jaynit - ...") and be a truncated version of the post text.
     if title and description:
         def _norm(s: str) -> str:
             s = (s or "").strip().lower()
@@ -74,9 +75,22 @@ def truncate_caption(
             first_idx = next((i for i, ln in enumerate(desc_lines) if (ln or "").strip()), None)
             if first_idx is not None:
                 first_norm = _norm(desc_lines[first_idx])
-                if first_norm.startswith(title_norm):
-                    desc_lines.pop(first_idx)
-                    description = "\n".join(desc_lines).lstrip("\n")
+
+                # Candidate title prefixes to match against the first line.
+                candidates = [title_norm]
+                # If title looks like "Author - Text…", also try matching without author prefix.
+                if " - " in title_norm:
+                    left, right = title_norm.split(" - ", 1)
+                    if left and right and len(left) <= 25:
+                        candidates.append(right.strip())
+
+                for cand in candidates:
+                    if len(cand) < 20:
+                        continue
+                    if first_norm.startswith(cand):
+                        desc_lines.pop(first_idx)
+                        description = "\n".join(desc_lines).lstrip("\n")
+                        break
 
     lines = description.split('\n') if description else []
     pre_block_lines = []
