@@ -60,6 +60,9 @@ class Config(object):
     CHANNEL_GUARD_SESSION_STRING = ""
     # If False, do not DM admins periodic "Channel scan report" messages.
     CHANNEL_GUARD_REPORT_ENABLED = True
+    # ChannelGuard scan interval (seconds). Minimum is 10.
+    # If set, it overrides the stored DB setting on startup.
+    CHANNEL_GUARD_SCAN_INTERVAL_SECONDS = 300
     #######################################################
     ###########################################################
     # FOR DOCKER DEPLOYMENT YOU CAN STOP FILL IN HERE

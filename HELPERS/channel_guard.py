@@ -83,6 +83,7 @@ class ChannelGuard:
     def __init__(self) -> None:
         self._channel_id = getattr(Config, "SUBSCRIBE_CHANNEL", None)
         self._report_enabled = bool(getattr(Config, "CHANNEL_GUARD_REPORT_ENABLED", True))
+        self._config_scan_interval = getattr(Config, "CHANNEL_GUARD_SCAN_INTERVAL_SECONDS", None)
         self._guard_root = (
             db.child("bot")
             .child(Config.BOT_NAME_FOR_USERS)
@@ -119,6 +120,14 @@ class ChannelGuard:
                 self._settings.update(
                     {k: settings_snapshot.val().get(k, v) for k, v in self._settings.items()}
                 )
+            # Optional: force scan interval from Config on every startup for predictable deployments.
+            if self._config_scan_interval is not None:
+                try:
+                    configured = int(self._config_scan_interval)
+                    self._settings["scan_interval"] = max(10, configured)
+                    self._guard_root.child("settings").update({"scan_interval": self._settings["scan_interval"]})
+                except Exception as exc:
+                    logger.warning(f"[ChannelGuard] Invalid CHANNEL_GUARD_SCAN_INTERVAL_SECONDS: {exc}")
             state_snapshot = self._guard_root.child("state").get()
             if state_snapshot and isinstance(state_snapshot.val(), dict):
                 self._last_event_id = int(state_snapshot.val().get("last_event_id", 0))
