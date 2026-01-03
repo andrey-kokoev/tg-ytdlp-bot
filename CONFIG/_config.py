@@ -47,6 +47,10 @@ class Config(object):
     CREDITS_BOTS = "🇮🇹 @tgytdlp_it_bot\n🇦🇪 @tgytdlp_uae_bot\n🇬🇧 @tgytdlp_uk_bot\n🇫🇷 @tgytdlp_fr_bot"
     # If True, hide the footer block shown in /help (Managed by / bot list / Change language).
     HIDE_CREDITS_MSG = False
+    # If True, do not append the tags block to captions.
+    CAPTION_HIDE_TAGS = False
+    # If True, do not append "@<botname>" next to the "Video URL" link in captions.
+    CAPTION_HIDE_BOT_MENTION = False
     # User session string for reading the channel's admin logs (optional)
     # Bots cannot read admin logs, so a user session is required
     # To generate a session string, run: python generate_session_string.py
