@@ -134,6 +134,31 @@ def _validate_subscription_config_or_exit() -> None:
         )
 
 
+def _validate_required_secrets_or_exit() -> None:
+    """
+    Fail fast when required Telegram credentials are missing.
+    Intended to support splitting secrets into CONFIG/config_secret.py.
+    """
+    api_id = getattr(Config, "API_ID", 0)
+    api_hash = (getattr(Config, "API_HASH", "") or "").strip()
+    bot_token = (getattr(Config, "BOT_TOKEN", "") or "").strip()
+
+    missing = []
+    if not isinstance(api_id, int) or api_id <= 0:
+        missing.append("API_ID")
+    if not api_hash:
+        missing.append("API_HASH")
+    if not bot_token:
+        missing.append("BOT_TOKEN")
+
+    if missing:
+        raise SystemExit(
+            "Config error: missing required secrets: "
+            + ", ".join(missing)
+            + ". Put them in CONFIG/config_secret.py (see CONFIG/config_secret.example.py)."
+        )
+
+
 # HELPERS (only those without handlers)
 from HELPERS.app_instance import set_app
 from HELPERS.download_status import *
@@ -150,6 +175,7 @@ from HELPERS.safe_messeger import *
 #        APP INITIALIZATION
 ###########################################################
 # Validate deploy config before starting the bot.
+_validate_required_secrets_or_exit()
 _validate_subscription_config_or_exit()
 
 # Pyrogram App Initialization
