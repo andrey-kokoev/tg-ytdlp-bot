@@ -212,7 +212,10 @@ def down_and_up(app, message, url, playlist_name, video_count, video_start_with,
     # Determine forced NSFW via user tags
     try:
         _u, _s, _e, _p, _tags, _tags_text, _err = extract_url_range_tags(original_message_text)
-        user_forced_nsfw = any(t.lower() in ("#nsfw", "#porn") for t in (_tags or []))
+        if bool(getattr(Config, "NSFW_CHECK_ENABLED", True)):
+            user_forced_nsfw = any(t.lower() in ("#nsfw", "#porn") for t in (_tags or []))
+        else:
+            user_forced_nsfw = False
     except Exception:
         user_forced_nsfw = False
     

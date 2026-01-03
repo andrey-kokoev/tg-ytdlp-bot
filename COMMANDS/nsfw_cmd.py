@@ -26,6 +26,14 @@ def nsfw_command(app, message):
     # Store setting per-chat: in groups/channels use chat_id (negative), in private use user id (== chat_id)
     user_id = getattr(message.from_user, "id", None) or chat_id
     storage_id = chat_id
+    if not bool(getattr(Config, "NSFW_CHECK_ENABLED", True)):
+        safe_send_message(
+            chat_id,
+            "NSFW features are disabled by the bot owner.",
+            parse_mode=enums.ParseMode.HTML,
+            message=message,
+        )
+        return
     is_admin = int(user_id) in Config.ADMIN
     is_in_channel = is_user_in_channel(app, message)
     logger.info(LoggerMsg.NSFW_USER_REQUESTED_COMMAND_LOG_MSG.format(user_id=user_id))

@@ -144,6 +144,10 @@ class Config(object):
     # Proxy selection method for /proxy on command
     PROXY_SELECT = "round_robin" # random, round_robin
     ########################################################
+    # NSFW / porn detection
+    # If False, disables porn/NSFW detection, routing, and related controls.
+    NSFW_CHECK_ENABLED = True
+    ########################################################
     # PO Token Provider configuration for YouTube
     # Enable PO token provider for YouTube domains
     YOUTUBE_POT_ENABLED = True

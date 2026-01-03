@@ -48,9 +48,18 @@ PORN_DOMAINS = set()
 SUPPORTED_SITES = set()
 PORN_KEYWORDS = set()
 
+# Global kill-switch: allow deployments to disable NSFW/porn logic entirely.
+NSFW_CHECK_ENABLED = bool(getattr(Config, "NSFW_CHECK_ENABLED", True))
+
 # --- loading lists at start ---
 def load_domain_lists():
     global PORN_DOMAINS, SUPPORTED_SITES, PORN_KEYWORDS
+    if not NSFW_CHECK_ENABLED:
+        PORN_DOMAINS = set()
+        PORN_KEYWORDS = set()
+        SUPPORTED_SITES = set()
+        logger.info("NSFW checking is disabled (NSFW_CHECK_ENABLED=False); skipping porn list loading")
+        return
     try:
         with open(Config.PORN_DOMAINS_FILE, 'r', encoding='utf-8', errors='ignore') as f:
             PORN_DOMAINS = set(line.strip().lower() for line in f if line.strip())
@@ -108,6 +117,8 @@ def extract_domain_parts(url):
 # Now we take from config.py
 
 def is_porn_domain(domain_parts):
+    if not NSFW_CHECK_ENABLED:
+        return False
     # If any suffix domain is on a whitelist, it is not porn
     for dom in domain_parts:
         if dom in Config.WHITELIST:
@@ -124,6 +135,8 @@ def is_porn_domain(domain_parts):
 
 # --- a new function for checking for porn ---
 def is_porn(url, title, description, caption=None, tags=None):
+    if not NSFW_CHECK_ENABLED:
+        return False
     """
     Checks content for pornography by domain and keywords (word-boundary regex search)
     in title, description, caption, tags and URL. Domain whitelist has highest priority.
@@ -217,6 +230,8 @@ def is_porn(url, title, description, caption=None, tags=None):
 
 
 def check_porn_detailed(url, title, description, caption=None):
+    if not NSFW_CHECK_ENABLED:
+        return False, "NSFW checking is disabled by configuration."
     messages = safe_get_messages(None)
     """
     Detailed porn check that returns both result and explanation.
@@ -313,6 +328,20 @@ def reload_all_porn_caches():
 
     Returns a dict with basic counts for confirmation output.
     """
+    if not NSFW_CHECK_ENABLED:
+        return {
+            'porn_domains': 0,
+            'porn_keywords': 0,
+            'supported_sites': 0,
+            'whitelist': len(getattr(Config, 'WHITELIST', []) or []),
+            'greylist': len(getattr(Config, 'GREYLIST', []) or []),
+            'black_list': len(getattr(Config, 'BLACK_LIST', []) or []),
+            'white_keywords': len(getattr(Config, 'WHITE_KEYWORDS', []) or []),
+            'proxy_domains': len(getattr(Config, 'PROXY_DOMAINS', []) or []),
+            'proxy_2_domains': len(getattr(Config, 'PROXY_2_DOMAINS', []) or []),
+            'clean_query': len(getattr(Config, 'CLEAN_QUERY', []) or []),
+            'no_cookie_domains': len(getattr(Config, 'NO_COOKIE_DOMAINS', []) or []),
+        }
     # 1) Reload CONFIG.domains module to pick up changes without bot restart
     try:
         import CONFIG.domains as domains_module  # type: ignore

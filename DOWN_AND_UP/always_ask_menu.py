@@ -1445,11 +1445,12 @@ def askq_callback(app, callback_query):
         try:
             # Check if content is NSFW for fallback - same as original function
             from HELPERS.porn import is_porn
-            is_nsfw = bool(is_porn(url, "", "", None))
+            nsfw_enabled = bool(getattr(Config, "NSFW_CHECK_ENABLED", True))
+            is_nsfw = bool(is_porn(url, "", "", None)) if nsfw_enabled else False
             logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_IS_PORN_CHECK_LOG_MSG} {url}: {is_nsfw}")
             
             # Check for explicit NSFW tags in original message
-            user_forced_nsfw = bool(re.search(r"(?i)(?:^|\s)#nsfw(?:\s|$)", url_text))
+            user_forced_nsfw = bool(re.search(r"(?i)(?:^|\s)#nsfw(?:\s|$)", url_text)) if nsfw_enabled else False
             if user_forced_nsfw:
                 is_nsfw = True
                 logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_USER_FORCED_NSFW_TAG_DETECTED_LOG_MSG} {url}")
@@ -5524,11 +5525,12 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
                     try:
                         # Check if content is NSFW for fallback
                         from HELPERS.porn import is_porn
-                        is_nsfw = is_porn(url, "", "", None)
+                        nsfw_enabled = bool(getattr(Config, "NSFW_CHECK_ENABLED", True))
+                        is_nsfw = is_porn(url, "", "", None) if nsfw_enabled else False
                         logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_IS_PORN_CHECK_LOG_MSG} {url}: {is_nsfw}")
                         
                         # Check for explicit NSFW tags
-                        user_forced_nsfw = any(t.lower() in ("#nsfw", "#porn") for t in (tags or []))
+                        user_forced_nsfw = any(t.lower() in ("#nsfw", "#porn") for t in (tags or [])) if nsfw_enabled else False
                         if user_forced_nsfw:
                             is_nsfw = True
                             logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_USER_FORCED_NSFW_TAG_DETECTED_LOG_MSG} {url}")
