@@ -178,7 +178,19 @@ def safe_send_message(chat_id, text, **kwargs):
     for attempt in range(max_retries):
         try:
             app = get_app_safe()
-            return app.send_message(chat_id, text, **kwargs)
+            result = app.send_message(chat_id, text, **kwargs)
+            # Pyrogram may expose async methods depending on how the Client is initialized.
+            # If send_message returns a coroutine, schedule it to avoid "was never awaited" warnings.
+            if asyncio.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                    return loop.create_task(result)
+                except RuntimeError:
+                    loop = getattr(app, "loop", None)
+                    if loop:
+                        return asyncio.run_coroutine_threadsafe(result, loop)
+                    return asyncio.run(result)
+            return result
         except FloodWait as e:
             # Write FloodWait seconds to per-user file and do not spin retries for huge waits
             try:
