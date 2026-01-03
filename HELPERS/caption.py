@@ -53,6 +53,8 @@ def truncate_caption(
     """
     # Get messages instance
     messages = safe_get_messages(user_id)
+
+    prefer_quote_over_title = bool(getattr(Config, "CAPTION_PREFER_QUOTE_OVER_TITLE", False))
     
     title_html = f'<b>{title}</b>' if title else ''
     # Pattern for finding timestamps at the beginning of a line (00:00, 0:00:00, 0.00, etc.)
@@ -61,7 +63,7 @@ def truncate_caption(
     # Avoid duplicating the title as the first line of the description.
     # Common for Twitter/X where the "title" may include an author prefix
     # (e.g. "Jaynit - ...") and be a truncated version of the post text.
-    if title and description:
+    if title and description and not prefer_quote_over_title:
         def _norm(s: str) -> str:
             s = (s or "").strip().lower()
             s = s.replace("…", "...").rstrip(".")
@@ -105,6 +107,10 @@ def truncate_caption(
     
     pre_block_str = '\n'.join(pre_block_lines)
     post_block_str = '\n'.join(post_block_lines).strip()
+
+    if prefer_quote_over_title and post_block_str:
+        # Prefer showing the original post text (blockquote) over a truncated title.
+        title_html = ""
 
     tags_block = (tags_text.strip() + '\n') if tags_text and tags_text.strip() else ''
     # --- Add bot name next to the link ---
