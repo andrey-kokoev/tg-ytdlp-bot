@@ -50,6 +50,10 @@ class Config(object):
     # If True, prefer the original post text (blockquote) over the title in captions.
     # Useful for Twitter/X where the "title" may be truncated and the quote contains the real text.
     CAPTION_PREFER_QUOTE_OVER_TITLE = False
+    # If True, do not append the tags block to captions.
+    CAPTION_HIDE_TAGS = False
+    # If True, do not append "@<botname>" next to the "Video URL" link in captions.
+    CAPTION_HIDE_BOT_MENTION = False
     # User session string for reading the channel's admin logs (optional)
     # Bots cannot read admin logs, so a user session is required
     # To generate a session string, run: python generate_session_string.py

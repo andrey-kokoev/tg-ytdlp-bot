@@ -54,6 +54,8 @@ def truncate_caption(
     # Get messages instance
     messages = safe_get_messages(user_id)
 
+    hide_tags = bool(getattr(Config, "CAPTION_HIDE_TAGS", False))
+    hide_bot_mention = bool(getattr(Config, "CAPTION_HIDE_BOT_MENTION", False))
     prefer_quote_over_title = bool(getattr(Config, "CAPTION_PREFER_QUOTE_OVER_TITLE", False))
     
     title_html = f'<b>{title}</b>' if title else ''
@@ -112,10 +114,10 @@ def truncate_caption(
         # Prefer showing the original post text (blockquote) over a truncated title.
         title_html = ""
 
-    tags_block = (tags_text.strip() + '\n') if tags_text and tags_text.strip() else ''
+    tags_block = "" if hide_tags else ((tags_text.strip() + '\n') if tags_text and tags_text.strip() else '')
     # --- Add bot name next to the link ---
     bot_name = getattr(Config, 'BOT_NAME', None) or 'bot'
-    bot_mention = f' @{bot_name}' if not bot_name.startswith('@') else f' {bot_name}'
+    bot_mention = "" if hide_bot_mention else (f' @{bot_name}' if not bot_name.startswith('@') else f' {bot_name}')
     link_block = safe_get_messages(user_id).CAPTION_VIDEO_URL_LINK_MSG.format(url=url, bot_mention=bot_mention)
     
     was_truncated = False
