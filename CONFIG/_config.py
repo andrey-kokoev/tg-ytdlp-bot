@@ -58,6 +58,8 @@ class Config(object):
     # Bots cannot read admin logs, so a user session is required
     # To generate a session string, run: python generate_session_string.py
     CHANNEL_GUARD_SESSION_STRING = ""
+    # If False, do not DM admins periodic "Channel scan report" messages.
+    CHANNEL_GUARD_REPORT_ENABLED = True
     #######################################################
     ###########################################################
     # FOR DOCKER DEPLOYMENT YOU CAN STOP FILL IN HERE

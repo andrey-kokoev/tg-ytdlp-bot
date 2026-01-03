@@ -82,6 +82,7 @@ def format_seconds_human(seconds: int) -> str:
 class ChannelGuard:
     def __init__(self) -> None:
         self._channel_id = getattr(Config, "SUBSCRIBE_CHANNEL", None)
+        self._report_enabled = bool(getattr(Config, "CHANNEL_GUARD_REPORT_ENABLED", True))
         self._guard_root = (
             db.child("bot")
             .child(Config.BOT_NAME_FOR_USERS)
@@ -561,6 +562,8 @@ class ChannelGuard:
             )
 
     async def _send_scan_report(self, new_count: int, auto_banned: int) -> None:
+        if not self._report_enabled:
+            return
         admins = getattr(Config, "ADMIN", [])
         if not admins:
             return
