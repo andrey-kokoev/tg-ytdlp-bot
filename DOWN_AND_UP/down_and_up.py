@@ -65,7 +65,10 @@ def _handle_quality_key_error(e: Exception, split_msg_ids: list, is_playlist: bo
     logger.info(f"Final check after quality_key error: successful_uploads={successful_uploads}, len(indices_to_download)={len(indices_to_download)}, split_msg_ids={split_msg_ids}, is_playlist={is_playlist}")
     if (successful_uploads == len(indices_to_download)) or (split_msg_ids and not is_playlist):
         logger.info(f"Upload complete condition met after quality_key error, replacing status message")
-        success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}.\n{safe_get_messages(user_id).CREDITS_MSG}"
+        credits_msg = safe_get_messages(user_id).CREDITS_MSG
+        success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}."
+        if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
+            success_msg += f"\n{credits_msg}"
         safe_edit_message_text(user_id, proc_msg_id, success_msg)
         send_to_logger(message, success_msg)
         try:
@@ -2689,7 +2692,10 @@ def down_and_up(app, message, url, playlist_name, video_count, video_start_with,
                         if split_msg_ids and not is_playlist:
                             logger.info(f"PREVENTIVE FIX: Processing split video completion after quality_key error in loop: {split_msg_ids}")
                             actual_video_count = len(split_msg_ids)
-                            success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {actual_video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}.\n{safe_get_messages(user_id).CREDITS_MSG}"
+                            credits_msg = safe_get_messages(user_id).CREDITS_MSG
+                            success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {actual_video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}."
+                            if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
+                                success_msg += f"\n{credits_msg}"
                             logger.info(f"PREVENTIVE FIX: sending final success message for split video: {success_msg}")
                             safe_edit_message_text(user_id, proc_msg_id, success_msg)
                             send_to_logger(message, safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG)
@@ -2756,7 +2762,10 @@ def down_and_up(app, message, url, playlist_name, video_count, video_start_with,
                     os.remove(user_vid_path)
                 # Use the actual number of split parts for the success message
                 actual_video_count = len(split_msg_ids) if split_msg_ids else video_count
-                success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {actual_video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}.\n{safe_get_messages(user_id).CREDITS_MSG}"
+                credits_msg = safe_get_messages(user_id).CREDITS_MSG
+                success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {actual_video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}."
+                if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
+                    success_msg += f"\n{credits_msg}"
                 logger.info(f"down_and_up: sending final success message for split video: {success_msg}")
                 safe_edit_message_text(user_id, proc_msg_id, success_msg)
                 send_to_logger(message, safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG)
@@ -3167,7 +3176,10 @@ def down_and_up(app, message, url, playlist_name, video_count, video_start_with,
                                 if split_msg_ids and not is_playlist:
                                     logger.info(f"PREVENTIVE FIX: Processing split video completion after quality_key error in manual forward: {split_msg_ids}")
                                     actual_video_count = len(split_msg_ids)
-                                    success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {actual_video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}.\n{safe_get_messages(user_id).CREDITS_MSG}"
+                                    credits_msg = safe_get_messages(user_id).CREDITS_MSG
+                                    success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {actual_video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}."
+                                    if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
+                                        success_msg += f"\n{credits_msg}"
                                     logger.info(f"PREVENTIVE FIX: sending final success message for split video: {success_msg}")
                                     safe_edit_message_text(user_id, proc_msg_id, success_msg)
                                     send_to_logger(message, safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG)
@@ -3292,7 +3304,10 @@ def down_and_up(app, message, url, playlist_name, video_count, video_start_with,
                                     if split_msg_ids and not is_playlist:
                                         logger.info(f"PREVENTIVE FIX: Processing split video completion after quality_key error in manual forward after error: {split_msg_ids}")
                                         actual_video_count = len(split_msg_ids)
-                                        success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {actual_video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}.\n{safe_get_messages(user_id).CREDITS_MSG}"
+                                        credits_msg = safe_get_messages(user_id).CREDITS_MSG
+                                        success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {actual_video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}."
+                                        if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
+                                            success_msg += f"\n{credits_msg}"
                                         logger.info(f"PREVENTIVE FIX: sending final success message for split video: {success_msg}")
                                         safe_edit_message_text(user_id, proc_msg_id, success_msg)
                                         send_to_logger(message, safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG)
@@ -3315,7 +3330,10 @@ def down_and_up(app, message, url, playlist_name, video_count, video_start_with,
                         send_error_to_user(message, safe_get_messages(user_id).ERROR_SENDING_VIDEO_MSG.format(error=str(e)))
                         continue
         if successful_uploads == len(indices_to_download):
-            success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}.\n{safe_get_messages(user_id).CREDITS_MSG}"
+            credits_msg = safe_get_messages(user_id).CREDITS_MSG
+            success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}."
+            if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
+                success_msg += f"\n{credits_msg}"
             safe_edit_message_text(user_id, proc_msg_id, success_msg)
             send_to_logger(message, success_msg)
             try:
@@ -3357,7 +3375,10 @@ def down_and_up(app, message, url, playlist_name, video_count, video_start_with,
             if split_msg_ids and not is_playlist:
                 logger.info(f"HARD FIX: Processing split video completion after quality_key error: {split_msg_ids}")
                 actual_video_count = len(split_msg_ids)
-                success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {actual_video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}.\n{safe_get_messages(user_id).CREDITS_MSG}"
+                credits_msg = safe_get_messages(user_id).CREDITS_MSG
+                success_msg = f"<b>{safe_get_messages(user_id).DOWN_UP_UPLOAD_COMPLETE_MSG}</b> - {actual_video_count} {safe_get_messages(user_id).DOWN_UP_FILES_UPLOADED_MSG}."
+                if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
+                    success_msg += f"\n{credits_msg}"
                 logger.info(f"HARD FIX: sending final success message for split video: {success_msg}")
                 safe_edit_message_text(user_id, proc_msg_id, success_msg)
                 send_to_logger(message, safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG)
