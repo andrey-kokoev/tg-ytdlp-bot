@@ -58,6 +58,26 @@ def truncate_caption(
     # Pattern for finding timestamps at the beginning of a line (00:00, 0:00:00, 0.00, etc.)
     timestamp_pattern = r'^\s*(\d{1,2}:\d{2}(?::\d{2})?|\d{1,2}\.\d{2}(?:\.\d{2})?)\s+.*'
 
+    # Avoid duplicating the title as the first line of the description.
+    # Common for Twitter/X where "title" is a truncated version of the post text.
+    if title and description:
+        def _norm(s: str) -> str:
+            s = (s or "").strip().lower()
+            s = s.replace("…", "...").rstrip(".")
+            s = re.sub(r"\s+", " ", s)
+            s = re.sub(r"\.{3,}$", "", s).strip()
+            return s
+
+        title_norm = _norm(title)
+        if len(title_norm) >= 20:
+            desc_lines = description.split("\n")
+            first_idx = next((i for i, ln in enumerate(desc_lines) if (ln or "").strip()), None)
+            if first_idx is not None:
+                first_norm = _norm(desc_lines[first_idx])
+                if first_norm.startswith(title_norm):
+                    desc_lines.pop(first_idx)
+                    description = "\n".join(desc_lines).lstrip("\n")
+
     lines = description.split('\n') if description else []
     pre_block_lines = []
     post_block_lines = []
