@@ -45,9 +45,9 @@ class Config(object):
     REQUIRED_CHANNEL_MENTION = "@tg_ytdlp"
     CREDITS_MANAGED_BY = "@iilililiiillliiliililliilliliiil"
     CREDITS_BOTS = "🇮🇹 @tgytdlp_it_bot\n🇦🇪 @tgytdlp_uae_bot\n🇬🇧 @tgytdlp_uk_bot\n🇫🇷 @tgytdlp_fr_bot"
-    # Session string пользователя для чтения admin logs канала (опционально)
-    # Боты не могут читать admin logs, поэтому нужна пользовательская сессия
-    # Для генерации session string запустите: python generate_session_string.py
+    # User session string for reading the channel's admin logs (optional)
+    # Bots cannot read admin logs, so a user session is required
+    # To generate a session string, run: python generate_session_string.py
     CHANNEL_GUARD_SESSION_STRING = ""
     #######################################################
     ###########################################################
