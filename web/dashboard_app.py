@@ -149,7 +149,7 @@ async def api_active_users(
 
 @app.get("/api/top-downloaders")
 async def api_top_downloaders(
-    period: str = Query(default="today", regex="^(today|week|month|all)$"),
+    period: str = Query(default="today", pattern="^(today|week|month|all)$"),
     limit: int = 10,
 ):
     return stats_service.fetch_top_downloaders(period=period, limit=limit)
@@ -207,7 +207,7 @@ async def api_channel_events(hours: int = 48, limit: int = 100):
 
 @app.get("/api/suspicious-users")
 async def api_suspicious_users(
-    period: str = Query(default="today", regex="^(today|week|month|all)$"),
+    period: str = Query(default="today", pattern="^(today|week|month|all)$"),
     limit: int = 20,
 ):
     return stats_service.fetch_suspicious_users(period=period, limit=limit)
@@ -216,7 +216,7 @@ async def api_suspicious_users(
 @app.get("/api/user-history")
 async def api_user_history(
     user_id: int = Query(..., gt=0),
-    period: str = Query(default="all", regex="^(today|week|month|all)$"),
+    period: str = Query(default="all", pattern="^(today|week|month|all)$"),
     limit: int = Query(default=100, le=1000),
 ):
     return stats_service.fetch_user_history(user_id, period, limit)
