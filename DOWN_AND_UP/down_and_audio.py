@@ -2007,9 +2007,15 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                 pass
 
         if successful_uploads == len(indices_to_download):
-            success_msg = f"{safe_get_messages(user_id).AUDIO_SUCCESSFULLY_COMPLETED_MSG.format(total_files=len(indices_to_download))}\n{safe_get_messages(user_id).CREDITS_MSG}"
+            credits_msg = safe_get_messages(user_id).CREDITS_MSG
+            success_msg = safe_get_messages(user_id).AUDIO_SUCCESSFULLY_COMPLETED_MSG.format(total_files=len(indices_to_download))
+            if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
+                success_msg += f"\n{credits_msg}"
         else:
-            success_msg = f"{safe_get_messages(user_id).AUDIO_PARTIALLY_COMPLETED_MSG.format(successful_uploads=successful_uploads, total_files=len(indices_to_download))}\n{safe_get_messages(user_id).CREDITS_MSG}"
+            credits_msg = safe_get_messages(user_id).CREDITS_MSG
+            success_msg = safe_get_messages(user_id).AUDIO_PARTIALLY_COMPLETED_MSG.format(successful_uploads=successful_uploads, total_files=len(indices_to_download))
+            if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
+                success_msg += f"\n{credits_msg}"
             
         try:
             safe_edit_message_text(user_id, proc_msg_id, success_msg)
