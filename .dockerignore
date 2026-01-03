@@ -1,0 +1,19 @@
+.git
+.github
+.venv
+__pycache__/
+*.pyc
+
+# Local runtime data (should not be part of build context)
+users/
+cookies/
+*.session
+*.session-*
+*.log
+dump.json
+worktrees/
+_backup/
+
+# Root-owned caddy runtime dirs created by docker volumes
+docker/configuration-webserver/config/caddy/
+docker/configuration-webserver/data/caddy/

@@ -31,6 +31,16 @@ class Messages(object):
         """
         if name.startswith('_'):
             return super().__getattribute__(name)
+
+        # Allow deployments to suppress the "credits" footer (Managed by / Change language, etc.)
+        # without editing translation files.
+        if name == "CREDITS_MSG":
+            try:
+                from CONFIG.config import Config  # local import to avoid circular import at startup
+                if bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
+                    return ""
+            except Exception:
+                pass
         
         # STRICT: Only use language-specific messages, NO fallback to English
         if hasattr(self, '_messages') and self._messages and name in self._messages:
