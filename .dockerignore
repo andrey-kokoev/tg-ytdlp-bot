@@ -15,5 +15,7 @@ worktrees/
 _backup/
 
 # Root-owned caddy runtime dirs created by docker volumes
-docker/configuration-webserver/config/caddy/
-docker/configuration-webserver/data/caddy/
+docker/configuration-webserver/config/caddy
+docker/configuration-webserver/config/caddy/**
+docker/configuration-webserver/data/caddy
+docker/configuration-webserver/data/caddy/**
