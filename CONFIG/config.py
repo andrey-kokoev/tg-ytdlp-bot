@@ -232,3 +232,5 @@ class Config(object):
     DASHBOARD_USERNAME = "admin"
     ACTIVE_SESSIONS_FILE = "CONFIG/.active_sessions.json"
     #######################################################
+
+    CHANNEL_GUARD_REPORT_ENABLED = False
