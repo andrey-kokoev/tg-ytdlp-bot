@@ -21,14 +21,19 @@ class Config(object):
     ADMIN = [91363026]
     # Add allowed group IDs - Only these groups will be served by the bot
     ALLOWED_GROUP = [-1003685849769]
+    # Telegram API credentials (required; typically loaded from CONFIG/config_secret.py)
+    API_ID = 0
+    API_HASH = ""
+    # Bot token from @BotFather (required; typically loaded from CONFIG/config_secret.py)
+    BOT_TOKEN = ""
     # Mini-app URL
     MINIAPP_URL = "https://t.me/ornamental_hermit_bot/?startapp"
     # Channel ID for logs (you can use the same 1 channel ID for all LOGS)
     LOGS_ID = -1003652045579  # Channel ID for logs
-    LOGS_VIDEO_ID = -1003652045579  # Channel ID for video logs
-    LOGS_NSFW_ID = -1003652045579  # Channel ID for video logs with NSWF tags
-    LOGS_IMG_ID = -1003652045579  # Channel ID for media command logs /img
-    LOGS_PAID_ID = -1003652045579  # Channel ID for paid media logs
+    LOGS_VIDEO_ID = 0  # Channel ID for video logs
+    LOGS_NSFW_ID = 0  # Channel ID for video logs with NSWF tags
+    LOGS_IMG_ID = 0  # Channel ID for media command logs /img
+    LOGS_PAID_ID = 0  # Channel ID for paid media logs
     LOG_EXCEPTION = -1003652045579  # Channel ID for exception logs
     # Channel ID to subscribe to
     SUBSCRIBE_CHANNEL = -1002912165805
@@ -39,6 +44,9 @@ class Config(object):
     MANAGED_BY = "@andrey_stt"
     CREDITS_BOTS = ""
     NSFW_CHECK_ENABLED = False
+
+    # Optional: user session string for ChannelGuard (admin log access); typically secret
+    CHANNEL_GUARD_SESSION_STRING = ""
 
     #######################################################
     ###########################################################
@@ -234,3 +242,18 @@ class Config(object):
     #######################################################
 
     CHANNEL_GUARD_REPORT_ENABLED = False
+
+
+# Apply secrets from CONFIG/config_secret.py if present (kept out of git).
+try:
+    from CONFIG.config_secret import SecretConfig as _SecretConfig  # type: ignore
+except Exception:
+    _SecretConfig = None  # type: ignore
+
+if _SecretConfig is not None:
+    for _name in dir(_SecretConfig):
+        if _name.isupper():
+            try:
+                setattr(Config, _name, getattr(_SecretConfig, _name))
+            except Exception:
+                pass
