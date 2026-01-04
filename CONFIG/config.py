@@ -21,12 +21,6 @@ class Config(object):
     ADMIN = [91363026]
     # Add allowed group IDs - Only these groups will be served by the bot
     ALLOWED_GROUP = [-1003685849769]
-    # API ID Telegram
-    API_ID = 0
-    # API HASH Telegram
-    API_HASH = ""
-    # Bot token
-    BOT_TOKEN = ""
     # Mini-app URL
     MINIAPP_URL = "https://t.me/ornamental_hermit_bot/?startapp"
     # Channel ID for logs (you can use the same 1 channel ID for all LOGS)
@@ -46,10 +40,6 @@ class Config(object):
     CREDITS_BOTS = ""
     NSFW_CHECK_ENABLED = False
 
-    # Session string пользователя для чтения admin logs канала (опционально)
-    # Боты не могут читать admin logs, поэтому нужна пользовательская сессия
-    # Для генерации session string запустите: python generate_session_string.py
-    CHANNEL_GUARD_SESSION_STRING = ""
     #######################################################
     ###########################################################
     # FOR DOCKER DEPLOYMENT YOU CAN STOP FILL IN HERE
@@ -64,16 +54,6 @@ class Config(object):
     # Firebase Config - Required (str for all)
     # Firebase settings
     FIREBASE_USER = "XXX@gmail.com"
-    FIREBASE_PASSWORD = "XXXXXXXXXXXXXXXxx"
-    FIREBASE_CONF = {
-        "apiKey": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-        "authDomain": "XXXXXXXXXXXX.firebaseapp.com",
-        "projectId": "XXXXXXXXXX-0000000000",
-        "storageBucket": "XXXXXXXXXXXXXX-0000000000.firebasestorage.app",
-        "messagingSenderId": "0000000000000000",
-        "appId": "1:0000000000000:web:00000000000000a",
-        "databaseURL": "https://XXXXXXXXXXXXXX-000000000-default-rtdb.europe-west1.firebasedatabase.app"
-    }
     ########################################################
     ########################################################
     # OPTIONAL (NOT REQUIRED) SETTINGS - you can stop here
@@ -214,21 +194,6 @@ class Config(object):
     SUPPORTED_SITES_FILE = DomainsConfig.SUPPORTED_SITES_FILE
     UPDATE_PORN_SCRIPT_PATH = DomainsConfig.UPDATE_PORN_SCRIPT_PATH
     WHITELIST = DomainsConfig.WHITELIST
-
-
-# Apply secrets from CONFIG/config_secret.py if present (kept out of git).
-try:
-    from CONFIG.config_secret import SecretConfig as _SecretConfig  # type: ignore
-except Exception:
-    _SecretConfig = None  # type: ignore
-
-if _SecretConfig is not None:
-    for _name in dir(_SecretConfig):
-        if _name.isupper():
-            try:
-                setattr(Config, _name, getattr(_SecretConfig, _name))
-            except Exception:
-                pass
     NO_COOKIE_DOMAINS = DomainsConfig.NO_COOKIE_DOMAINS
     PROXY_DOMAINS = DomainsConfig.PROXY_DOMAINS
     PROXY_2_DOMAINS = DomainsConfig.PROXY_2_DOMAINS
@@ -265,6 +230,5 @@ if _SecretConfig is not None:
     # Dashboard configuration
     DASHBOARD_PORT = 5555
     DASHBOARD_USERNAME = "admin"
-    DASHBOARD_PASSWORD = "admin123"
     ACTIVE_SESSIONS_FILE = "CONFIG/.active_sessions.json"
     #######################################################

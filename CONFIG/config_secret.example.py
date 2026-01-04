@@ -17,8 +17,16 @@ class SecretConfig(object):
     CHANNEL_GUARD_SESSION_STRING = ""
 
     # Optional: Firebase secrets (if USE_FIREBASE=True)
-    FIREBASE_PASSWORD = ""
-    FIREBASE_CONF = {}
+    FIREBASE_PASSWORD = "XXXXXXXXXXXXXXXxx"
+    FIREBASE_CONF = {
+        "apiKey": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+        "authDomain": "XXXXXXXXXXXX.firebaseapp.com",
+        "projectId": "XXXXXXXXXX-0000000000",
+        "storageBucket": "XXXXXXXXXXXXXX-0000000000.firebasestorage.app",
+        "messagingSenderId": "0000000000000000",
+        "appId": "1:0000000000000:web:00000000000000a",
+        "databaseURL": "https://XXXXXXXXXXXXXX-000000000-default-rtdb.europe-west1.firebasedatabase.app"
+    }
 
     # Optional: proxy secrets
     PROXY_USER = ""
