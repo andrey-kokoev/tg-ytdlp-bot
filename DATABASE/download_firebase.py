@@ -56,14 +56,17 @@ FIREBASE_CONFIG = getattr(Config, 'FIREBASE_CONF', None)
 FIREBASE_USER = getattr(Config, 'FIREBASE_USER', None)
 FIREBASE_PASSWORD = getattr(Config, 'FIREBASE_PASSWORD', None)
 OUTPUT_FILE = getattr(Config, 'FIREBASE_CACHE_FILE', 'firebase_cache.json')
-
-if not FIREBASE_CONFIG or not FIREBASE_USER or not FIREBASE_PASSWORD:
-    print(safe_get_messages().DB_NOT_ALL_PARAMETERS_SET_MSG)
-    sys.exit(1)
+USE_FIREBASE = bool(getattr(Config, "USE_FIREBASE", True))
 
 def download_firebase_dump():
     messages = safe_get_messages(None)
     """Downloads the entire Firebase Realtime Database dump"""
+    if not USE_FIREBASE:
+        # Local mode: no Firebase configured/required.
+        return False
+    if not FIREBASE_CONFIG or not FIREBASE_USER or not FIREBASE_PASSWORD:
+        print(safe_get_messages().DB_NOT_ALL_PARAMETERS_SET_MSG)
+        return False
     if requests is None or Session is None:
         print(safe_get_messages().DB_DEPENDENCY_NOT_AVAILABLE_MSG)
         return False
@@ -153,6 +156,9 @@ def main():
     print("=" * 40)
     
     # Check config
+    if not USE_FIREBASE:
+        print("ℹ️ USE_FIREBASE=False; skipping Firebase dump")
+        return True
     if not FIREBASE_CONFIG or not FIREBASE_USER or not FIREBASE_PASSWORD:
         print(safe_get_messages().DB_NOT_ALL_PARAMETERS_SET_MSG)
         return False
