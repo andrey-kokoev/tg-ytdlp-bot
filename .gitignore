@@ -128,3 +128,7 @@ CONFIG/.active_sessions.json
 env
 
 worktrees/
+CONFIG/.command_limits.json
+CONFIG/.cooldowns.json
+CONFIG/.rate_limits.json
+CONFIG/.command_limits.json
