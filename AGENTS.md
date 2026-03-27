@@ -441,6 +441,12 @@ git push origin feature/my-feature
 
 ---
 
+## System-Specific Deployments
+
+For specialized deployment scenarios:
+
+- **CasaOS Legacy** (ZimaBoard): See [`deploy/system-specific/casaos-legacy/`](deploy/system-specific/casaos-legacy/) for older CasaOS versions (0.4.x) that lack Docker Compose import and folder upload features.
+
 ## Resources
 
 - **yt-dlp docs**: https://github.com/yt-dlp/yt-dlp

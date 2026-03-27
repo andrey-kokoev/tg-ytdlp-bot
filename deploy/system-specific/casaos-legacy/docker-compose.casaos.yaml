@@ -1,0 +1,36 @@
+# CasaOS Legacy Compatible Docker Compose
+# 
+# For CasaOS versions with Docker Compose Import support (v0.4.4+)
+# If your CasaOS has "Import" button in Custom Install, use this file.
+
+name: tg-ytdlp-bot
+services:
+  app:
+    image: python:3.10-slim
+    container_name: tg-ytdlp-bot-app
+    working_dir: /app
+    command: bash docker-entrypoint.sh
+    volumes:
+      - type: bind
+        source: /DATA/AppData/tg-ytdlp-bot
+        target: /app
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+    environment:
+      - COMPOSE_PROJECT_NAME=tg-ytdlp-bot
+      - TZ=America/Chicago
+      - PYTHONUNBUFFERED=1
+    network_mode: host
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    labels:
+      icon: https://icon.casaos.io/main/all/tg-ytdlp-bot.png
+
+# Note: Additional services (bgutil-provider, caddy) need to be installed
+# separately via App Store or as separate custom apps in older CasaOS
+# versions that don't support multi-container compose.

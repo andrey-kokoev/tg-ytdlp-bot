@@ -1,0 +1,89 @@
+# CasaOS Legacy Custom App Form Values
+# Copy these values into the Custom Install form fields
+
+# ============================================
+# BASIC INFO
+# ============================================
+AppName: tg-ytdlp-bot
+Icon: https://icon.casaos.io/main/all/tg-ytdlp-bot.png  # or leave empty
+
+# ============================================
+# IMAGE
+# ============================================
+# Option A: Use Python image (if no Dockerfile build support)
+Image: python:3.10-slim
+
+# Option B: If you have a pre-built image elsewhere
+# Image: your-registry/tg-ytdlp-bot:latest
+
+# ============================================
+# VOLUMES (Mounts)
+# ============================================
+# Add these volume mappings:
+
+Volume1:
+  Host: /DATA/AppData/tg-ytdlp-bot
+  Container: /app
+  Mode: rw  # Read & Write
+
+Volume2:
+  Host: /var/run/docker.sock
+  Container: /var/run/docker.sock
+  Mode: ro  # Read Only
+
+# ============================================
+# ENVIRONMENT VARIABLES
+# ============================================
+# Add these environment variables:
+
+ENV1:
+  Key: COMPOSE_PROJECT_NAME
+  Value: tg-ytdlp-bot
+
+ENV2:
+  Key: TZ
+  Value: America/Chicago  # Change to your timezone
+
+ENV3:
+  Key: PYTHONUNBUFFERED
+  Value: "1"
+
+# ============================================
+# NETWORK
+# ============================================
+# Option A: Use Host network (recommended for dashboard access)
+NetworkMode: host
+
+# Option B: Port mapping (if Host mode not available)
+Port1:
+  Host: 5555
+  Container: 5555
+  Protocol: tcp
+
+# ============================================
+# WORKING DIRECTORY
+# ============================================
+WorkingDir: /app
+
+# ============================================
+# COMMAND
+# ============================================
+# The command to run on container start
+Command: bash docker-entrypoint.sh
+
+# Alternative if docker-entrypoint.sh doesn't work:
+# Command: python magic.py
+
+# ============================================
+# RESOURCES (Optional)
+# ============================================
+# Memory limit (optional, in MB)
+MemoryLimit: 2048  # 2GB
+
+# CPU limit (optional, percentage)
+CPULimit: 100
+
+# ============================================
+# RESTART POLICY
+# ============================================
+RestartPolicy: unless-stopped
