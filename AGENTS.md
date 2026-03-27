@@ -441,11 +441,21 @@ git push origin feature/my-feature
 
 ---
 
-## System-Specific Deployments
+## Deployment Options
 
-For specialized deployment scenarios:
+Multiple deployment methods are supported:
 
-- **CasaOS Legacy** (ZimaBoard): See [`deploy/system-specific/casaos-legacy/`](deploy/system-specific/casaos-legacy/) for older CasaOS versions (0.4.x) that lack Docker Compose import and folder upload features.
+### Self-Hosted
+- **New ZimaBoard** (ZimaOS): See [`deploy/zimaboard-new/`](deploy/zimaboard-new/) - Full Docker Compose support with web terminal
+- **CasaOS Legacy** (Old ZimaBoard): See [`deploy/system-specific/casaos-legacy/`](deploy/system-specific/casaos-legacy/) - Limited support for older CasaOS 0.4.x
+
+### Cloud Hosting  
+- **Railway**: See [`deploy/railway/`](deploy/railway/) - Managed cloud hosting with free tier
+
+### Generic
+- **Docker Compose**: See main [README.md](README.md) - Standard deployment for any Linux server/VPS
+
+See [`deploy/README.md`](deploy/README.md) for comparison and recommendations.
 
 ## Resources
 
