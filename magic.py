@@ -486,6 +486,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 if __name__ == "__main__":
     app.start()
     start_channel_guard(app)
+    start_watchdog()
     idle()
     try:
         app.loop.run_until_complete(stop_channel_guard())

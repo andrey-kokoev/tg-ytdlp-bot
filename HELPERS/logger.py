@@ -24,6 +24,8 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+_watchdog_started = False
+_watchdog_lock = threading.Lock()
 
 def close_logger():
     """Close all logging handlers to prevent file descriptor leaks"""
@@ -35,24 +37,31 @@ def close_logger():
     except Exception as e:
         logger.error(f"Error closing logger handlers: {e}")
 
-# WatchDog
-if SDNOTIFY_AVAILABLE:
-    notifier = SystemdNotifier()
-    
-    def watchdog_loop():
-        while True:
-            notifier.notify("WATCHDOG=1")
-            logger.info("[Watchdog] Sent WATCHDOG=1")
-            time.sleep(30)  # Frequency is less than WatchdogSec
+def start_watchdog(log_heartbeat: bool = False):
+    """Start sdnotify watchdog exactly once for the bot process."""
+    global _watchdog_started
 
-    # Start watchdog thread
-    threading.Thread(target=watchdog_loop, daemon=True).start()
+    if not SDNOTIFY_AVAILABLE:
+        return False
 
-    # At the beginning of initialization
-    notifier.notify("READY=1")
-    logger.info("[Watchdog] Sent READY=1")
-else:
-    logger.info("[Watchdog] SystemdNotifier not available - watchdog disabled")
+    with _watchdog_lock:
+        if _watchdog_started:
+            return True
+
+        notifier = SystemdNotifier()
+
+        def watchdog_loop():
+            while True:
+                notifier.notify("WATCHDOG=1")
+                if log_heartbeat:
+                    logger.info("[Watchdog] Sent WATCHDOG=1")
+                time.sleep(30)
+
+        threading.Thread(target=watchdog_loop, daemon=True).start()
+        notifier.notify("READY=1")
+        logger.info("[Watchdog] Sent READY=1")
+        _watchdog_started = True
+        return True
 # Utility: pick proper log channel per kind
 
 def get_log_channel(kind: str = "general", nsfw: bool = False, paid: bool = False) -> int:

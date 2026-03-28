@@ -117,6 +117,7 @@ NEWCODE/
 _old/
 #CONFIG/domains.py
 CONFIG/config_secret.py
+CONFIG/cookie.txt
 TXT/porn_domains.txt
 TXT/porn_keywords.txt
 TXT/porn_keywords.txt.removal_report.txt

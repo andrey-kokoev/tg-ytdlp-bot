@@ -93,6 +93,13 @@ def reply_with_keyboard(func):
     """Wrapper for any custom action that adds reply keyboard"""
     def wrapper(*args, **kwargs):
         result = func(*args, **kwargs)
+        message_obj = _extract_message_arg(args, kwargs)
+
+        if message_obj is not None:
+            from_user = getattr(message_obj, 'from_user', None)
+            if getattr(from_user, 'is_bot', False) or getattr(message_obj, 'outgoing', False):
+                return result
+
         # Determine user_id from arguments (Pyrogram message/chat)
         user_id = None
         if 'message' in kwargs:

@@ -45,6 +45,10 @@ app = get_app()
 @reply_with_keyboard
 @background_handler(label="url_distractor")
 def url_distractor(app, message):
+    from_user = getattr(message, "from_user", None)
+    if getattr(from_user, "is_bot", False) or getattr(message, "outgoing", False):
+        return
+
     user_id = message.chat.id
     is_admin = int(user_id) in Config.ADMIN
     logger.info(f"🔍 [DEBUG] url_distractor: message.text at function start='{message.text}'")
