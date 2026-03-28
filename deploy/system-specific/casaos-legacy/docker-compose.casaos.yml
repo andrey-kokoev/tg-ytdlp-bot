@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  app:
+    image: python:3.10-slim
+    container_name: tg-ytdlp-bot-app
+    working_dir: /app
+    command: >
+      sh -c "pip install -r requirements.txt && python magic.py"
+    volumes:
+      - /DATA/AppData/tg-ytdlp-bot:/app
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - COMPOSE_PROJECT_NAME=tg-ytdlp-bot
+      - TZ=America/Chicago
+      - PYTHONUNBUFFERED=1
+    network_mode: host
+    restart: unless-stopped
