@@ -42,7 +42,6 @@ from HELPERS.safe_messeger import fake_message
 app = get_app()
 
 @app.on_message(filters.text & filters.private)
-@reply_with_keyboard
 @background_handler(label="url_distractor")
 def url_distractor(app, message):
     from_user = getattr(message, "from_user", None)
