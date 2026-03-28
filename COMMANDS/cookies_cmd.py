@@ -595,7 +595,6 @@ def browser_choice_callback(app, callback_query):
 # SEND COOKIE VIA Document
 # Accept cookie.txt not only in private chats, but also in groups/topics
 @app.on_message(filters.document)
-@reply_with_keyboard
 @background_handler(label="cookie_document")
 def save_my_cookie(app, message):
     """
