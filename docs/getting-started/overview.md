@@ -65,6 +65,7 @@ https://youtube.com/watch?v=dQw4w9WgXcQ
 - [User Commands](../commands/user-commands.md#-user-commands) - Complete list of user commands
 - [Advanced Features](../advanced/advanced-features.md#️-advanced-features) - Advanced functionality and features
 - [Admin Commands](../commands/admin-commands.md#️-admin-commands) - Administrative commands and tools
+- [System Formulation](../development/system-formulation.md#system-formulation) - PDA-aligned system boundary, invariants, policy, and precedence
 - [Data Flow Sequence](../development/data-flow-sequence.md#data-flow-sequence) - Runtime actor and request flow from Telegram input to Telegram output
 - [Troubleshooting](../advanced/troubleshooting.md#-troubleshooting) - Common issues and solutions
 - [Contributing](../development/contributing.md#-code-of-conduct) - How to contribute to the project
