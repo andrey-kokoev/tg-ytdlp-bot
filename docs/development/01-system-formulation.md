@@ -384,5 +384,6 @@ This formulation is closed enough for system-level reasoning if further descent 
 ## Related Documents
 
 - [`Data Flow Sequence`](./02-data-flow-sequence.md): runtime actor/request flow and sequence diagrams
+- [`Task Model`](./05-task-model.md): task identity, states, authorities, precedence, and terminal outcomes
 - [`Incoherence Memo`](./03-incoherence-memo.md): short statement of the main architectural mismatch
 - [`Contributing`](./04-contributing.md): development workflow and contribution guidance

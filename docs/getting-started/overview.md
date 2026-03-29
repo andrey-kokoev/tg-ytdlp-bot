@@ -67,6 +67,7 @@ https://youtube.com/watch?v=dQw4w9WgXcQ
 - [Admin Commands](../commands/admin-commands.md#️-admin-commands) - Administrative commands and tools
 - [System Formulation](../development/01-system-formulation.md#system-formulation) - PDA-aligned system boundary, invariants, policy, and precedence
 - [Data Flow Sequence](../development/02-data-flow-sequence.md#data-flow-sequence) - Runtime actor and request flow from Telegram input to Telegram output
+- [Task Model](../development/05-task-model.md#task-model) - Task identity, states, authorities, precedence, and terminal outcomes
 - [Troubleshooting](../advanced/troubleshooting.md#-troubleshooting) - Common issues and solutions
 - [Contributing](../development/04-contributing.md#-code-of-conduct) - How to contribute to the project
 - [Support](../misc/support.md#support) - Support information and acknowledgments
