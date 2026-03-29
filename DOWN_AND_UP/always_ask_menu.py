@@ -16,6 +16,187 @@ def safe_callback_answer(callback_query, text, show_alert=False):
     except Exception:
         pass  # Query ID might be invalid after long operation
 
+
+def _select_video_branch(
+    user_id: int,
+    *,
+    quality_intent: str,
+    quality_key: str | None,
+    format_override: str | None,
+    video_count: int = 1,
+    selected_by: str = "explicit_callback",
+    origin: str,
+    provenance: dict | None = None,
+) -> BranchSelectionResult:
+    branch_result = video_download_branch(
+        quality_intent=quality_intent,
+        quality_key=quality_key,
+        format_override=format_override,
+        video_count=video_count,
+        selected_by=selected_by,
+        origin=origin,
+        provenance=provenance,
+    )
+    log_branch_selection(logger, branch_result, user_id=user_id)
+    return branch_result
+
+
+def _select_audio_branch(
+    user_id: int,
+    *,
+    quality_intent: str,
+    quality_key: str | None,
+    video_count: int = 1,
+    format_override: str | None = "ba",
+    selected_by: str = "explicit_callback",
+    origin: str,
+    provenance: dict | None = None,
+) -> BranchSelectionResult:
+    branch_result = audio_download_branch(
+        quality_intent=quality_intent,
+        quality_key=quality_key,
+        video_count=video_count,
+        format_override=format_override,
+        selected_by=selected_by,
+        origin=origin,
+        provenance=provenance,
+    )
+    log_branch_selection(logger, branch_result, user_id=user_id)
+    return branch_result
+
+
+def _select_direct_link_branch(
+    user_id: int,
+    *,
+    quality_intent: str,
+    quality_key: str | None,
+    task_scope: str = "single_item",
+    selected_by: str = "explicit_callback",
+    origin: str,
+    provenance: dict | None = None,
+) -> BranchSelectionResult:
+    branch_result = direct_link_branch(
+        quality_intent=quality_intent,
+        quality_key=quality_key,
+        task_scope=task_scope,
+        selected_by=selected_by,
+        origin=origin,
+        provenance=provenance,
+    )
+    log_branch_selection(logger, branch_result, user_id=user_id)
+    return branch_result
+
+
+def _select_callback_download_branch(
+    user_id: int,
+    *,
+    callback_data: str,
+    quality_intent: str,
+    quality_key: str | None,
+    format_override: str | None,
+    video_count: int = 1,
+    origin: str,
+    provenance: dict | None = None,
+    force_branch_family: str | None = None,
+) -> BranchSelectionResult:
+    branch_family = force_branch_family or ("audio" if callback_data == "mp3" else "video")
+    if branch_family == "audio":
+        return _select_audio_branch(
+            user_id,
+            quality_intent=quality_intent,
+            quality_key=quality_key,
+            video_count=video_count,
+            format_override=format_override,
+            origin=origin,
+            provenance=provenance,
+        )
+
+    return _select_video_branch(
+        user_id,
+        quality_intent=quality_intent,
+        quality_key=quality_key,
+        format_override=format_override,
+        video_count=video_count,
+        origin=origin,
+        provenance=provenance,
+    )
+
+
+def _dispatch_callback_download_branch(
+    app,
+    original_message,
+    task: RuntimeTask,
+    *,
+    proc_msg=None,
+    clear_subs_cache_on_start: bool = False,
+) -> None:
+    user_id = task.user_id
+    branch_result = task.branch_selection_result
+    if branch_result is None:
+        raise ValueError("RuntimeTask must carry branch_selection_result before dispatch")
+    if proc_msg is not None and task.proc_msg_id is None:
+        task.proc_msg_id = getattr(proc_msg, "id", None)
+    delete_processing_message(app, user_id, proc_msg)
+
+    if branch_result.branch_family == "audio_download":
+        down_and_audio(
+            app,
+            original_message,
+            quality_key=branch_result.quality_key,
+            format_override=branch_result.format_override,
+            cookies_already_checked=True,
+            task_context=task,
+        )
+        return
+
+    if task.playlist_name or task.video_count > 1 or task.video_start_with != 1:
+        down_and_up(
+            app,
+            original_message,
+            format_override=branch_result.format_override,
+            quality_key=branch_result.quality_key,
+            cookies_already_checked=True,
+            clear_subs_cache_on_start=clear_subs_cache_on_start,
+            task_context=task,
+        )
+        return
+
+    down_and_up_with_format(
+        app,
+        original_message,
+        fmt=branch_result.format_override,
+        quality_key=branch_result.quality_key,
+        proc_msg=proc_msg,
+        task_context=task,
+    )
+
+
+def _make_callback_runtime_task(
+    original_message,
+    *,
+    url: str,
+    tags,
+    tags_text: str,
+    branch_result: BranchSelectionResult,
+    playlist_name: str | None = None,
+    video_count: int = 1,
+    video_start_with: int = 1,
+    proc_msg=None,
+) -> RuntimeTask:
+    base_task = make_runtime_task(
+        user_id=original_message.chat.id,
+        source_message_id=getattr(original_message, "id", None),
+        url=url,
+        tags_text=tags_text,
+        tags=list(tags) if tags is not None else None,
+        playlist_name=playlist_name,
+        video_count=video_count,
+        video_start_with=video_start_with,
+        force_no_title=is_tiktok_url(url),
+        proc_msg_id=getattr(proc_msg, "id", None),
+    )
+    return with_branch_selection(base_task, branch_result)
+
 from HELPERS.app_instance import get_app
 from HELPERS.decorators import get_main_reply_keyboard
 from HELPERS.logger import send_to_logger, logger, send_error_to_user, log_error_to_channel
@@ -50,6 +231,21 @@ from HELPERS.pot_helper import build_cli_extractor_args
 from COMMANDS.format_cmd import set_session_mkv_override
 from DOWN_AND_UP.down_and_audio import down_and_audio
 from DOWN_AND_UP.down_and_up import down_and_up
+from DOWN_AND_UP.branch_selection_result import (
+    BranchSelectionResult,
+    audio_download_branch,
+    direct_link_branch,
+    log_branch_selection,
+    resolve_direct_link_preference,
+    redirected_audio_branch,
+    video_download_branch,
+)
+from DOWN_AND_UP.direct_link_flow import (
+    execute_direct_link_flow,
+    send_always_ask_direct_link_response,
+    send_always_ask_direct_link_response_legacy_error,
+)
+from DOWN_AND_UP.runtime_task import RuntimeTask, ensure_runtime_task, make_runtime_task, with_branch_selection
 
 from URL_PARSERS.playlist_utils import is_playlist_with_range
 from URL_PARSERS.tags import generate_final_tags, extract_url_range_tags
@@ -1923,14 +2119,57 @@ def askq_callback(app, callback_query):
                 video_count = abs(video_start_with - video_end_with) + 1
             else:
                 video_count = video_end_with - video_start_with + 1
-            # Delete processing message before starting download
-            delete_processing_message(app, user_id, None)
-            down_and_up(app, original_message, url, playlist_name, video_count, video_start_with, tags_text, force_no_title=False, format_override=format_override, quality_key=format_id, cookies_already_checked=True, cached_video_info=None, clear_subs_cache_on_start=False)
+            branch_result = _select_callback_download_branch(
+                user_id,
+                callback_data=data,
+                quality_intent=format_id,
+                quality_key=format_id,
+                format_override=format_override,
+                video_count=video_count,
+                origin="format_id_callback",
+                provenance={"callback_data": data},
+                force_branch_family="video",
+            )
+            task = _make_callback_runtime_task(
+                original_message,
+                url=url,
+                tags=tags,
+                tags_text=tags_text,
+                branch_result=branch_result,
+                playlist_name=playlist_name,
+                video_count=video_count,
+                video_start_with=video_start_with,
+            )
+            _dispatch_callback_download_branch(
+                app,
+                original_message,
+                task,
+                clear_subs_cache_on_start=False,
+            )
         else:
             logger.info("Single video, using down_and_up_with_format")
-            # Delete processing message before starting download
-            delete_processing_message(app, user_id, None)
-            down_and_up_with_format(app, original_message, url, format_override, tags_text, quality_key=format_id, proc_msg=None)
+            branch_result = _select_callback_download_branch(
+                user_id,
+                callback_data=data,
+                quality_intent=format_id,
+                quality_key=format_id,
+                format_override=format_override,
+                origin="format_id_callback",
+                provenance={"callback_data": data},
+                force_branch_family="video",
+            )
+            task = _make_callback_runtime_task(
+                original_message,
+                url=url,
+                tags=tags,
+                tags_text=tags_text,
+                branch_result=branch_result,
+            )
+            _dispatch_callback_download_branch(
+                app,
+                original_message,
+                task,
+            )
         logger.info("Download process initiated successfully")
         return
     
@@ -1971,9 +2210,29 @@ def askq_callback(app, callback_query):
         if quality == "best":
             format_override = "bv*[vcodec*=avc1]+ba[acodec*=mp4a]/bv*[vcodec*=avc1]+ba/bv+ba/best"
         elif quality == "mp3":
-            # Delete processing message before starting download
-            delete_processing_message(app, user_id, proc_msg)
-            down_and_audio(app, original_message, url, tags, quality_key="mp3", format_override="ba", cookies_already_checked=True, cached_video_info=None)
+            branch_result = _select_callback_download_branch(
+                user_id,
+                callback_data="mp3",
+                quality_intent="mp3",
+                quality_key="mp3",
+                format_override="ba",
+                origin="manual_quality_callback",
+                provenance={"quality": quality},
+            )
+            task = _make_callback_runtime_task(
+                original_message,
+                url=url,
+                tags=tags,
+                tags_text=tags_text,
+                branch_result=branch_result,
+                proc_msg=proc_msg,
+            )
+            _dispatch_callback_download_branch(
+                app,
+                original_message,
+                task,
+                proc_msg=proc_msg,
+            )
             return
         else:
             try:
@@ -2013,13 +2272,60 @@ def askq_callback(app, callback_query):
                 video_count = abs(video_start_with - video_end_with) + 1
             else:
                 video_count = video_end_with - video_start_with + 1
-            # Delete processing message before starting download
-            delete_processing_message(app, user_id, proc_msg)
-            down_and_up(app, original_message, url, playlist_name, video_count, video_start_with, tags_text, force_no_title=False, format_override=format_override, quality_key=quality, cookies_already_checked=True, cached_video_info=None, clear_subs_cache_on_start=False)
+            branch_result = _select_callback_download_branch(
+                user_id,
+                callback_data=quality,
+                quality_intent=quality,
+                quality_key=quality,
+                format_override=format_override,
+                video_count=video_count,
+                origin="manual_quality_callback",
+                provenance={"quality": quality},
+                force_branch_family="video",
+            )
+            task = _make_callback_runtime_task(
+                original_message,
+                url=url,
+                tags=tags,
+                tags_text=tags_text,
+                branch_result=branch_result,
+                playlist_name=playlist_name,
+                video_count=video_count,
+                video_start_with=video_start_with,
+                proc_msg=proc_msg,
+            )
+            _dispatch_callback_download_branch(
+                app,
+                original_message,
+                task,
+                proc_msg=proc_msg,
+                clear_subs_cache_on_start=False,
+            )
         else:
-            # Delete processing message before starting download
-            delete_processing_message(app, user_id, proc_msg)
-            down_and_up_with_format(app, original_message, url, format_override, tags_text, quality_key=quality, proc_msg=proc_msg)
+            branch_result = _select_callback_download_branch(
+                user_id,
+                callback_data=quality,
+                quality_intent=quality,
+                quality_key=quality,
+                format_override=format_override,
+                origin="manual_quality_callback",
+                provenance={"quality": quality},
+                force_branch_family="video",
+            )
+            task = _make_callback_runtime_task(
+                original_message,
+                url=url,
+                tags=tags,
+                tags_text=tags_text,
+                branch_result=branch_result,
+                proc_msg=proc_msg,
+            )
+            _dispatch_callback_download_branch(
+                app,
+                original_message,
+                task,
+                proc_msg=proc_msg,
+            )
         return
 
     original_message = callback_message.reply_to_message if callback_message else None
@@ -2240,9 +2546,33 @@ def askq_callback(app, callback_query):
                 new_count = new_end - new_start + 1
                 
                 if data == "mp3":
-                    # Delete processing message before starting download
-                    delete_processing_message(app, user_id, proc_msg)
-                    down_and_audio(app, original_message, url, tags, quality_key=used_quality_key, playlist_name=playlist_name, video_count=new_count, video_start_with=new_start, format_override="ba", cookies_already_checked=True, cached_video_info=None)
+                    branch_result = _select_callback_download_branch(
+                        user_id,
+                        callback_data=data,
+                        quality_intent=used_quality_key,
+                        quality_key=used_quality_key,
+                        format_override="ba",
+                        video_count=new_count,
+                        origin="playlist_cache_miss_callback",
+                        provenance={"callback_data": data, "cache_miss_only": True},
+                    )
+                    task = _make_callback_runtime_task(
+                        original_message,
+                        url=url,
+                        tags=tags,
+                        tags_text=tags_text,
+                        branch_result=branch_result,
+                        playlist_name=playlist_name,
+                        video_count=new_count,
+                        video_start_with=new_start,
+                        proc_msg=proc_msg,
+                    )
+                    _dispatch_callback_download_branch(
+                        app,
+                        original_message,
+                        task,
+                        proc_msg=proc_msg,
+                    )
                 else:
                     try:
                         # Form the correct format for the missing videos
@@ -2274,9 +2604,35 @@ def askq_callback(app, callback_query):
                         logger.error(f"askq_callback: error forming format: {e}")
                         format_override = "bestvideo+bestaudio/best/bv+ba/best"
                     
-                    # Delete processing message before starting download
-                    delete_processing_message(app, user_id, proc_msg)
-                    down_and_up(app, original_message, url, playlist_name, new_count, new_start, tags_text, force_no_title=False, format_override=format_override, quality_key=used_quality_key, cookies_already_checked=True, cached_video_info=None, clear_subs_cache_on_start=False)
+                    branch_result = _select_callback_download_branch(
+                        user_id,
+                        callback_data=data,
+                        quality_intent=used_quality_key,
+                        quality_key=used_quality_key,
+                        format_override=format_override,
+                        video_count=new_count,
+                        origin="playlist_cache_miss_callback",
+                        provenance={"callback_data": data, "cache_miss_only": True},
+                        force_branch_family="video",
+                    )
+                    task = _make_callback_runtime_task(
+                        original_message,
+                        url=url,
+                        tags=tags,
+                        tags_text=tags_text,
+                        branch_result=branch_result,
+                        playlist_name=playlist_name,
+                        video_count=new_count,
+                        video_start_with=new_start,
+                        proc_msg=proc_msg,
+                    )
+                    _dispatch_callback_download_branch(
+                        app,
+                        original_message,
+                        task,
+                        proc_msg=proc_msg,
+                        clear_subs_cache_on_start=False,
+                    )
             else:
                 # All videos were in the cache
                 app.send_message(target_chat_id, safe_get_messages(user_id).PLAYLIST_CACHE_SENT_MSG.format(cached=len(cached_videos), total=len(requested_indices)), reply_parameters=ReplyParameters(message_id=original_message.id))
@@ -2288,9 +2644,33 @@ def askq_callback(app, callback_query):
             # If there is no cache at all - download everything again
             logger.info(f"askq_callback: no cache found for any quality, starting new download")
             if data == "mp3":
-                # Delete processing message before starting download
-                delete_processing_message(app, user_id, proc_msg)
-                down_and_audio(app, original_message, url, tags, quality_key=data, playlist_name=playlist_name, video_count=video_count, video_start_with=video_start_with, format_override="ba", cookies_already_checked=True, cached_video_info=None)
+                branch_result = _select_callback_download_branch(
+                    user_id,
+                    callback_data=data,
+                    quality_intent=data,
+                    quality_key=data,
+                    format_override="ba",
+                    video_count=video_count,
+                    origin="playlist_uncached_callback",
+                    provenance={"callback_data": data},
+                )
+                task = _make_callback_runtime_task(
+                    original_message,
+                    url=url,
+                    tags=tags,
+                    tags_text=tags_text,
+                    branch_result=branch_result,
+                    playlist_name=playlist_name,
+                    video_count=video_count,
+                    video_start_with=video_start_with,
+                    proc_msg=proc_msg,
+                )
+                _dispatch_callback_download_branch(
+                    app,
+                    original_message,
+                    task,
+                    proc_msg=proc_msg,
+                )
             else:
                 try:
                     # Form the correct format for the new download
@@ -2324,9 +2704,35 @@ def askq_callback(app, callback_query):
                 # Save selected quality to filters
                 set_filter(user_id, "quality", data)
                 
-                # Delete processing message before starting download
-                delete_processing_message(app, user_id, proc_msg)
-                down_and_up(app, original_message, url, playlist_name, video_count, video_start_with, tags_text, force_no_title=False, format_override=format_override, quality_key=data, cookies_already_checked=True, cached_video_info=None, clear_subs_cache_on_start=False)
+                branch_result = _select_callback_download_branch(
+                    user_id,
+                    callback_data=data,
+                    quality_intent=data,
+                    quality_key=data,
+                    format_override=format_override,
+                    video_count=video_count,
+                    origin="playlist_uncached_callback",
+                    provenance={"callback_data": data},
+                    force_branch_family="video",
+                )
+                task = _make_callback_runtime_task(
+                    original_message,
+                    url=url,
+                    tags=tags,
+                    tags_text=tags_text,
+                    branch_result=branch_result,
+                    playlist_name=playlist_name,
+                    video_count=video_count,
+                    video_start_with=video_start_with,
+                    proc_msg=proc_msg,
+                )
+                _dispatch_callback_download_branch(
+                    app,
+                    original_message,
+                    task,
+                    proc_msg=proc_msg,
+                    clear_subs_cache_on_start=False,
+                )
             return
     # --- other logic for single files ---
     found_type = check_subs_availability(url, user_id, data, return_type=True)
@@ -5631,65 +6037,37 @@ def askq_callback_logic(app, callback_query, data, original_message, url, tags_t
     
     # Check if LINK mode is enabled
     if get_link_mode(user_id):
+        branch_result = _select_direct_link_branch(
+            user_id,
+            quality_intent=data,
+            quality_key=data,
+            origin="askq_callback_logic",
+            provenance={"mode": "link"},
+        )
         # Get direct link instead of downloading
         try:
             callback_query.answer(safe_get_messages(user_id).ALWAYS_ASK_GETTING_DIRECT_LINK_MSG)
         except Exception:
             pass
         
-        # Import link function
         from COMMANDS.link_cmd import get_direct_link
-        
-        # Convert quality key to quality argument
-        quality_arg = None
-        if data != "best" and data != "mp3":
-            quality_arg = data
-        
-        # Get direct link - use proxy only if user has proxy enabled and domain requires it
-        result = get_direct_link(url, user_id, quality_arg, cookies_already_checked=True, use_proxy=False)
+        result = execute_direct_link_flow(
+            fetch_direct_link=get_direct_link,
+            response_sender=send_always_ask_direct_link_response_legacy_error,
+            app=app,
+            message=original_message,
+            user_id=user_id,
+            url=url,
+            quality_key=data,
+            cookies_already_checked=True,
+            use_proxy=False,
+        )
         
         if result.get('success'):
-            title = result.get('title', 'Unknown')
-            duration = result.get('duration', 0)
-            video_url = result.get('video_url')
-            audio_url = result.get('audio_url')
-            format_spec = result.get('format', 'best')
-            
-            # Form response
-            response = f"{safe_get_messages(user_id).ALWAYS_ASK_DIRECT_LINK_OBTAINED_MSG}\n\n"
-            response += f"{safe_get_messages(user_id).ALWAYS_ASK_TITLE_MSG} {title}\n"
-            if duration and duration > 0:
-                response += f"{safe_get_messages(user_id).ALWAYS_ASK_DURATION_SEC_MSG} {duration} sec\n"
-            response += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_CODE_MSG} <code>{format_spec}</code>\n\n"
-            
-            if video_url:
-                response += f"{safe_get_messages(user_id).ALWAYS_ASK_VIDEO_STREAM_MSG}\n<blockquote expandable><a href=\"{video_url}\">{video_url}</a></blockquote>\n\n"
-            
-            if audio_url:
-                response += f"{safe_get_messages(user_id).ALWAYS_ASK_AUDIO_STREAM_MSG}\n<blockquote expandable><a href=\"{audio_url}\">{audio_url}</a></blockquote>\n\n"
-            
-            if not video_url and not audio_url:
-                response += f"{safe_get_messages(user_id).ALWAYS_ASK_FAILED_TO_GET_STREAM_LINKS_MSG}"
-            
-            # Send response
-            app.send_message(
-                user_id, 
-                response, 
-                reply_parameters=ReplyParameters(message_id=original_message.id),
-                parse_mode=enums.ParseMode.HTML
-            )
-            
             send_to_logger(original_message, safe_get_messages(user_id).DIRECT_LINK_EXTRACTED_ALWAYS_ASK_LOG_MSG.format(user_id=user_id, url=url))
             
         else:
             error_msg = result.get('error', 'Unknown error')
-            app.send_message(
-                user_id,
-                safe_get_messages(user_id).AA_ERROR_GETTING_LINK_MSG.format(error_msg=error_msg),
-                reply_parameters=ReplyParameters(message_id=original_message.id),
-                parse_mode=enums.ParseMode.HTML
-            )
-            
             log_error_to_channel(original_message, safe_get_messages(user_id).DIRECT_LINK_FAILED_ALWAYS_ASK_LOG_MSG.format(user_id=user_id, url=url, error=error_msg), url)
         
         return
@@ -5730,9 +6108,33 @@ def askq_callback_logic(app, callback_query, data, original_message, url, tags_t
             video_count = abs(video_start_with - video_end_with) + 1
         else:
             video_count = video_end_with - video_start_with + 1
-        # Delete processing message before starting download
-        delete_processing_message(app, user_id, proc_msg)
-        down_and_audio(app, original_message, url, tags, quality_key="mp3", playlist_name=playlist_name, video_count=video_count, video_start_with=video_start_with, format_override="ba", cookies_already_checked=True, cached_video_info=None)
+        branch_result = _select_callback_download_branch(
+            user_id,
+            callback_data=data,
+            quality_intent="mp3",
+            quality_key="mp3",
+            format_override="ba",
+            video_count=video_count,
+            origin="askq_callback_logic",
+            provenance={"callback_data": data},
+        )
+        task = _make_callback_runtime_task(
+            original_message,
+            url=url,
+            tags=tags,
+            tags_text=tags_text,
+            branch_result=branch_result,
+            playlist_name=playlist_name,
+            video_count=video_count,
+            video_start_with=video_start_with,
+            proc_msg=proc_msg,
+        )
+        _dispatch_callback_download_branch(
+            app,
+            original_message,
+            task,
+            proc_msg=proc_msg,
+        )
         return
     
     if data == "subs_only":
@@ -5873,10 +6275,30 @@ def askq_callback_logic(app, callback_query, data, original_message, url, tags_t
         except ValueError:
             callback_query.answer("Unknown quality.")
             return
-    
-    # Delete processing message before starting download
-    delete_processing_message(app, user_id, proc_msg)
-    down_and_up_with_format(app, original_message, url, fmt, tags_text, quality_key=quality_key, proc_msg=proc_msg)
+    branch_result = _select_callback_download_branch(
+        user_id,
+        callback_data=data,
+        quality_intent=quality_key or data,
+        quality_key=quality_key,
+        format_override=fmt,
+        origin="askq_callback_logic",
+        provenance={"callback_data": data},
+        force_branch_family="video",
+    )
+    task = _make_callback_runtime_task(
+        original_message,
+        url=url,
+        tags=tags,
+        tags_text=tags_text,
+        branch_result=branch_result,
+        proc_msg=proc_msg,
+    )
+    _dispatch_callback_download_branch(
+        app,
+        original_message,
+        task,
+        proc_msg=proc_msg,
+    )
 
 def analyze_format_type(format_info):
     """
@@ -5934,106 +6356,91 @@ def get_complementary_audio_format(video_format_info, all_formats):
 
 # --- an auxiliary function for downloading with the format ---
 # @reply_with_keyboard
-def down_and_up_with_format(app, message, url, fmt, tags_text, quality_key=None, proc_msg=None):
+def down_and_up_with_format(app, message, url=None, fmt=None, tags_text="", quality_key=None, proc_msg=None, task_context: RuntimeTask | None = None):
     messages = safe_get_messages(message.chat.id)
     user_id = message.chat.id
-
-    # We extract the range and other parameters from the original user message
-    full_string = message.text or message.caption or ""
-    _, video_start_with, video_end_with, playlist_name, _, _, tag_error = extract_url_range_tags(full_string)
-
-    # This mistake should have already been caught earlier, but for safety
-    if tag_error:
-        wrong, example = tag_error
-        error_msg = safe_get_messages(user_id).AA_TAG_FORBIDDEN_CHARS_MSG.format(wrong=wrong, example=example)
-        app.send_message(message.chat.id, error_msg, reply_parameters=ReplyParameters(message_id=message.id))
-        log_error_to_channel(message, error_msg, url)
-        return
-
-    # Correct video_count calculation for negative indices
-    if video_start_with < 0 and video_end_with < 0:
-        video_count = abs(video_end_with) - abs(video_start_with) + 1
-    elif video_start_with > video_end_with:
-        video_count = abs(video_start_with - video_end_with) + 1
-    else:
-        video_count = video_end_with - video_start_with + 1
+    task_context = ensure_runtime_task(
+        task=task_context,
+        user_id=user_id,
+        source_message_id=getattr(message, "id", None),
+        url=url or "",
+        tags_text=tags_text,
+        proc_msg_id=getattr(proc_msg, "id", None),
+    )
+    url = task_context.url
+    tags_text = task_context.tags_text
+    playlist_name = task_context.playlist_name
+    video_count = task_context.video_count
+    video_start_with = task_context.video_start_with
+    if task_context.proc_msg_id is not None and proc_msg is None:
+        proc_msg = type("ProcMsgRef", (), {"id": task_context.proc_msg_id})()
+    branch_result = task_context.branch_selection_result
+    if branch_result is not None:
+        log_branch_selection(logger, branch_result, user_id=user_id)
     
     # Check if there is a link to Tiktok
     is_tiktok = is_tiktok_url(url)
+    task_context.force_no_title = is_tiktok
     
-    # Check if LINK mode is enabled - if yes, get direct link instead of downloading
     user_id = message.chat.id
     try:
-        if get_link_mode(user_id):
-            logger.info(f"LINK mode enabled for user {user_id}, getting direct link instead of downloading")
+        use_direct_link, direct_link_source = resolve_direct_link_preference(
+            branch_result,
+            user_id=user_id,
+            ambient_link_mode_reader=get_link_mode,
+        )
+        if use_direct_link:
+            logger.info(
+                f"Direct-link path active for user {user_id}, "
+                f"source={direct_link_source}"
+            )
             
-            # Import link function
             from COMMANDS.link_cmd import get_direct_link
-            
-            # Convert quality key to quality argument
-            quality_arg = None
-            if quality_key and quality_key != "best" and quality_key != "mp3":
-                quality_arg = quality_key
-            
-            # Get direct link
-            result = get_direct_link(url, user_id, quality_arg, cookies_already_checked=True, use_proxy=True)
+            result = execute_direct_link_flow(
+                fetch_direct_link=get_direct_link,
+                response_sender=send_always_ask_direct_link_response,
+                app=app,
+                message=message,
+                user_id=user_id,
+                url=url,
+                quality_key=quality_key,
+                cookies_already_checked=True,
+                use_proxy=True,
+            )
             
             if result.get('success'):
-                title = result.get('title', 'Unknown')
-                duration = result.get('duration', 0)
-                video_url = result.get('video_url')
-                audio_url = result.get('audio_url')
-                format_spec = result.get('format', 'best')
-                
-                # Form response
-                response = f"{safe_get_messages(user_id).ALWAYS_ASK_DIRECT_LINK_OBTAINED_MSG}\n\n"
-                response += f"{safe_get_messages(user_id).ALWAYS_ASK_TITLE_MSG} {title}\n"
-                if duration and duration > 0:
-                    response += f"{safe_get_messages(user_id).ALWAYS_ASK_DURATION_SEC_MSG} {duration} sec\n"
-                response += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_CODE_MSG} <code>{format_spec}</code>\n\n"
-                
-                if video_url:
-                    response += f"{safe_get_messages(user_id).ALWAYS_ASK_VIDEO_STREAM_MSG}\n<blockquote expandable><a href=\"{video_url}\">{video_url}</a></blockquote>\n\n"
-                
-                if audio_url:
-                    response += f"{safe_get_messages(user_id).ALWAYS_ASK_AUDIO_STREAM_MSG}\n<blockquote expandable><a href=\"{audio_url}\">{audio_url}</a></blockquote>\n\n"
-                
-                if not video_url and not audio_url:
-                    response += f"{safe_get_messages(user_id).ALWAYS_ASK_FAILED_TO_GET_STREAM_LINKS_MSG}"
-                
-                # Send response
-                app.send_message(
-                    user_id, 
-                    response, 
-                    reply_parameters=ReplyParameters(message_id=message.id),
-                    parse_mode=enums.ParseMode.HTML
-                )
-                
                 send_to_logger(message, safe_get_messages(user_id).DIRECT_LINK_EXTRACTED_DOWN_UP_LOG_MSG.format(user_id=user_id, url=url))
                 
             else:
                 error_msg = result.get('error', 'Unknown error')
-                app.send_message(
-                    user_id,
-                    f"❌ <b>Error getting link:</b>\n{error_msg}",
-                    reply_parameters=ReplyParameters(message_id=message.id),
-                    parse_mode=enums.ParseMode.HTML
-                )
-                
                 log_error_to_channel(message, safe_get_messages(user_id).DIRECT_LINK_FAILED_DOWN_UP_LOG_MSG.format(user_id=user_id, url=url, error=error_msg), url)
             
             return
     except Exception as e:
-        logger.error(f"Error checking LINK mode for user {user_id}: {e}")
-        # Continue with normal download if LINK mode check fails
+        logger.error(f"Error checking direct-link path for user {user_id}: {e}")
+        # Continue with normal download if direct-link check fails
 
     # Check if format contains /bestaudio (audio-only format)
     logger.info(f"Checking format: {fmt} for /bestaudio")
     if fmt and '/bestaudio' in fmt:
         logger.info(f"Audio-only format detected: {fmt}, redirecting to down_and_audio")
+        audio_branch_result = redirected_audio_branch(
+            branch_result,
+            quality_key=quality_key,
+            format_override=fmt,
+            reason="down_and_up_with_format_detected_bestaudio",
+        )
         # Delete processing message before starting download
         delete_processing_message(app, user_id, proc_msg)
-        down_and_audio(app, message, url, tags_text, quality_key=quality_key, format_override=fmt, cookies_already_checked=True, cached_video_info=None)
+        audio_task = with_branch_selection(task_context, audio_branch_result)
+        down_and_audio(
+            app,
+            message,
+            quality_key=quality_key,
+            format_override=fmt,
+            cookies_already_checked=True,
+            task_context=audio_task,
+        )
         return
 
     # Analyze the format to determine if it's audio-only, video-only, or full
@@ -6052,6 +6459,7 @@ def down_and_up_with_format(app, message, url, fmt, tags_text, quality_key=None,
         else:
             info = get_video_formats(url, user_id, cookies_already_checked=True)
             logger.info(f"⚠️ [OPTIMIZATION] Had to fetch video info again - consider improving caching")
+        task_context.cached_video_info = info
         
         if quality_key and info and 'formats' in info:
             # Find the selected format
@@ -6066,11 +6474,25 @@ def down_and_up_with_format(app, message, url, fmt, tags_text, quality_key=None,
                 
                 # If it's audio-only, convert to user's preferred audio format
                 if format_type == 'audio_only':
+                    audio_branch_result = redirected_audio_branch(
+                        branch_result,
+                        quality_key=quality_key,
+                        format_override=fmt,
+                        reason="selected_format_resolved_to_audio_only",
+                    )
                     # Use audio download function with the selected format
                     # Pass cookies_already_checked=True since we already checked cookies in get_video_formats
                     # Delete processing message before starting download
                     delete_processing_message(app, user_id, proc_msg)
-                    down_and_audio(app, message, url, tags_text, quality_key=quality_key, format_override=fmt, cookies_already_checked=True, cached_video_info=info)
+                    audio_task = with_branch_selection(task_context, audio_branch_result)
+                    down_and_audio(
+                        app,
+                        message,
+                        quality_key=quality_key,
+                        format_override=fmt,
+                        cookies_already_checked=True,
+                        task_context=audio_task,
+                    )
                     return
                 
                 # If it's video-only, find complementary audio
@@ -6099,7 +6521,14 @@ def down_and_up_with_format(app, message, url, fmt, tags_text, quality_key=None,
     # Pass cached video info to avoid redundant API calls
     # Delete processing message before starting download
     delete_processing_message(app, user_id, proc_msg)
-    down_and_up(app, message, url, playlist_name, video_count, video_start_with, tags_text, force_no_title=is_tiktok, format_override=fmt, quality_key=quality_key, cookies_already_checked=True, cached_video_info=info)
+    down_and_up(
+        app,
+        message,
+        format_override=fmt,
+        quality_key=quality_key,
+        cookies_already_checked=True,
+        task_context=task_context,
+    )
     # Cleanup temp subs languages cache after we kicked off download
     try:
         delete_subs_langs_cache(message.chat.id, url)

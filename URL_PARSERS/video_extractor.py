@@ -8,6 +8,8 @@ from URL_PARSERS.tags import extract_url_range_tags, save_user_tags, get_auto_ta
 from URL_PARSERS.tiktok import is_tiktok_url
 from DOWN_AND_UP.always_ask_menu import ask_quality_menu
 from DOWN_AND_UP.down_and_up import down_and_up
+from DOWN_AND_UP.branch_selection_result import log_branch_selection, saved_format_branch
+from DOWN_AND_UP.runtime_task import make_runtime_task, with_branch_selection
 from HELPERS.download_status import playlist_errors, playlist_errors_lock
 from pyrogram import filters
 from CONFIG.config import Config
@@ -170,12 +172,34 @@ def video_url_extractor(app, message):
                 quality_key = f"custom_{hashlib.md5(saved_format.encode()).hexdigest()[:8]}"
         
         logger.info(LoggerMsg.VIDEO_EXTRACTOR_SAVED_FORMAT_LOG_MSG.format(saved_format=saved_format, quality_key=quality_key))
+        branch_result = saved_format_branch(
+            saved_format=saved_format,
+            quality_key=quality_key,
+            video_count=video_count,
+            origin="video_url_extractor",
+        )
+        task = with_branch_selection(
+            make_runtime_task(
+                user_id=user_id,
+                source_message_id=getattr(message, "id", None),
+                url=url,
+                tags_text=tags_text_full,
+                tags=list(all_tags),
+                playlist_name=playlist_name,
+                video_count=video_count,
+                video_start_with=video_start_with,
+                force_no_title=is_tiktok,
+            ),
+            branch_result,
+        )
+        log_branch_selection(logger, branch_result, user_id=user_id)
         
-        # --- Pass title='' for TikTok, otherwise as usual ---
-        # Note: cached_video_info=None for direct calls (no optimization available)
-        if is_tiktok:
-            down_and_up(app, message, url, playlist_name, video_count, video_start_with, tags_text_full, force_no_title=True, format_override=saved_format, quality_key=quality_key, cached_video_info=None)
-        else:
-            down_and_up(app, message, url, playlist_name, video_count, video_start_with, tags_text_full, format_override=saved_format, quality_key=quality_key, cached_video_info=None)
+        down_and_up(
+            app,
+            message,
+            format_override=saved_format,
+            quality_key=quality_key,
+            task_context=task,
+        )
     else:
         send_error_to_user(message, safe_get_messages(user_id).URL_PARSER_USER_ENTERED_INVALID_MSG.format(input=full_string, error_msg=safe_get_messages(user_id).ERROR1))

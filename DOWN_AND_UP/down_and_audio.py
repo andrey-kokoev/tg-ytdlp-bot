@@ -11,28 +11,27 @@ import time
 import yt_dlp
 from pyrogram.errors import FloodWait
 from HELPERS.app_instance import get_app
-from HELPERS.logger import logger, send_to_logger, send_to_user, send_to_all, send_error_to_user, log_error_to_channel
-from HELPERS.limitter import TimeFormatter, humanbytes, check_user
+from HELPERS.logger import logger, send_to_logger, send_to_user, send_error_to_user, log_error_to_channel
+from HELPERS.limitter import TimeFormatter
 from HELPERS.download_status import set_active_download, clear_download_start_time, check_download_timeout, start_hourglass_animation, start_cycle_progress, playlist_errors, playlist_errors_lock
 from HELPERS.safe_messeger import safe_delete_messages, safe_edit_message_text, safe_forward_messages
-from HELPERS.filesystem_hlp import sanitize_filename, sanitize_filename_strict, create_directory, check_disk_space, cleanup_user_temp_files
+from HELPERS.filesystem_hlp import sanitize_filename_strict, create_directory, check_disk_space, cleanup_user_temp_files
 from DATABASE.firebase_init import write_logs
 from URL_PARSERS.tags import generate_final_tags
 from services.stats_events import update_download_progress
 from URL_PARSERS.nocookie import is_no_cookie_domain
 from URL_PARSERS.filter_check import is_no_filter_domain
-from URL_PARSERS.filter_utils import create_smart_match_filter, create_legacy_match_filter
+from URL_PARSERS.filter_utils import create_smart_match_filter
 from URL_PARSERS.youtube import is_youtube_url, download_thumbnail
 from URL_PARSERS.thumbnail_downloader import download_thumbnail as download_universal_thumbnail
 from HELPERS.pot_helper import add_pot_to_ytdl_opts
 from CONFIG.limits import LimitsConfig
-from HELPERS.fallback_helper import should_fallback_to_gallery_dl
 import subprocess
 from urllib.parse import urlparse
 from PIL import Image
 import io
 from CONFIG.config import Config
-from CONFIG.messages import Messages, safe_get_messages
+from CONFIG.messages import safe_get_messages
 from COMMANDS.subtitles_cmd import is_subs_enabled, check_subs_availability, get_user_subs_auto_mode, _subs_check_cache, download_subtitles_ytdlp, is_subs_always_ask
 from COMMANDS.mediainfo_cmd import send_mediainfo_if_enabled
 from URL_PARSERS.playlist_utils import is_playlist_with_range
@@ -42,9 +41,634 @@ from pyrogram.types import ReplyParameters
 from HELPERS.safe_messeger import safe_send_message
 from pyrogram import enums
 from URL_PARSERS.tags import extract_url_range_tags
+from DOWN_AND_UP.branch_selection_result import (
+    log_branch_selection,
+    resolve_direct_link_preference,
+)
+from DOWN_AND_UP.direct_link_flow import (
+    execute_direct_link_flow,
+    send_standard_direct_link_response,
+)
+from DOWN_AND_UP.terminal_outcome_result import (
+    failed_terminal_outcome,
+    format_audio_terminal_status,
+    format_audio_failure_status,
+    upload_terminal_outcome,
+)
+from DOWN_AND_UP.runtime_task import RuntimeTask, ensure_runtime_task
+from DOWN_AND_UP.task_terminal_flow import attach_and_render_terminal_outcome
+from DOWN_AND_UP.playlist_flow import build_requested_indices, send_playlist_cache_status
+from DOWN_AND_UP.retry_flow import (
+    maybe_retry_with_different_cookies,
+    maybe_retry_with_proxy_on_geo_error,
+)
+from DOWN_AND_UP.preflight_flow import (
+    cleanup_download_dir_before_start,
+    ensure_user_download_dir,
+    start_processing_handshake,
+)
+from DOWN_AND_UP.cache_flow import (
+    lookup_single_cached_ids,
+    try_repost_single_cached_media,
+)
 
 # Get app instance for decorators
 app = get_app()
+
+
+def _send_audio_failure(
+    message,
+    user_id: int,
+    *,
+    failure_kind: str,
+    error_text: str | None = None,
+    rendered_text: str | None = None,
+    attempted_count: int = 0,
+    delivered_count: int = 0,
+    use_error_channel: bool = False,
+    task_context: RuntimeTask | None = None,
+) -> None:
+    outcome = failed_terminal_outcome(
+        media_kind="audio",
+        failure_kind=failure_kind,
+        error_text=error_text,
+        attempted_count=attempted_count,
+        delivered_count=delivered_count,
+    )
+    _, text = attach_and_render_terminal_outcome(
+        user_id=user_id,
+        outcome=outcome,
+        task_context=task_context,
+        formatter=format_audio_failure_status,
+        rendered_text=rendered_text,
+    )
+    if use_error_channel:
+        send_error_to_user(message, text)
+    else:
+        send_to_user(message, text)
+
+
+def _resolve_audio_task_inputs(
+    *,
+    task_context: RuntimeTask | None,
+    user_id: int,
+    message,
+    url,
+    tags,
+    playlist_name,
+    video_count,
+    video_start_with,
+    cached_video_info,
+):
+    task_context = ensure_runtime_task(
+        task=task_context,
+        user_id=user_id,
+        source_message_id=getattr(message, "id", None),
+        url=url or "",
+        tags_text=" ".join(tags or []),
+        tags=list(tags) if tags is not None else None,
+        playlist_name=playlist_name,
+        video_count=video_count,
+        video_start_with=video_start_with,
+        cached_video_info=cached_video_info,
+    )
+    resolved_tags = task_context.tags if task_context.tags is not None else tags
+    if resolved_tags is None:
+        resolved_tags = []
+    resolved_cached_video_info = (
+        task_context.cached_video_info
+        if task_context.cached_video_info is not None
+        else cached_video_info
+    )
+    return (
+        task_context,
+        task_context.url,
+        resolved_tags,
+        task_context.playlist_name,
+        task_context.video_count,
+        task_context.video_start_with,
+        resolved_cached_video_info,
+    )
+
+
+def _try_remote_audio_youtube_cookie_sources(
+    *,
+    user_id: int,
+    url: str,
+    cookie_urls: list[str],
+    downloaded_cookie_path: str,
+):
+    from COMMANDS.cookies_cmd import (
+        _download_content,
+        get_unchecked_cookie_sources,
+        mark_cookie_source_checked,
+        test_youtube_cookies_on_url,
+    )
+
+    unchecked_indices = get_unchecked_cookie_sources(user_id, cookie_urls)
+    if not unchecked_indices:
+        logger.warning(
+            "All cookie sources have been checked for user %s, no more sources to try",
+            user_id,
+        )
+        return None
+
+    for idx in unchecked_indices:
+        cookie_url = cookie_urls[idx]
+        logger.info(
+            "Trying YouTube cookie source %s/%s for user %s",
+            idx + 1,
+            len(cookie_urls),
+            user_id,
+        )
+        mark_cookie_source_checked(user_id, idx)
+        try:
+            ok, _status, content, _err = _download_content(
+                cookie_url,
+                timeout=30,
+                user_id=user_id,
+            )
+            if ok and content and len(content) <= 100 * 1024:
+                with open(downloaded_cookie_path, "wb") as cf:
+                    cf.write(content)
+                if test_youtube_cookies_on_url(downloaded_cookie_path, url, user_id):
+                    logger.info(
+                        "YouTube cookies from source %s work on user's URL for user %s",
+                        idx + 1,
+                        user_id,
+                    )
+                    return downloaded_cookie_path
+                if os.path.exists(downloaded_cookie_path):
+                    os.remove(downloaded_cookie_path)
+        except Exception as e:
+            logger.error(
+                "Error processing YouTube cookie source %s for user %s: %s",
+                idx + 1,
+                user_id,
+                e,
+            )
+    return None
+
+
+def _resolve_audio_youtube_cookiefile(
+    *,
+    user_id: int,
+    url: str,
+    user_cookie_path: str,
+    downloaded_cookie_path: str,
+):
+    from COMMANDS.cookies_cmd import (
+        get_youtube_cookie_urls,
+        test_youtube_cookies_on_url,
+    )
+
+    user_cookie_exists = os.path.exists(user_cookie_path)
+    cookie_urls = get_youtube_cookie_urls()
+
+    if user_cookie_exists:
+        logger.info("Checking existing YouTube cookies on user's URL for user %s", user_id)
+        if test_youtube_cookies_on_url(user_cookie_path, url, user_id):
+            logger.info(
+                "Existing YouTube cookies work on user's URL for user %s - using them",
+                user_id,
+            )
+            return user_cookie_path
+
+        logger.warning(
+            "Existing YouTube cookies failed validation on user's URL for user %s; "
+            "keeping them as download fallback and trying remote sources",
+            user_id,
+        )
+        if cookie_urls:
+            resolved_cookie = _try_remote_audio_youtube_cookie_sources(
+                user_id=user_id,
+                url=url,
+                cookie_urls=cookie_urls,
+                downloaded_cookie_path=downloaded_cookie_path,
+            )
+            if resolved_cookie:
+                return resolved_cookie
+        else:
+            logger.warning(
+                "No YouTube cookie sources configured for user %s; "
+                "falling back to existing user cookie for actual download",
+                user_id,
+            )
+        logger.warning(
+            "All remote YouTube cookie sources failed for user %s; "
+            "falling back to existing user cookie for actual download",
+            user_id,
+        )
+        return user_cookie_path
+
+    logger.info("No YouTube cookies found for user %s, attempting to get new ones", user_id)
+    if not cookie_urls:
+        logger.warning(
+            "No YouTube cookie sources configured for user %s, will try without cookies",
+            user_id,
+        )
+        return None
+
+    resolved_cookie = _try_remote_audio_youtube_cookie_sources(
+        user_id=user_id,
+        url=url,
+        cookie_urls=cookie_urls,
+        downloaded_cookie_path=downloaded_cookie_path,
+    )
+    if resolved_cookie:
+        return resolved_cookie
+
+    logger.warning(
+        "All YouTube cookie sources failed for user %s, will try without cookies",
+        user_id,
+    )
+    return None
+
+
+def _resolve_audio_cookiefile(*, user_id: int, url: str, user_folder: str):
+    user_cookie_path = os.path.join(user_folder, "cookie.txt")
+    downloaded_cookie_path = os.path.join(user_folder, "_downloaded_cookie.txt")
+
+    if is_youtube_url(url):
+        return _resolve_audio_youtube_cookiefile(
+            user_id=user_id,
+            url=url,
+            user_cookie_path=user_cookie_path,
+            downloaded_cookie_path=downloaded_cookie_path,
+        )
+
+    from COMMANDS.cookies_cmd import get_cookie_cache_result
+
+    cache_result = get_cookie_cache_result(user_id, url)
+    if cache_result and cache_result["result"]:
+        logger.info("Using cached cookies for non-YouTube audio URL: %s", url)
+        return cache_result["cookie_path"]
+
+    if os.path.exists(user_cookie_path):
+        logger.info("Using user cookies for non-YouTube audio URL: %s", url)
+        return user_cookie_path
+
+    logger.info(
+        "No user cookies found for non-YouTube audio URL: %s, will try fallback during download",
+        url,
+    )
+    return None
+
+
+def _apply_audio_proxy_settings(ytdl_opts, *, use_proxy: bool, url: str, user_id: int):
+    if use_proxy:
+        from COMMANDS.proxy_cmd import get_proxy_config
+
+        proxy_config = get_proxy_config()
+        if proxy_config and "type" in proxy_config and "ip" in proxy_config and "port" in proxy_config:
+            if proxy_config["type"] == "http":
+                if proxy_config.get("user") and proxy_config.get("password"):
+                    proxy_url = (
+                        f"http://{proxy_config['user']}:{proxy_config['password']}@"
+                        f"{proxy_config['ip']}:{proxy_config['port']}"
+                    )
+                else:
+                    proxy_url = f"http://{proxy_config['ip']}:{proxy_config['port']}"
+            elif proxy_config["type"] == "https":
+                if proxy_config.get("user") and proxy_config.get("password"):
+                    proxy_url = (
+                        f"https://{proxy_config['user']}:{proxy_config['password']}@"
+                        f"{proxy_config['ip']}:{proxy_config['port']}"
+                    )
+                else:
+                    proxy_url = f"https://{proxy_config['ip']}:{proxy_config['port']}"
+            elif proxy_config["type"] in ["socks4", "socks5", "socks5h"]:
+                if proxy_config.get("user") and proxy_config.get("password"):
+                    proxy_url = (
+                        f"{proxy_config['type']}://{proxy_config['user']}:{proxy_config['password']}@"
+                        f"{proxy_config['ip']}:{proxy_config['port']}"
+                    )
+                else:
+                    proxy_url = f"{proxy_config['type']}://{proxy_config['ip']}:{proxy_config['port']}"
+            else:
+                if proxy_config.get("user") and proxy_config.get("password"):
+                    proxy_url = (
+                        f"http://{proxy_config['user']}:{proxy_config['password']}@"
+                        f"{proxy_config['ip']}:{proxy_config['port']}"
+                    )
+                else:
+                    proxy_url = f"http://{proxy_config['ip']}:{proxy_config['port']}"
+
+            ytdl_opts["proxy"] = proxy_url
+            logger.info("Force using proxy for audio download: %s", proxy_url)
+            return ytdl_opts
+
+        logger.warning("Proxy requested but proxy configuration is incomplete")
+        return ytdl_opts
+
+    from HELPERS.proxy_helper import add_proxy_to_ytdl_opts
+
+    return add_proxy_to_ytdl_opts(ytdl_opts, url, user_id)
+
+
+def _normalize_audio_extracted_info(info_dict, *, current_index: int, current_playlist_items_override):
+    if isinstance(info_dict, list):
+        info_dict = info_dict[0] if len(info_dict) > 0 else {}
+    if isinstance(info_dict, dict) and "entries" in info_dict:
+        entries = info_dict["entries"]
+        if len(entries) > 1 and not current_playlist_items_override:
+            actual_index = current_index - 1
+            if 0 <= actual_index < len(entries):
+                return entries[actual_index]
+            raise Exception(
+                f"Audio index {actual_index + 1} out of range (total {len(entries)})"
+            )
+        return entries[0]
+    return info_dict
+
+
+def _apply_audio_title_to_opts(ytdl_opts, *, info_dict, user_folder: str):
+    def sanitize_title_for_filename(title):
+        if not title:
+            return "audio"
+        return sanitize_filename_strict(title)
+
+    original_title = info_dict.get("title", "audio")
+    logger.info("DEBUG: info_dict.get('title') = '%s'", original_title)
+    sanitized_title = sanitize_title_for_filename(original_title)
+    info_dict["original_title"] = original_title
+    logger.info("MANUAL sanitization: '%s' -> '%s'", original_title, sanitized_title)
+    ytdl_opts["outtmpl"] = os.path.join(user_folder, f"{sanitized_title}.%(ext)s")
+    logger.info("Set outtmpl to use literal filename: %s.%%(ext)s", sanitized_title)
+    return info_dict
+
+
+def _update_audio_download_mode_status(
+    *,
+    user_id: int,
+    proc_msg_id: int,
+    current_total_process: str,
+    download_format: str,
+    is_hls: bool,
+):
+    try:
+        if is_hls:
+            safe_edit_message_text(
+                user_id,
+                proc_msg_id,
+                f"{current_total_process}\n<i>Detected HLS audio stream.\n"
+                f"{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_HLS_MSG}</i>",
+            )
+        else:
+            safe_edit_message_text(
+                user_id,
+                proc_msg_id,
+                f"{current_total_process}\n> <i>"
+                f"{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_AUDIO_FORMAT_USING_MSG} "
+                f"{download_format}...</i>",
+            )
+    except Exception as e:
+        logger.error("Status update error: %s", e)
+
+
+def _run_audio_download_phase(
+    *,
+    ytdl_opts,
+    url: str,
+    user_id: int,
+    proc_msg_id: int,
+    current_total_process: str,
+    user_folder: str,
+    is_hls: bool,
+    progress_hook,
+):
+    def download_operation(opts):
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            if is_hls:
+                cycle_stop = threading.Event()
+                progress_data = {"downloaded_bytes": 0, "total_bytes": 0}
+                cycle_thread = start_cycle_progress(
+                    user_id,
+                    proc_msg_id,
+                    current_total_process,
+                    user_folder,
+                    cycle_stop,
+                    progress_data,
+                )
+                progress_hook.cycle_stop = cycle_stop
+                progress_hook.progress_data = progress_data
+                try:
+                    ydl.download([url])
+                finally:
+                    cycle_stop.set()
+                    cycle_thread.join(timeout=1)
+            else:
+                ydl.download([url])
+        return True
+
+    from HELPERS.proxy_helper import try_with_proxy_fallback
+
+    return try_with_proxy_fallback(ytdl_opts, url, user_id, download_operation)
+
+
+def _build_audio_error_summary(error_text: str):
+    error_code = "UNKNOWN_ERROR"
+    error_description = error_text
+
+    if "HTTP Error 403" in error_text:
+        error_code = "HTTP_403_FORBIDDEN"
+        error_description = "Access forbidden - may need cookies or authentication"
+    elif "HTTP Error 401" in error_text:
+        error_code = "HTTP_401_UNAUTHORIZED"
+        error_description = "Authentication required - cookies needed"
+    elif "Video unavailable" in error_text:
+        error_code = "VIDEO_UNAVAILABLE"
+        error_description = "Video is not available or has been removed"
+    elif "Private video" in error_text:
+        error_code = "PRIVATE_VIDEO"
+        error_description = "Video is private and requires authentication"
+    elif "Sign in to confirm" in error_text:
+        error_code = "SIGN_IN_REQUIRED"
+        error_description = "Sign in required - cookies needed"
+    elif "No video formats found" in error_text:
+        error_code = "NO_FORMATS"
+        error_description = "No downloadable formats available"
+    elif "Unsupported URL" in error_text:
+        error_code = "UNSUPPORTED_URL"
+        error_description = "This URL is not supported by yt-dlp"
+    elif "Network error" in error_text:
+        error_code = "NETWORK_ERROR"
+        error_description = "Network connection failed"
+    elif "ffmpeg exited with code" in error_text or "ERROR: ffmpeg" in error_text:
+        error_code = "FFMPEG_ERROR"
+        if "code 1" in error_text:
+            error_description = "FFmpeg processing failed - audio format may be incompatible or corrupted"
+        elif "code 2" in error_text:
+            error_description = "FFmpeg error - invalid arguments or unsupported format"
+        else:
+            error_description = "FFmpeg processing error occurred"
+
+        ffmpeg_details = re.search(
+            r"ffmpeg.*?error[:\s]+(.*?)(?:\n|$)",
+            error_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if ffmpeg_details:
+            details = ffmpeg_details.group(1).strip()[:200]
+            if details:
+                error_description += f"\n\nDetails: {details}"
+
+        error_description += (
+            "\n\n**Possible solutions:**\n"
+            "• Try downloading with a different quality/format\n"
+            "• The audio may be corrupted or in an unsupported format\n"
+            "• Try downloading without post-processing\n"
+            "• Check if ffmpeg is properly installed"
+        )
+
+    return error_code, error_description
+
+
+def _maybe_auto_rotate_ip_for_audio_sign_in_required(user_id: int, error_text: str):
+    if "Sign in to confirm" not in error_text:
+        return
+    try:
+        from services.system_service import rotate_ip
+
+        logger.warning("Auto-rotating IP due to SIGN_IN_REQUIRED error for user %s", user_id)
+        rotate_result = rotate_ip()
+        if rotate_result.get("status") == "ok":
+            logger.info(
+                "IP rotated successfully: IPv4=%s, IPv6=%s",
+                rotate_result.get("ipv4"),
+                rotate_result.get("ipv6"),
+            )
+        else:
+            logger.error("Failed to auto-rotate IP: %s", rotate_result.get("message"))
+    except Exception as rotate_error:
+        logger.error("Error during auto-rotate IP: %s", rotate_error)
+
+
+def _maybe_retry_audio_download_after_error(
+    *,
+    user_id: int,
+    url: str,
+    error_text: str,
+    did_proxy_retry: bool,
+    try_download_audio,
+    current_index: int,
+):
+    if is_youtube_url(url):
+        retry_result, did_proxy_retry = maybe_retry_with_proxy_on_geo_error(
+            user_id=user_id,
+            url=url,
+            error_text=error_text,
+            did_proxy_retry=did_proxy_retry,
+            is_youtube_url=is_youtube_url,
+            is_youtube_geo_error=is_youtube_geo_error,
+            retry_download_with_proxy=retry_download_with_proxy,
+            download_fn=try_download_audio,
+            download_args=(url, current_index),
+            logger=logger,
+            success_log_text="Audio download retry with proxy successful for user {user_id}",
+            failure_log_text="Audio download retry with proxy failed for user {user_id}",
+        )
+        return retry_result, did_proxy_retry
+
+    logger.info(
+        "Non-YouTube audio download error detected for user %s, attempting cookie fallback",
+        user_id,
+    )
+    error_str = error_text.lower()
+    cookie_keywords = [
+        "cookie",
+        "auth",
+        "login",
+        "sign in",
+        "403",
+        "401",
+        "forbidden",
+        "unauthorized",
+    ]
+    if not any(keyword in error_str for keyword in cookie_keywords):
+        logger.info("Error appears to be non-cookie-related for %s, skipping cookie fallback", url)
+        return None, did_proxy_retry
+
+    logger.info("Error appears to be cookie-related for %s, trying cookie fallback", url)
+    from COMMANDS.cookies_cmd import try_non_youtube_cookie_fallback
+
+    retry_result = try_non_youtube_cookie_fallback(
+        user_id,
+        url,
+        try_download_audio,
+        url,
+        current_index,
+    )
+    if retry_result is not None:
+        logger.info("Audio download retry with cookie fallback successful for user %s", user_id)
+    else:
+        logger.warning("Audio download retry with cookie fallback failed for user %s", user_id)
+    return retry_result, did_proxy_retry
+
+
+def _render_final_audio_download_error(error_text: str):
+    error_code, error_description = _build_audio_error_summary(error_text)
+    return (
+        "<blockquote>Check <a href='https://github.com/chelaxian/tg-ytdlp-bot/wiki/YT_DLP#supported-sites'>here</a> if your site supported</blockquote>\n"
+        "<blockquote>You may need <code>cookie</code> for downloading this audio. First, clean your workspace via <b>/clean</b> command</blockquote>\n"
+        "<blockquote>For Youtube - get <code>cookie</code> via <b>/cookie</b> command. For any other supported site - send your own cookie (<a href='https://t.me/tg_ytdlp/203'>guide1</a>) (<a href='https://t.me/tg_ytdlp/214'>guide2</a>) and after that send your audio link again.</blockquote>\n"
+        f"────────────────\n"
+        f"❌ <b>Error Code:</b> <code>{error_code}</code>\n"
+        f"📝 <b>Description:</b> {error_description}\n"
+        f"🔧 <b>Full Error:</b> <code>{error_text}</code>"
+    )
+
+
+def _handle_generic_audio_download_exception(
+    *,
+    message,
+    user_id: int,
+    current_index: int,
+    original_playlist_index: int,
+    task_context: RuntimeTask | None,
+    error: Exception,
+):
+    error_text = str(error)
+    if "No videos found in playlist" in error_text or "Story might have expired" in error_text:
+        rendered_text = safe_get_messages(user_id).DOWN_UP_NO_CONTENT_FOUND_MSG.format(
+            index=original_playlist_index
+        )
+        _send_audio_failure(
+            message,
+            user_id,
+            failure_kind="content_unavailable",
+            error_text=error_text,
+            rendered_text=rendered_text,
+            use_error_channel=True,
+            task_context=task_context,
+        )
+        logger.info("Skipping item at index %s (no content found)", current_index)
+        return "SKIP"
+
+    if "TikTok API keeps sending the same page" in error_text and "infinite loop" in error_text:
+        rendered_text = safe_get_messages(user_id).AUDIO_TIKTOK_API_ERROR_SKIP_MSG.format(
+            index=original_playlist_index
+        )
+        _send_audio_failure(
+            message,
+            user_id,
+            failure_kind="source_api_error",
+            error_text=error_text,
+            rendered_text=rendered_text,
+            task_context=task_context,
+        )
+        logger.info("Skipping TikTok audio at index %s due to API error", current_index)
+        return "SKIP"
+
+    _send_audio_failure(
+        message,
+        user_id,
+        failure_kind="download_failed",
+        error_text=error_text,
+        rendered_text=safe_get_messages(user_id).ERROR_UNKNOWN_MSG.format(error=str(error)),
+        task_context=task_context,
+    )
+    return None
 
 def create_telegram_thumbnail(cover_path, output_path, size=320):
     """Create a Telegram-compliant thumbnail from cover image using center crop (no black bars)."""
@@ -167,13 +791,12 @@ def embed_cover_mp3(mp3_path, cover_path, title=None, artist=None, album=None):
         return False
 
 # @reply_with_keyboard
-def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None, video_count=1, video_start_with=1, format_override=None, cookies_already_checked=False, use_proxy=False, cached_video_info=None):
+def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist_name=None, video_count=1, video_start_with=1, format_override=None, cookies_already_checked=False, use_proxy=False, cached_video_info=None, task_context: RuntimeTask | None = None):
     # Reset the checked cookie-source cache for a new download task
     user_id = message.chat.id
     from COMMANDS.cookies_cmd import reset_checked_cookie_sources
     reset_checked_cookie_sources(user_id)
     logger.info(f"🔄 [DEBUG] Reset checked cookie sources for new audio download task for user {user_id}")
-    messages = safe_get_messages(message.chat.id)
     """
     Now if part of the playlist range is already cached, we first repost the cached indexes, then download and cache the missing ones, without finishing after reposting part of the range.
     """
@@ -181,10 +804,30 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
     from COMMANDS.cookies_cmd import is_youtube_cookie_error, is_youtube_geo_error, retry_download_with_different_cookies, retry_download_with_proxy
     
     playlist_indices = []
-    playlist_msg_ids = []  
         
-    user_id = message.chat.id
+    (
+        task_context,
+        url,
+        tags,
+        playlist_name,
+        video_count,
+        video_start_with,
+        cached_video_info,
+    ) = _resolve_audio_task_inputs(
+        task_context=task_context,
+        user_id=user_id,
+        message=message,
+        url=url,
+        tags=tags,
+        playlist_name=playlist_name,
+        video_count=video_count,
+        video_start_with=video_start_with,
+        cached_video_info=cached_video_info,
+    )
     logger.info(f"down_and_audio called: url={url}, quality_key={quality_key}, video_count={video_count}, video_start_with={video_start_with}")
+    branch_result = task_context.branch_selection_result
+    if branch_result is not None:
+        log_branch_selection(logger, branch_result, user_id=user_id)
     
     # STRICT: keep the original text with range tags for fallback parsing
     original_message_text = message.text or message.caption or ""
@@ -202,71 +845,42 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
     except Exception:
         user_forced_nsfw = False
     
-    # Check if LINK mode is enabled - if yes, get direct link instead of downloading
     try:
         from DOWN_AND_UP.always_ask_menu import get_link_mode
-        if get_link_mode(user_id):
-            logger.info(f"LINK mode enabled for user {user_id}, getting direct link instead of downloading audio")
+
+        use_direct_link, direct_link_source = resolve_direct_link_preference(
+            branch_result,
+            user_id=user_id,
+            ambient_link_mode_reader=get_link_mode,
+        )
+        if use_direct_link:
+            logger.info(
+                f"Direct-link path active for user {user_id}, "
+                f"source={direct_link_source}"
+            )
             
-            # Import link function
             from COMMANDS.link_cmd import get_direct_link
-            
-            # Convert quality key to quality argument
-            quality_arg = None
-            if quality_key and quality_key != "best" and quality_key != "mp3":
-                quality_arg = quality_key
-            
-            # Get direct link
-            result = get_direct_link(url, user_id, quality_arg, cookies_already_checked=cookies_already_checked, use_proxy=True)
-            
+            result = execute_direct_link_flow(
+                fetch_direct_link=get_direct_link,
+                response_sender=send_standard_direct_link_response,
+                app=app,
+                message=message,
+                user_id=user_id,
+                url=url,
+                quality_key=quality_key,
+                cookies_already_checked=cookies_already_checked,
+                use_proxy=True,
+            )
             if result.get('success'):
-                title = result.get('title', 'Unknown')
-                duration = result.get('duration', 0)
-                video_url = result.get('video_url')
-                audio_url = result.get('audio_url')
-                format_spec = result.get('format', 'best')
-                
-                # Form response
-                response = safe_get_messages(user_id).DIRECT_LINK_OBTAINED_MSG
-                response += safe_get_messages(user_id).TITLE_FIELD_MSG.format(title=title)
-                if duration and duration > 0:
-                    response += safe_get_messages(user_id).DURATION_FIELD_MSG.format(duration=duration)
-                response += safe_get_messages(user_id).FORMAT_FIELD_MSG.format(format_spec=format_spec)
-                
-                if video_url:
-                    response += safe_get_messages(user_id).VIDEO_STREAM_FIELD_MSG.format(video_url=video_url)
-                
-                if audio_url:
-                    response += safe_get_messages(user_id).AUDIO_STREAM_FIELD_MSG.format(audio_url=audio_url)
-                
-                if not video_url and not audio_url:
-                    response += safe_get_messages(user_id).DOWN_UP_FAILED_STREAM_LINKS_MSG
-                
-                # Send response
-                app.send_message(
-                    user_id, 
-                    response, 
-                    reply_parameters=ReplyParameters(message_id=message.id),
-                    parse_mode=enums.ParseMode.HTML
-                )
-                
                 send_to_logger(message, safe_get_messages(user_id).DIRECT_LINK_EXTRACTED_DOWN_AUDIO_LOG_MSG.format(user_id=user_id, url=url))
-                
             else:
                 error_msg = result.get('error', 'Unknown error')
-                app.send_message(
-                    user_id,
-                    safe_get_messages(user_id).DOWN_UP_ERROR_GETTING_LINK_MSG.format(error_msg=error_msg),
-                    reply_parameters=ReplyParameters(message_id=message.id),
-                    parse_mode=enums.ParseMode.HTML
-                )
-                
                 log_error_to_channel(message, safe_get_messages(user_id).DIRECT_LINK_FAILED_DOWN_AUDIO_LOG_MSG.format(user_id=user_id, url=url, error=error_msg), url)
             
             return
     except Exception as e:
-        logger.error(f"Error checking LINK mode for user {user_id}: {e}")
-        # Continue with normal download if LINK mode check fails
+        logger.error(f"Error checking direct-link path for user {user_id}: {e}")
+        # Continue with normal download if direct-link check fails
     
     # We define a playlist not only by the number of videos, but also by the presence of a range in the URL
     original_text = message.text or message.caption or ""
@@ -290,27 +904,12 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
         elif video_start_with > video_end_with:
             is_reverse_order = True
     
-    # Build the list of indices, taking reverse order into account
-    # For negative indices, we'll convert them to positive after we know total video count
-    if is_playlist:
-        if has_negative_indices:
-            # For negative indices we first build a list with negative values,
-            # then convert them to positive after we know total video count.
-            # -1..-7 means: download in order 7, 6, 5, 4, 3, 2, 1 (last to first).
-            if abs(video_start_with) < abs(video_end_with):
-                # -1..-7: build [-1, -2, -3, -4, -5, -6, -7]
-                requested_indices = list(range(video_start_with, video_end_with - 1, -1))
-            else:
-                # -7..-1: build [-7, -6, -5, -4, -3, -2, -1]
-                requested_indices = list(range(video_start_with, video_end_with + 1, 1))
-        elif is_reverse_order:
-            # Reverse order: from start to end inclusive, reversed
-            requested_indices = list(range(video_start_with, video_end_with - 1, -1))
-        else:
-            # Forward order: from start to end inclusive
-            requested_indices = list(range(video_start_with, video_start_with + video_count))
-    else:
-        requested_indices = []
+    requested_indices = build_requested_indices(
+        is_playlist=is_playlist,
+        video_start_with=video_start_with,
+        video_count=video_count,
+        video_end_with=video_end_with if is_playlist else None,
+    )
     playlist_indices_all = requested_indices[:] if requested_indices else []
     use_range_download = is_playlist and any(idx < 0 for idx in requested_indices)
     cached_videos = {}
@@ -388,29 +987,45 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                 logger.info(f"[AUDIO CACHE] send_as_file enabled for user {user_id}, skipping cache repost for playlist")
                 uncached_indices = requested_indices
             if len(uncached_indices) == 0:
-                app.send_message(user_id, safe_get_messages(user_id).PLAYLIST_CACHE_SENT_MSG.format(cached=len(cached_videos), total=len(requested_indices)), reply_parameters=ReplyParameters(message_id=message.id))
+                send_playlist_cache_status(
+                    app=app,
+                    user_id=user_id,
+                    reply_to_message_id=message.id,
+                    text=safe_get_messages(user_id).PLAYLIST_CACHE_SENT_MSG.format(
+                        cached=len(cached_videos),
+                        total=len(requested_indices),
+                    ),
+                )
                 send_to_logger(message, LoggerMsg.PLAYLIST_AUDIO_SENT_FROM_CACHE.format(quality=quality_key, user_id=user_id))
                 return
             else:
-                app.send_message(user_id, safe_get_messages(user_id).CACHE_PARTIAL_MSG.format(cached=len(cached_videos), total=len(requested_indices)), reply_parameters=ReplyParameters(message_id=message.id))
+                send_playlist_cache_status(
+                    app=app,
+                    user_id=user_id,
+                    reply_to_message_id=message.id,
+                    text=safe_get_messages(user_id).CACHE_PARTIAL_MSG.format(
+                        cached=len(cached_videos),
+                        total=len(requested_indices),
+                    ),
+                )
         elif cached_videos:
             logger.info("[AUDIO CACHE] Skipping partial cache replay for negative range to avoid duplicate downloads")
             uncached_indices = requested_indices
     elif quality_key and not is_playlist:
         # Check if Always Ask mode is enabled - if yes, skip cache completely
-        if not is_subs_always_ask(user_id):
-            # Check if content is NSFW - if so, skip cache lookup
-            from HELPERS.porn import is_porn
-            is_nsfw = is_porn(url, "", "", None) or user_forced_nsfw
-            logger.info(f"[FALLBACK] is_porn check for {url}: {is_porn(url, '', '', None)}, user_forced_nsfw: {user_forced_nsfw}, final is_nsfw: {is_nsfw}")
-            if not is_nsfw:
-                cached_ids = get_cached_message_ids(url, quality_key)
-            else:
-                logger.info(f"down_and_audio: skipping cache lookup for NSFW single audio content (url={url})")
-                cached_ids = None
-        else:
-            logger.info(f"[AUDIO CACHE] Skipping cache check because Always Ask mode is enabled: url={url}, quality={quality_key}")
-            cached_ids = None
+        from HELPERS.porn import is_porn
+        cached_ids, is_nsfw = lookup_single_cached_ids(
+            user_id=user_id,
+            url=url,
+            quality_key=quality_key,
+            user_forced_nsfw=user_forced_nsfw,
+            always_ask_enabled=is_subs_always_ask(user_id),
+            is_nsfw_detector=is_porn,
+            get_cached_message_ids=get_cached_message_ids,
+            logger=logger,
+            nsfw_skip_log="down_and_audio: skipping cache lookup for NSFW single audio content (url={url})",
+            always_ask_skip_log="[AUDIO CACHE] Skipping cache check because Always Ask mode is enabled: url={url}, quality={quality}",
+        )
         
         if cached_ids:
             # Check if send_as_file is enabled - if so, skip cache repost
@@ -419,50 +1034,42 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
             send_as_file = user_args.get("send_as_file", False)
             
             if not send_as_file:
-                try:
-                    # Determine the correct log channel based on content type
-                    # is_nsfw already determined above
-                    is_private_chat = getattr(message.chat, "type", None) == enums.ChatType.PRIVATE
-                    is_paid = is_nsfw and is_private_chat
-                    
-                    # Get the correct log channel for reposting
+                is_private_chat = getattr(message.chat, "type", None) == enums.ChatType.PRIVATE
+                is_paid = is_nsfw and is_private_chat
+
+                def resolve_from_chat_id():
                     if is_paid:
                         from_chat_id = get_log_channel("video", paid=True)
                     elif is_nsfw:
                         from_chat_id = get_log_channel("video", nsfw=True)
                     else:
                         from_chat_id = get_log_channel("video")
-                    
-                    # Verify we're reposting from a valid log channel
                     valid_channels = [
                         get_log_channel("video"),
                         get_log_channel("video", nsfw=True),
-                        get_log_channel("video", paid=True)
+                        get_log_channel("video", paid=True),
                     ]
                     if from_chat_id not in valid_channels:
                         logger.error(f"CRITICAL: Attempting to repost from wrong channel {from_chat_id}")
                         raise Exception("Wrong channel for repost")
-                    
-                    logger.info(f"[AUDIO CACHE] Reposting audio from channel {from_chat_id} to user {user_id}, message_ids={cached_ids}")
-                    forward_kwargs = {
-                        'chat_id': user_id,
-                        'from_chat_id': from_chat_id,
-                        'message_ids': cached_ids
-                    }
-                    # Only apply thread_id in groups/channels, not in private chats
-                    if getattr(message.chat, "type", None) != enums.ChatType.PRIVATE:
-                        thread_id = getattr(message, 'message_thread_id', None)
-                        if thread_id:
-                            forward_kwargs['message_thread_id'] = thread_id
-                    app.forward_messages(**forward_kwargs)
-                    app.send_message(user_id, safe_get_messages(user_id).AUDIO_SENT_FROM_CACHE_MSG, reply_parameters=ReplyParameters(message_id=message.id))
-                    send_to_logger(message, LoggerMsg.AUDIO_SENT_FROM_CACHE.format(quality=quality_key, user_id=user_id))
+                    return from_chat_id
+
+                replayed = try_repost_single_cached_media(
+                    app=app,
+                    message=message,
+                    user_id=user_id,
+                    cached_ids=cached_ids,
+                    resolve_from_chat_id=resolve_from_chat_id,
+                    success_text=safe_get_messages(user_id).AUDIO_SENT_FROM_CACHE_MSG,
+                    success_log_text=LoggerMsg.AUDIO_SENT_FROM_CACHE.format(quality=quality_key, user_id=user_id),
+                    logger=logger,
+                    replay_log_prefix="[AUDIO CACHE] Reposting audio",
+                    replay_error_prefix="Error reposting audio from cache",
+                    on_replay_error=lambda: save_to_video_cache(url, quality_key, [], clear=True),
+                    send_to_logger=send_to_logger,
+                )
+                if replayed:
                     return
-                except Exception as e:
-                    logger.error(f"Error reposting audio from cache: {e}")
-                    save_to_video_cache(url, quality_key, [], clear=True)
-                    # Don't show error message if we successfully got audio from cache
-                    # The audio was already sent successfully in the try block
             else:
                 # If send_as_file is enabled, skip cache repost and continue with download
                 logger.info(f"[AUDIO CACHE] send_as_file enabled for user {user_id}, skipping cache repost for single audio")
@@ -480,64 +1087,24 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
     download_started_msg_id = None
     audio_files = []
     try:
-        # Check if there is a saved waiting time
-        user_dir = os.path.join("users", str(user_id))
-        flood_time_file = os.path.join(user_dir, "flood_wait.txt")
-
-        # We send the initial message
-        if os.path.exists(flood_time_file):
-            with open(flood_time_file, 'r') as f:
-                wait_time = int(f.read().strip())
-                hours = wait_time // 3600
-                minutes = (wait_time % 3600) // 60
-                seconds = wait_time % 60
-                time_str = f"{hours}h {minutes}m {seconds}s"
-                proc_msg = safe_send_message(user_id, safe_get_messages(user_id).RATE_LIMIT_WITH_TIME_MSG.format(time=time_str), message=message)
-        else:
-            proc_msg = safe_send_message(user_id, safe_get_messages(user_id).RATE_LIMIT_NO_TIME_MSG, message=message)
-
-        # We are trying to replace with "Download started"
-        try:
-            app.edit_message_text(
-                chat_id=user_id,
-                message_id=proc_msg.id,
-                text=safe_get_messages(user_id).DOWNLOAD_STARTED_MSG,
-                parse_mode=enums.ParseMode.HTML
-            )
-            # Schedule deletion of "Download started" message after 5 seconds
-            try:
-                from HELPERS.safe_messeger import schedule_delete_message
-                schedule_delete_message(user_id, proc_msg.id, delete_after_seconds=5)
-            except Exception as e:
-                logger.error(f"Error scheduling download started message deletion: {e}")
-            if os.path.exists(flood_time_file):
-                os.remove(flood_time_file)
-        except FloodWait as e:
-            wait_time = e.value
-            os.makedirs(user_dir, exist_ok=True)
-            with open(flood_time_file, 'w') as f:
-                f.write(str(wait_time))
+        handshake = start_processing_handshake(
+            app=app,
+            message=message,
+            user_id=user_id,
+            messages=safe_get_messages(user_id),
+            logger=logger,
+        )
+        if handshake is None:
             return
-        except Exception as e:
-            logger.error(f"Error editing message: {e}")
-            return
-
-        # If there is no flood error, send a normal message (only once)
-        proc_msg = app.send_message(user_id, safe_get_messages(user_id).PROCESSING_MSG, reply_parameters=ReplyParameters(message_id=message.id))
-        # Pin proc/status message for visibility
-        try:
-            app.pin_chat_message(user_id, proc_msg.id, disable_notification=True)
-        except Exception:
-            pass
-        proc_msg_id = proc_msg.id
+        proc_msg = handshake["proc_msg"]
+        proc_msg_id = handshake["proc_msg_id"]
+        download_started_msg_id = handshake["download_started_msg_id"]
         status_msg = safe_send_message(user_id, safe_get_messages(user_id).AUDIO_PROCESSING_MSG, message=message)
         hourglass_msg = safe_send_message(user_id, safe_get_messages(user_id).WAITING_HOURGLASS_MSG, message=message)
         try:
             from HELPERS.safe_messeger import schedule_delete_message
             if status_msg and hasattr(status_msg, 'id'):
                 schedule_delete_message(user_id, status_msg.id, delete_after_seconds=5)
-            # track to force-delete on error
-            download_started_msg_id = proc_msg.id
         except Exception:
             pass
         status_msg_id = status_msg.id
@@ -549,74 +1116,25 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
         create_directory(user_folder)
 
         if not check_disk_space(user_folder, 500 * 1024 * 1024 * video_count):
-            send_to_user(message, safe_get_messages(user_id).ERROR_NO_DISK_SPACE_MSG)
+            _send_audio_failure(
+                message,
+                user_id,
+                failure_kind="resource_exhausted",
+                rendered_text=safe_get_messages(user_id).ERROR_NO_DISK_SPACE_MSG,
+                task_context=task_context,
+            )
             return
 
-        # Create user directory (subscription already checked in video_extractor)
-        user_dir = os.path.join("users", str(user_id))
-        if not os.path.exists(user_dir):
-            os.makedirs(user_dir, exist_ok=True)
-
-        # Try to get download directory from ask_quality_menu first
-        from DOWN_AND_UP.always_ask_menu import get_user_download_dir, generate_download_dir_name
-        user_folder = get_user_download_dir(user_id)
-        
-        # If no download directory from ask_quality_menu, create one
-        if not user_folder or not os.path.exists(user_folder):
-            try:
-                # Generate download directory name based on URL
-                dir_name = generate_download_dir_name(url)
-                unique_download_dir = os.path.join(user_dir, "downloads", dir_name)
-                os.makedirs(unique_download_dir, exist_ok=True)
-                
-                # Update user_folder to use the unique directory
-                user_folder = unique_download_dir
-                
-                logger.info(f"Created download directory: {unique_download_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to create download directory, using default: {e}")
-                # Fallback to original behavior
-                user_folder = os.path.abspath(os.path.join("users", str(user_id)))
-
-
-        # Pre-cleanup: remove all media files from unique download directory before starting
-        try:
-            logger.info(f"Pre-cleanup: removing old media files from unique directory {user_folder}")
-            if os.path.exists(user_folder):
-                for root, dirs, files in os.walk(user_folder):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        try:
-                            # Remove all media files (keep .txt and .json files)
-                            if file.lower().endswith((
-                                '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff',
-                                '.mp4', '.m4v', '.avi', '.mov', '.mkv', '.webm', '.flv',
-                                '.mp3', '.wav', '.ogg', '.m4a',
-                                '.pdf', '.doc', '.docx', '.zip', '.rar', '.7z'
-                            )):
-                                os.remove(file_path)
-                                logger.info(f"Pre-cleanup: removed file {file_path}")
-                        except Exception as e:
-                            logger.warning(f"Pre-cleanup: failed to remove file {file_path}: {e}")
-                    
-                    # Remove empty directories (except unique download root)
-                    for dir_name in dirs:
-                        dir_path = os.path.join(root, dir_name)
-                        try:
-                            if os.path.exists(dir_path) and not os.listdir(dir_path) and dir_path != user_folder:
-                                os.rmdir(dir_path)
-                                logger.info(f"Pre-cleanup: removed empty directory {dir_path}")
-                        except Exception as e:
-                            logger.warning(f"Pre-cleanup: failed to remove directory {dir_path}: {e}")
-            
-            # Create protection file for parallel downloads
-            from HELPERS.filesystem_hlp import is_parallel_download_allowed, create_protection_file
-            if is_parallel_download_allowed(message):
-                create_protection_file(user_folder)
-            
-            logger.info(f"Pre-cleanup completed for unique directory {user_folder}")
-        except Exception as e:
-            logger.warning(f"Pre-cleanup failed for unique directory {user_folder}: {e}")
+        user_dir, user_folder = ensure_user_download_dir(
+            user_id=user_id,
+            url=url,
+            logger=logger,
+        )
+        cleanup_download_dir_before_start(
+            download_dir=user_folder,
+            message=message,
+            logger=logger,
+        )
 
         # Reset of the flag of errors for the new launch of the playlist
         if playlist_name:
@@ -625,135 +1143,16 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                 if error_key in playlist_errors:
                     del playlist_errors[error_key]
 
-        # Check if cookie.txt exists in the user's folder
-        user_cookie_path = os.path.join(user_folder, "cookie.txt")
-        user_cookie_exists = os.path.exists(user_cookie_path)
-        downloaded_cookie_path = os.path.join(user_folder, "_downloaded_cookie.txt")
-        
-        # For YouTube URLs, use optimized cookie logic - check existing first on user's URL, then retry if needed
-        if is_youtube_url(url):
-            from COMMANDS.cookies_cmd import get_youtube_cookie_urls, test_youtube_cookies_on_url, _download_content
-            
-            # Always check existing cookies first on user's URL for maximum speed
-            if user_cookie_exists:
-                logger.info(f"Checking existing YouTube cookies on user's URL for user {user_id}")
-                if test_youtube_cookies_on_url(user_cookie_path, url, user_id):
-                    cookie_file = user_cookie_path
-                    logger.info(f"Existing YouTube cookies work on user's URL for user {user_id} - using them")
-                else:
-                    logger.warning(
-                        f"Existing YouTube cookies failed validation on user's URL for user {user_id}; "
-                        f"keeping them as download fallback and trying remote sources"
-                    )
-                    cookie_urls = get_youtube_cookie_urls()
-                    if cookie_urls:
-                        # Use only unchecked sources for this user
-                        from COMMANDS.cookies_cmd import get_unchecked_cookie_sources, mark_cookie_source_checked
-                        unchecked_indices = get_unchecked_cookie_sources(user_id, cookie_urls)
-                        if not unchecked_indices:
-                            logger.warning(f"All cookie sources have been checked for user {user_id}, no more sources to try")
-                            cookie_file = None
-                        else:
-                            success = False
-                            for i, idx in enumerate(unchecked_indices, 1):
-                                cookie_url = cookie_urls[idx]
-                                logger.info(f"Trying YouTube cookie source {idx + 1}/{len(cookie_urls)} for user {user_id}")
-                                
-                                # Mark this source as checked
-                                mark_cookie_source_checked(user_id, idx)
-                                
-                                try:
-                                    ok, status, content, err = _download_content(cookie_url, timeout=30, user_id=user_id)
-                                    if ok and content and len(content) <= 100 * 1024:
-                                        with open(downloaded_cookie_path, "wb") as cf:
-                                            cf.write(content)
-                                        if test_youtube_cookies_on_url(downloaded_cookie_path, url, user_id):
-                                            cookie_file = downloaded_cookie_path
-                                            logger.info(f"YouTube cookies from source {idx + 1} work on user's URL for user {user_id} - saved to user folder")
-                                            success = True
-                                            break
-                                        else:
-                                            if os.path.exists(downloaded_cookie_path):
-                                                os.remove(downloaded_cookie_path)
-                                except Exception as e:
-                                    logger.error(f"Error processing YouTube cookie source {idx + 1} for user {user_id}: {e}")
-                                    continue
-                            if not success:
-                                cookie_file = user_cookie_path
-                                logger.warning(
-                                    f"All remote YouTube cookie sources failed for user {user_id}; "
-                                    f"falling back to existing user cookie for actual download"
-                                )
-                    else:
-                        cookie_file = user_cookie_path
-                        logger.warning(
-                            f"No YouTube cookie sources configured for user {user_id}; "
-                            f"falling back to existing user cookie for actual download"
-                        )
-            else:
-                logger.info(f"No YouTube cookies found for user {user_id}, attempting to get new ones")
-                cookie_urls = get_youtube_cookie_urls()
-                if cookie_urls:
-                    # Use only unchecked sources for this user
-                    from COMMANDS.cookies_cmd import get_unchecked_cookie_sources, mark_cookie_source_checked
-                    unchecked_indices = get_unchecked_cookie_sources(user_id, cookie_urls)
-                    if not unchecked_indices:
-                        logger.warning(f"All cookie sources have been checked for user {user_id}, no more sources to try")
-                        cookie_file = None
-                    else:
-                        success = False
-                        for i, idx in enumerate(unchecked_indices, 1):
-                            cookie_url = cookie_urls[idx]
-                            logger.info(f"Trying YouTube cookie source {idx + 1}/{len(cookie_urls)} for user {user_id}")
-                            
-                            # Mark this source as checked
-                            mark_cookie_source_checked(user_id, idx)
-                            
-                            try:
-                                ok, status, content, err = _download_content(cookie_url, timeout=30, user_id=user_id)
-                                if ok and content and len(content) <= 100 * 1024:
-                                    with open(downloaded_cookie_path, "wb") as cf:
-                                        cf.write(content)
-                                    if test_youtube_cookies_on_url(downloaded_cookie_path, url, user_id):
-                                        cookie_file = downloaded_cookie_path
-                                        logger.info(f"YouTube cookies from source {idx + 1} work on user's URL for user {user_id} - saved to user folder")
-                                        success = True
-                                        break
-                                    else:
-                                        if os.path.exists(downloaded_cookie_path):
-                                            os.remove(downloaded_cookie_path)
-                            except Exception as e:
-                                logger.error(f"Error processing YouTube cookie source {idx + 1} for user {user_id}: {e}")
-                                continue
-                        if not success:
-                            cookie_file = None
-                            logger.warning(f"All YouTube cookie sources failed for user {user_id}, will try without cookies")
-                else:
-                    cookie_file = None
-                    logger.warning(f"No YouTube cookie sources configured for user {user_id}, will try without cookies")
-        else:
-            # For non-YouTube URLs, use new cookie fallback system
-            from COMMANDS.cookies_cmd import get_cookie_cache_result, try_non_youtube_cookie_fallback
-            cache_result = get_cookie_cache_result(user_id, url)
-            
-            if cache_result and cache_result['result']:
-                # Use cached successful cookies
-                cookie_file = cache_result['cookie_path']
-                logger.info(f"Using cached cookies for non-YouTube audio URL: {url}")
-            else:
-                # Try user cookies first
-                if os.path.exists(user_cookie_path):
-                    cookie_file = user_cookie_path
-                    logger.info(f"Using user cookies for non-YouTube audio URL: {url}")
-                else:
-                    # No user cookies, will try fallback during download
-                    cookie_file = None
-                    logger.info(f"No user cookies found for non-YouTube audio URL: {url}, will try fallback during download")
-        last_update = 0
+        cookie_file = _resolve_audio_cookiefile(
+            user_id=user_id,
+            url=url,
+            user_folder=user_folder,
+        )
         last_update = 0
         progress_start_time = time.time()
         current_total_process = ""
         successful_uploads = 0
+        error_message_sent = False
         
         # Check if this is an HLS stream (needed for progress_hook)
         # This will be updated later based on actual format detection
@@ -878,7 +1277,9 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
 
         def try_download_audio(url, current_index):
             messages = safe_get_messages(message.chat.id)
-            nonlocal current_total_process, did_cookie_retry, did_proxy_retry, is_hls, is_reverse_order, current_playlist_items_override, use_range_download, range_entries_metadata
+            nonlocal current_total_process, did_cookie_retry, did_proxy_retry, is_hls
+            nonlocal is_reverse_order, current_playlist_items_override, use_range_download
+            nonlocal range_entries_metadata, error_message_sent
             # Use format_override if provided, otherwise use default 'ba'
             download_format = format_override if format_override else 'ba'
             
@@ -943,15 +1344,6 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                 # Reduce parallelism for fragile HLS endpoints
                 ytdl_opts["concurrent_fragment_downloads"] = 1
             
-            # Define sanitize_title_for_filename function
-            def sanitize_title_for_filename(title):
-                messages = safe_get_messages(message.chat.id)
-                """Sanitize title for filename using strict sanitization"""
-                if not title:
-                    return "audio"
-                from HELPERS.filesystem_hlp import sanitize_filename_strict
-                return sanitize_filename_strict(title)
-            
             # Title sanitization is now handled manually before second extract_info call
             
             # Add match_filter for domain filtering only (no title sanitization needed)
@@ -976,43 +1368,12 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
             else:
                 ytdl_opts['cookiefile'] = cookie_file
             
-            # Add proxy configuration if needed
-            if use_proxy:
-                # Force proxy for this download
-                from COMMANDS.proxy_cmd import get_proxy_config
-                proxy_config = get_proxy_config()
-                
-                if proxy_config and 'type' in proxy_config and 'ip' in proxy_config and 'port' in proxy_config:
-                    # Build proxy URL
-                    if proxy_config['type'] == 'http':
-                        if proxy_config.get('user') and proxy_config.get('password'):
-                            proxy_url = f"http://{proxy_config['user']}:{proxy_config['password']}@{proxy_config['ip']}:{proxy_config['port']}"
-                        else:
-                            proxy_url = f"http://{proxy_config['ip']}:{proxy_config['port']}"
-                    elif proxy_config['type'] == 'https':
-                        if proxy_config.get('user') and proxy_config.get('password'):
-                            proxy_url = f"https://{proxy_config['user']}:{proxy_config['password']}@{proxy_config['ip']}:{proxy_config['port']}"
-                        else:
-                            proxy_url = f"https://{proxy_config['ip']}:{proxy_config['port']}"
-                    elif proxy_config['type'] in ['socks4', 'socks5', 'socks5h']:
-                        if proxy_config.get('user') and proxy_config.get('password'):
-                            proxy_url = f"{proxy_config['type']}://{proxy_config['user']}:{proxy_config['password']}@{proxy_config['ip']}:{proxy_config['port']}"
-                        else:
-                            proxy_url = f"{proxy_config['type']}://{proxy_config['ip']}:{proxy_config['port']}"
-                    else:
-                        if proxy_config.get('user') and proxy_config.get('password'):
-                            proxy_url = f"http://{proxy_config['user']}:{proxy_config['password']}@{proxy_config['ip']}:{proxy_config['port']}"
-                        else:
-                            proxy_url = f"http://{proxy_config['ip']}:{proxy_config['port']}"
-                    
-                    ytdl_opts['proxy'] = proxy_url
-                    logger.info(f"Force using proxy for audio download: {proxy_url}")
-                else:
-                    logger.warning("Proxy requested but proxy configuration is incomplete")
-            else:
-                # Add proxy configuration if needed for this domain
-                from HELPERS.proxy_helper import add_proxy_to_ytdl_opts
-                ytdl_opts = add_proxy_to_ytdl_opts(ytdl_opts, url, user_id)   
+            ytdl_opts = _apply_audio_proxy_settings(
+                ytdl_opts,
+                use_proxy=use_proxy,
+                url=url,
+                user_id=user_id,
+            )
             
             # Add PO token provider for YouTube domains
             ytdl_opts = add_pot_to_ytdl_opts(ytdl_opts, url)
@@ -1022,79 +1383,50 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
             try:
                 with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
                     info_dict = ydl.extract_info(url, download=False)
-                # Normalize info_dict to dict
-                if isinstance(info_dict, list):
-                    info_dict = (info_dict[0] if len(info_dict) > 0 else {})
-                if isinstance(info_dict, dict) and "entries" in info_dict:
-                    entries = info_dict["entries"]
-                    if len(entries) > 1 and not current_playlist_items_override:  # If the video in the playlist is more than one
-                        actual_index = current_index - 1  # -1 because indexes in entries start from 0
-                        if 0 <= actual_index < len(entries):
-                            info_dict = entries[actual_index]
-                        else:
-                            raise Exception(f"Audio index {actual_index + 1} out of range (total {len(entries)})")
-                    else:
-                        # If there is only one video in the playlist, just download it
-                        info_dict = entries[0]  # Just take the first video
+                info_dict = _normalize_audio_extracted_info(
+                    info_dict,
+                    current_index=current_index,
+                    current_playlist_items_override=current_playlist_items_override,
+                )
                 
                 # Check if this is a live stream and handle it if detection is disabled
                 # Note: Live stream audio download is not supported, so we skip it for audio
                 if info_dict and isinstance(info_dict, dict) and info_dict.get('is_live', False):
                     if not LimitsConfig.ENABLE_LIVE_STREAM_BLOCKING:
                         logger.warning(f"Live stream detected for audio download, but audio live streams are not supported: {url}")
-                        send_error_to_user(message, safe_get_messages(user_id).LIVE_STREAM_DETECTED_MSG + "\n\nNote: Audio extraction from live streams is not supported.")
+                        _send_audio_failure(
+                            message,
+                            user_id,
+                            failure_kind="live_stream_blocked",
+                            rendered_text=safe_get_messages(user_id).LIVE_STREAM_DETECTED_MSG + "\n\nNote: Audio extraction from live streams is not supported.",
+                            use_error_channel=True,
+                            task_context=task_context,
+                        )
                         return "LIVE_STREAM"
                 
-                # Get original title and sanitize it for filename
-                original_title = info_dict.get("title", "audio")
-                logger.info(f"DEBUG: info_dict.get('title') = '{original_title}'")
+                info_dict = _apply_audio_title_to_opts(
+                    ytdl_opts,
+                    info_dict=info_dict,
+                    user_folder=user_folder,
+                )
+                _update_audio_download_mode_status(
+                    user_id=user_id,
+                    proc_msg_id=proc_msg_id,
+                    current_total_process=current_total_process,
+                    download_format=download_format,
+                    is_hls=is_hls,
+                )
                 
-                # MANUALLY apply sanitization since match_filter doesn't work with download=False
-                sanitized_title = sanitize_title_for_filename(original_title)
-                
-                # Keep original title in info_dict for metadata, but use sanitized for filename
-                info_dict['original_title'] = original_title  # Save original for caption
-                logger.info(f"MANUAL sanitization: '{original_title}' -> '{sanitized_title}'")
-                
-                # Set filename using literal sanitized title in outtmpl
-                ytdl_opts['outtmpl'] = os.path.join(user_folder, f"{sanitized_title}.%(ext)s")
-                logger.info(f"Set outtmpl to use literal filename: {sanitized_title}.%(ext)s")
-                
-                # Original title already saved above for caption
-
-                try:
-                    if is_hls:
-                        safe_edit_message_text(user_id, proc_msg_id,
-                            f"{current_total_process}\n<i>Detected HLS audio stream.\n{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_HLS_MSG}</i>")
-                    else:
-                        safe_edit_message_text(user_id, proc_msg_id,
-                            f"{current_total_process}\n> <i>{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_AUDIO_FORMAT_USING_MSG} {download_format}...</i>")
-                except Exception as e:
-                    logger.error(f"Status update error: {e}")
-                
-                # Try with proxy fallback if user proxy is enabled
-                def download_operation(opts):
-                    messages = safe_get_messages(user_id)
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        if is_hls:
-                            # For HLS audio, start cycle progress as fallback, but progress_hook will override it if percentages are available
-                            cycle_stop = threading.Event()
-                            progress_data = {'downloaded_bytes': 0, 'total_bytes': 0}
-                            cycle_thread = start_cycle_progress(user_id, proc_msg_id, current_total_process, user_folder, cycle_stop, progress_data)
-                            # Pass cycle_stop and progress_data to progress_hook so it can update the cycle animation
-                            progress_hook.cycle_stop = cycle_stop
-                            progress_hook.progress_data = progress_data
-                            try:
-                                ydl.download([url])
-                            finally:
-                                cycle_stop.set()
-                                cycle_thread.join(timeout=1)
-                        else:
-                            ydl.download([url])
-                    return True
-                
-                from HELPERS.proxy_helper import try_with_proxy_fallback
-                result = try_with_proxy_fallback(ytdl_opts, url, user_id, download_operation)
+                result = _run_audio_download_phase(
+                    ytdl_opts=ytdl_opts,
+                    url=url,
+                    user_id=user_id,
+                    proc_msg_id=proc_msg_id,
+                    current_total_process=current_total_process,
+                    user_folder=user_folder,
+                    is_hls=is_hls,
+                    progress_hook=progress_hook,
+                )
                 if result is None:
                     raise Exception("Failed to download audio with all available proxies")
                 
@@ -1129,7 +1461,15 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                             "• You can see the final video length\n\n"
                             "Once the stream is completed, you'll be able to download it as a regular video."
                         )
-                        send_error_to_user(message, live_stream_message)
+                        _send_audio_failure(
+                            message,
+                            user_id,
+                            failure_kind="live_stream_blocked",
+                            error_text=error_text,
+                            rendered_text=live_stream_message,
+                            use_error_channel=True,
+                            task_context=task_context,
+                        )
                         return "LIVE_STREAM"
                     # If detection is disabled, continue with live stream download
                     # This will be handled by the live stream download function
@@ -1144,7 +1484,15 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                         "• Consider using a different audio source if available\n\n"
                         "The download will be retried automatically with a cleaned filename."
                     )
-                    send_error_to_user(message, postprocessing_message)
+                    _send_audio_failure(
+                        message,
+                        user_id,
+                        failure_kind="postprocessing_failed",
+                        error_text=error_text,
+                        rendered_text=postprocessing_message,
+                        use_error_channel=True,
+                        task_context=task_context,
+                    )
                     logger.error(f"Postprocessing error: {error_text}")
                     return "POSTPROCESSING_ERROR"
                 
@@ -1153,213 +1501,44 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                     logger.error(f"Postprocessing error (Invalid argument): {error_text}")
                     return "POSTPROCESSING_ERROR"
                 
-                # Auto-fallback to gallery-dl (/img) for all supported errors
-                # But NOT for audio, because gallery-dl can't download audio.
-                # In down_and_audio.py we do NOT fallback to gallery-dl (audio-only function).
-                # gallery-dl is intended for images and video, not audio.
-                if False:  # Disable gallery-dl fallback for audio
-                    try:
-                        from COMMANDS.image_cmd import image_command
-                        from HELPERS.safe_messeger import fake_message
-                    except Exception as imp_e:
-                        logger.error(f"Failed to import gallery-dl fallback handlers: {imp_e}")
-                    else:
-                        try:
-                            safe_edit_message_text(user_id, proc_msg_id,
-                                f"{current_total_process}\n🔄 yt-dlp failed, trying gallery-dl…")
-                        except Exception:
-                            pass
-                        try:
-                            # Check if content is NSFW for fallback
-                            from HELPERS.porn import is_porn
-                            is_nsfw = is_porn(url, "", "", None) or user_forced_nsfw
-                            logger.info(f"[FALLBACK] is_porn check for {url}: {is_porn(url, '', '', None)}, user_forced_nsfw: {user_forced_nsfw}, final is_nsfw: {is_nsfw}")
-                            
-                            # STRICT: use the saved original text with the range
-                            logger.info(f"[FALLBACK DEBUG] Using saved original_message_text: {original_message_text}")
-                            
-                            # Look for a URL with *start*end range
-                            import re
-                            range_url_match = re.search(r'(https?://[^\s\*#]+)\*(\d+)\*(\d+)', original_message_text)
-                            if range_url_match:
-                                parsed_url = range_url_match.group(1)
-                                start_range = int(range_url_match.group(2))
-                                end_range = int(range_url_match.group(3))
-                                logger.info(f"[FALLBACK DEBUG] FOUND RANGE: {parsed_url} with range {start_range}-{end_range}")
-                            else:
-                                # Fallback to a regular URL
-                                m = re.search(r'https?://[^\s\*#]+', original_message_text)
-                                parsed_url = m.group(0) if m else original_message_text
-                                start_range = 1
-                                end_range = 1
-                                logger.info(f"[FALLBACK DEBUG] NO RANGE FOUND, using url: {parsed_url}")
-                            
-                            # Build fallback command for single item only (not entire range)
-                            # Use current_index instead of full range to download only the failed item
-                            current_item_index = current_index + 1  # current_index is 0-based, we need 1-based
-                            fallback_text = f"/img {current_item_index}-{current_item_index} {parsed_url}"
-                            logger.info(f"[FALLBACK] Downloading only failed item {current_item_index} via gallery-dl, fallback_text: {fallback_text}")
-                            
-                            if tags:
-                                tags_text = ' '.join(tags)
-                                fallback_text += f" {tags_text}"
-                            
-                            # Add NSFW tag if content is detected as NSFW
-                            if is_nsfw and "#nsfw" not in fallback_text.lower():
-                                fallback_text += " #nsfw"
-                                logger.info(f"[FALLBACK] Added #nsfw tag for NSFW content: {url}")
-                            
-                            # For groups, preserve original chat_id and message_thread_id
-                            original_chat_id = message.chat.id if hasattr(message, 'chat') else user_id
-                            message_thread_id = getattr(message, 'message_thread_id', None) if hasattr(message, 'message_thread_id') else None
-                            image_command(app, fake_message(fallback_text, user_id, original_chat_id=original_chat_id, message_thread_id=message_thread_id, original_message=message))
-                            logger.info(f"Triggered gallery-dl fallback via /img from audio downloader, is_nsfw={is_nsfw}, range={start_range}-{end_range}")
-                            return "IMG"
-                        except Exception as call_e:
-                            logger.error(f"Failed to trigger gallery-dl fallback from audio downloader: {call_e}")
-                
-                # Check whether the error is related to YouTube geo restrictions
-                if is_youtube_url(url):
-                    if is_youtube_geo_error(error_text) and not did_proxy_retry:
-                        logger.info(f"YouTube geo-blocked error detected for user {user_id}, attempting retry with proxy")
-                        
-                        # Try downloading via proxy
-                        retry_result = retry_download_with_proxy(
-                            user_id, url, try_download_audio, url, current_index
-                        )
-                        
-                        if retry_result is not None:
-                            logger.info(f"Audio download retry with proxy successful for user {user_id}")
-                            did_proxy_retry = True
-                            return retry_result
-                        else:
-                            logger.warning(f"Audio download retry with proxy failed for user {user_id}")
-                            did_proxy_retry = True
-                else:
-                    # For non-YouTube sites, try cookie rotation
-                    logger.info(f"Non-YouTube audio download error detected for user {user_id}, attempting cookie fallback")
-                    
-                    # Check whether the error is cookie-related
-                    error_str = error_text.lower()
-                    if any(keyword in error_str for keyword in ['cookie', 'auth', 'login', 'sign in', '403', '401', 'forbidden', 'unauthorized']):
-                        logger.info(f"Error appears to be cookie-related for {url}, trying cookie fallback")
-                        
-                        # Try cookie rotation with the new system
-                        from COMMANDS.cookies_cmd import try_non_youtube_cookie_fallback
-                        retry_result = try_non_youtube_cookie_fallback(
-                            user_id, url, try_download_audio, url, current_index
-                        )
-                        
-                        if retry_result is not None:
-                            logger.info(f"Audio download retry with cookie fallback successful for user {user_id}")
-                            return retry_result
-                        else:
-                            logger.warning(f"Audio download retry with cookie fallback failed for user {user_id}")
-                    else:
-                        logger.info(f"Error appears to be non-cookie-related for {url}, skipping cookie fallback")
+                retry_result, did_proxy_retry = _maybe_retry_audio_download_after_error(
+                    user_id=user_id,
+                    url=url,
+                    error_text=error_text,
+                    did_proxy_retry=did_proxy_retry,
+                    try_download_audio=try_download_audio,
+                    current_index=current_index,
+                )
+                if retry_result is not None:
+                    return retry_result
                 
                 # Send full error message with instructions immediately (only once)
-                if not getattr(down_and_audio, '_error_message_sent', False):
-                    # Extract error code and description from yt-dlp error
-                    error_code = "UNKNOWN_ERROR"
-                    error_description = error_text
+                if not error_message_sent:
+                    _maybe_auto_rotate_ip_for_audio_sign_in_required(user_id, error_text)
                     
-                    # Try to extract specific error codes
-                    if "HTTP Error 403" in error_text:
-                        error_code = "HTTP_403_FORBIDDEN"
-                        error_description = "Access forbidden - may need cookies or authentication"
-                    elif "HTTP Error 401" in error_text:
-                        error_code = "HTTP_401_UNAUTHORIZED"
-                        error_description = "Authentication required - cookies needed"
-                    elif "Video unavailable" in error_text:
-                        error_code = "VIDEO_UNAVAILABLE"
-                        error_description = "Video is not available or has been removed"
-                    elif "Private video" in error_text:
-                        error_code = "PRIVATE_VIDEO"
-                        error_description = "Video is private and requires authentication"
-                    elif "Sign in to confirm" in error_text:
-                        error_code = "SIGN_IN_REQUIRED"
-                        error_description = "Sign in required - cookies needed"
-                        # Auto rotate IP on SIGN_IN_REQUIRED
-                        try:
-                            from services.system_service import rotate_ip
-                            logger.warning(f"Auto-rotating IP due to SIGN_IN_REQUIRED error for user {user_id}")
-                            rotate_result = rotate_ip()
-                            if rotate_result.get("status") == "ok":
-                                logger.info(f"IP rotated successfully: IPv4={rotate_result.get('ipv4')}, IPv6={rotate_result.get('ipv6')}")
-                            else:
-                                logger.error(f"Failed to auto-rotate IP: {rotate_result.get('message')}")
-                        except Exception as rotate_error:
-                            logger.error(f"Error during auto-rotate IP: {rotate_error}")
-                    elif "No video formats found" in error_text:
-                        error_code = "NO_FORMATS"
-                        error_description = "No downloadable formats available"
-                    elif "Unsupported URL" in error_text:
-                        error_code = "UNSUPPORTED_URL"
-                        error_description = "This URL is not supported by yt-dlp"
-                    elif "Network error" in error_text:
-                        error_code = "NETWORK_ERROR"
-                        error_description = "Network connection failed"
-                    elif "ffmpeg exited with code" in error_text or "ERROR: ffmpeg" in error_text:
-                        error_code = "FFMPEG_ERROR"
-                        # Try to extract more details from error message
-                        if "code 1" in error_text:
-                            error_description = "FFmpeg processing failed - audio format may be incompatible or corrupted"
-                        elif "code 2" in error_text:
-                            error_description = "FFmpeg error - invalid arguments or unsupported format"
-                        else:
-                            error_description = "FFmpeg processing error occurred"
-                        
-                        # Try to extract specific error details
-                        import re
-                        ffmpeg_details = re.search(r'ffmpeg.*?error[:\s]+(.*?)(?:\n|$)', error_text, re.IGNORECASE | re.DOTALL)
-                        if ffmpeg_details:
-                            details = ffmpeg_details.group(1).strip()[:200]
-                            if details:
-                                error_description += f"\n\nDetails: {details}"
-                        
-                        # Suggest solutions
-                        error_description += (
-                            "\n\n**Possible solutions:**\n"
-                            "• Try downloading with a different quality/format\n"
-                            "• The audio may be corrupted or in an unsupported format\n"
-                            "• Try downloading without post-processing\n"
-                            "• Check if ffmpeg is properly installed"
-                        )
-                    
-                    send_error_to_user(
+                    _send_audio_failure(
                         message,
-                        "<blockquote>Check <a href='https://github.com/chelaxian/tg-ytdlp-bot/wiki/YT_DLP#supported-sites'>here</a> if your site supported</blockquote>\n"
-                        "<blockquote>You may need <code>cookie</code> for downloading this audio. First, clean your workspace via <b>/clean</b> command</blockquote>\n"
-                        "<blockquote>For Youtube - get <code>cookie</code> via <b>/cookie</b> command. For any other supported site - send your own cookie (<a href='https://t.me/tg_ytdlp/203'>guide1</a>) (<a href='https://t.me/tg_ytdlp/214'>guide2</a>) and after that send your audio link again.</blockquote>\n"
-                        f"────────────────\n"
-                        f"❌ <b>Error Code:</b> <code>{error_code}</code>\n"
-                        f"📝 <b>Description:</b> {error_description}\n"
-                        f"🔧 <b>Full Error:</b> <code>{error_text}</code>"
+                        user_id,
+                        failure_kind="download_failed",
+                        error_text=error_text,
+                        rendered_text=_render_final_audio_download_error(error_text),
+                        use_error_channel=True,
+                        task_context=task_context,
                     )
-                    down_and_audio._error_message_sent = True
+                    error_message_sent = True
                 return None
             except Exception as e:
                 error_text = str(e)
                 logger.error(f"Audio download attempt failed: {e}")
                 
-                # Check if this is a "No videos found in playlist" error
-                if "No videos found in playlist" in error_text or "Story might have expired" in error_text:
-                    error_message = safe_get_messages(user_id).DOWN_UP_NO_CONTENT_FOUND_MSG.format(index=original_playlist_index)
-                    send_error_to_user(message, error_message)
-                    logger.info(f"Skipping item at index {current_index} (no content found)")
-                    return "SKIP"
-                
-                # Check if this is a TikTok infinite loop error
-                if "TikTok API keeps sending the same page" in error_text and "infinite loop" in error_text:
-                    error_message = safe_get_messages(user_id).AUDIO_TIKTOK_API_ERROR_SKIP_MSG.format(index=original_playlist_index)
-                    send_to_user(message, error_message)
-                    logger.info(f"Skipping TikTok audio at index {current_index} due to API error")
-                    return "SKIP"  # Skip this audio and continue with next
-                
-                else:
-                    send_to_user(message, safe_get_messages(user_id).ERROR_UNKNOWN_MSG.format(error=str(e)))
-                return None
+                return _handle_generic_audio_download_exception(
+                    message=message,
+                    user_id=user_id,
+                    current_index=current_index,
+                    original_playlist_index=original_playlist_index,
+                    task_context=task_context,
+                    error=e,
+                )
 
         # Download thumbnail for embedding (only once for the URL)
         thumbnail_path = None
@@ -1469,6 +1648,7 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
             # Reset retry flags for each new item in playlist
             did_cookie_retry = False
             did_proxy_retry = False
+            error_message_sent = False
 
             # For negative indices, don't use reuse_range_download; download each index separately
             reuse_range_download = use_range_download and range_entries_metadata is not None and not has_negative_indices_for_download
@@ -1502,21 +1682,18 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                     result = info_dict
             
             # If download failed and it's a YouTube URL, try automatic cookie retry
-            if result is None and is_youtube_url(url) and not did_cookie_retry:
-                logger.info(f"Audio download failed for user {user_id}, attempting automatic cookie retry")
-                
-                # Try retry with different cookies
-                retry_result = retry_download_with_different_cookies(
-                    user_id, url, try_download_audio, url, playlist_item_index
-                )
-                
-                if retry_result is not None:
-                    logger.info(f"Audio download retry with different cookies successful for user {user_id}")
-                    result = retry_result
-                    did_cookie_retry = True
-                else:
-                    logger.warning(f"All cookie retry attempts failed for user {user_id}")
-                    did_cookie_retry = True
+            result, did_cookie_retry = maybe_retry_with_different_cookies(
+                user_id=user_id,
+                url=url,
+                result=result,
+                did_cookie_retry=did_cookie_retry,
+                is_youtube_url=is_youtube_url,
+                retry_download_with_different_cookies=retry_download_with_different_cookies,
+                download_fn=try_download_audio,
+                download_args=(url, playlist_item_index),
+                logger=logger,
+                media_label="Audio",
+            )
 
             if result is None:
                 with playlist_errors_lock:
@@ -1655,9 +1832,22 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                         "• Try a different quality or format\n"
                         "• If the problem persists, the audio source may be corrupted"
                     )
-                    send_error_to_user(message, postprocessing_message)
+                    _send_audio_failure(
+                        message,
+                        user_id,
+                        failure_kind="postprocessing_failed",
+                        rendered_text=postprocessing_message,
+                        use_error_channel=True,
+                        task_context=task_context,
+                    )
                 else:
-                    send_to_user(message, safe_get_messages(user_id).AUDIO_EXTRACTION_FAILED_MSG)
+                    _send_audio_failure(
+                        message,
+                        user_id,
+                        failure_kind="extraction_failed",
+                        rendered_text=safe_get_messages(user_id).AUDIO_EXTRACTION_FAILED_MSG,
+                        task_context=task_context,
+                    )
                 break
 
             # Get original title for fallback (if MP3 metadata reading fails)
@@ -1711,7 +1901,14 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                 
                 if not files:
                     logger.error(f"No audio files found in {user_folder}. Available files: {allfiles}")
-                    send_error_to_user(message, safe_get_messages(user_id).AUDIO_UNSUPPORTED_FILE_TYPE_MSG.format(index=original_playlist_index))
+                    _send_audio_failure(
+                        message,
+                        user_id,
+                        failure_kind="unsupported_artifact",
+                        rendered_text=safe_get_messages(user_id).AUDIO_UNSUPPORTED_FILE_TYPE_MSG.format(index=original_playlist_index),
+                        use_error_channel=True,
+                        task_context=task_context,
+                    )
                     continue
 
                 downloaded_file = files[0]
@@ -1722,7 +1919,13 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
             # File is already sanitized by yt-dlp with our custom outtmpl
             audio_file = downloaded_abs_path or os.path.join(user_folder, downloaded_file)
             if not os.path.exists(audio_file):
-                send_to_user(message, safe_get_messages(user_id).AUDIO_FILE_NOT_FOUND_MSG)
+                _send_audio_failure(
+                    message,
+                    user_id,
+                    failure_kind="artifact_missing",
+                    rendered_text=safe_get_messages(user_id).AUDIO_FILE_NOT_FOUND_MSG,
+                    task_context=task_context,
+                )
                 continue
 
             # Embed cover into MP3 file if thumbnail is available
@@ -2003,7 +2206,16 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                     logger.info(f"down_and_audio: skipping cache for NSFW content (url={url})")
             except Exception as send_error:
                 logger.error(f"Error sending audio: {send_error}")
-                send_to_user(message, safe_get_messages(user_id).AUDIO_SEND_FAILED_MSG.format(error=send_error))
+                _send_audio_failure(
+                    message,
+                    user_id,
+                    failure_kind="delivery_failed",
+                    error_text=str(send_error),
+                    rendered_text=safe_get_messages(user_id).AUDIO_SEND_FAILED_MSG.format(error=send_error),
+                    attempted_count=len(indices_to_download) if 'indices_to_download' in locals() else 0,
+                    delivered_count=successful_uploads,
+                    task_context=task_context,
+                )
                 continue
 
             # Clean up the audio file after sending
@@ -2017,16 +2229,24 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
             if idx and idx < len(indices_to_download) - 1:
                 pass
 
-        if successful_uploads == len(indices_to_download):
-            credits_msg = safe_get_messages(user_id).CREDITS_MSG
-            success_msg = safe_get_messages(user_id).AUDIO_SUCCESSFULLY_COMPLETED_MSG.format(total_files=len(indices_to_download))
-            if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
-                success_msg += f"\n{credits_msg}"
-        else:
-            credits_msg = safe_get_messages(user_id).CREDITS_MSG
-            success_msg = safe_get_messages(user_id).AUDIO_PARTIALLY_COMPLETED_MSG.format(successful_uploads=successful_uploads, total_files=len(indices_to_download))
-            if credits_msg and not bool(getattr(Config, "HIDE_CREDITS_MSG", False)):
-                success_msg += f"\n{credits_msg}"
+        outcome = upload_terminal_outcome(
+            media_kind="audio",
+            attempted_count=len(indices_to_download),
+            delivered_count=successful_uploads,
+            cached_count=len(cached_videos) if is_playlist and quality_key else 0,
+        )
+        credits_msg = safe_get_messages(user_id).CREDITS_MSG
+        task_context, success_msg = attach_and_render_terminal_outcome(
+            user_id=user_id,
+            outcome=outcome,
+            task_context=task_context,
+            formatter=lambda messages, rendered_outcome: format_audio_terminal_status(
+                messages,
+                rendered_outcome,
+                include_credits=not bool(getattr(Config, "HIDE_CREDITS_MSG", False)),
+                credits_msg=credits_msg,
+            ),
+        )
             
         try:
             safe_edit_message_text(user_id, proc_msg_id, success_msg)
@@ -2048,17 +2268,39 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
             logger.error(f"Error cleaning up download subdirectory for user {user_id}: {cleanup_error}")
 
         if is_playlist and quality_key:
-            total_sent = len(cached_videos) + successful_uploads
-            app.send_message(user_id, safe_get_messages(user_id).PLAYLIST_SENT_MSG.format(sent=total_sent, total=len(requested_indices)), reply_parameters=ReplyParameters(message_id=message.id))
-            send_to_logger(message, safe_get_messages(user_id).PLAYLIST_AUDIO_SENT_LOG_MSG.format(sent=total_sent, total=len(requested_indices), quality=quality_key, user_id=user_id))
+            send_playlist_cache_status(
+                app=app,
+                user_id=user_id,
+                reply_to_message_id=message.id,
+                text=safe_get_messages(user_id).PLAYLIST_SENT_MSG.format(
+                    sent=outcome.total_sent_count,
+                    total=len(requested_indices),
+                ),
+            )
+            send_to_logger(message, safe_get_messages(user_id).PLAYLIST_AUDIO_SENT_LOG_MSG.format(sent=outcome.total_sent_count, total=len(requested_indices), quality=quality_key, user_id=user_id))
 
     except Exception as e:
         if "Download timeout exceeded" in str(e):
-            send_to_user(message, safe_get_messages(user_id).DOWNLOAD_TIMEOUT_MSG)
+            _send_audio_failure(
+                message,
+                user_id,
+                failure_kind="timeout",
+                attempted_count=len(indices_to_download) if 'indices_to_download' in locals() else 0,
+                delivered_count=successful_uploads if 'successful_uploads' in locals() else 0,
+                task_context=task_context,
+            )
             log_error_to_channel(message, LoggerMsg.DOWNLOAD_TIMEOUT_LOG, url)
         else:
             logger.error(f"Error in audio download: {e}")
-            send_to_user(message, safe_get_messages(user_id).AUDIO_DOWNLOAD_FAILED_MSG.format(error=str(e)))
+            _send_audio_failure(
+                message,
+                user_id,
+                failure_kind="download_failed",
+                error_text=str(e),
+                attempted_count=len(indices_to_download) if 'indices_to_download' in locals() else 0,
+                delivered_count=successful_uploads if 'successful_uploads' in locals() else 0,
+                task_context=task_context,
+            )
         # Immediate cleanup on error
         try:
             if status_msg_id:

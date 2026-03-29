@@ -7,7 +7,7 @@ from HELPERS.safe_messeger import safe_send_message
 
 from HELPERS.app_instance import get_app
 from HELPERS.decorators import reply_with_keyboard, send_reply_keyboard_always, background_handler
-from HELPERS.logger import send_to_logger, send_to_user
+from HELPERS.logger import logger, send_to_logger, send_to_user
 from HELPERS.limitter import is_user_in_channel, check_user, check_playlist_range_limits
 from HELPERS.download_status import get_active_download
 from HELPERS.filesystem_hlp import create_directory
@@ -17,7 +17,9 @@ from CONFIG.messages import Messages, safe_get_messages
 
 from URL_PARSERS.tags import extract_url_range_tags, save_user_tags
 
+from DOWN_AND_UP.branch_selection_result import audio_download_branch, log_branch_selection
 from DOWN_AND_UP.down_and_audio import down_and_audio
+from DOWN_AND_UP.runtime_task import make_runtime_task, with_branch_selection
 from COMMANDS.link_cmd import link_command
 from COMMANDS.proxy_cmd import proxy_command
 
@@ -116,8 +118,36 @@ def audio_command_handler(app, message):
     if not check_playlist_range_limits(url, video_start_with, video_end_with, app, message):
         return
     
-    # Note: cached_video_info=None for direct calls (no optimization available)
-    down_and_audio(app, message, url, tags, quality_key="mp3", playlist_name=playlist_name, video_count=video_count, video_start_with=video_start_with, format_override="ba", cached_video_info=None)
+    branch_result = audio_download_branch(
+        quality_intent="mp3",
+        quality_key="mp3",
+        video_count=video_count,
+        format_override="ba",
+        selected_by="explicit_command",
+        origin="audio_command_handler",
+        provenance={"command": "/audio"},
+    )
+    log_branch_selection(logger, branch_result, user_id=user_id)
+    task = with_branch_selection(
+        make_runtime_task(
+            user_id=user_id,
+            source_message_id=getattr(message, "id", None),
+            url=url,
+            tags_text=" ".join(tags),
+            tags=list(tags),
+            playlist_name=playlist_name,
+            video_count=video_count,
+            video_start_with=video_start_with,
+        ),
+        branch_result,
+    )
+    down_and_audio(
+        app,
+        message,
+        quality_key="mp3",
+        format_override="ba",
+        task_context=task,
+    )
 
 
 # /Link Command
@@ -194,6 +224,4 @@ def audio_hint_callback(app, callback_query):
         callback_query.answer(safe_get_messages(user_id).AUDIO_HELP_CLOSED_MSG)
         send_to_logger(callback_query.message, safe_get_messages(user_id).AUDIO_HINT_CLOSED_LOG_MSG)
         return
-
-
 
