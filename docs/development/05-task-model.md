@@ -402,3 +402,7 @@ Once this task model is accepted, the next natural move is either:
 - audit current handlers/modules by asking which task state and transition class each one actually governs
 
 That would convert the present architectural tension into a concrete refactoring map instead of a vague concern.
+
+## Related Documents
+
+- [`Task-to-Code Map`](./06-task-to-code-map.md): current code ownership by task transition class

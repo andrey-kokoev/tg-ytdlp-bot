@@ -68,6 +68,16 @@ https://youtube.com/watch?v=dQw4w9WgXcQ
 - [System Formulation](../development/01-system-formulation.md#system-formulation) - PDA-aligned system boundary, invariants, policy, and precedence
 - [Data Flow Sequence](../development/02-data-flow-sequence.md#data-flow-sequence) - Runtime actor and request flow from Telegram input to Telegram output
 - [Task Model](../development/05-task-model.md#task-model) - Task identity, states, authorities, precedence, and terminal outcomes
+- [Task-to-Code Map](../development/06-task-to-code-map.md#task-to-code-map) - Transition ownership map from the task model into concrete modules
+- [Branch Selection Model](../development/07-branch-selection-model.md#branch-selection-model) - Explicit formulation of the main decision surface for media tasks
+- [Terminal Semantics Model](../development/08-terminal-semantics-model.md#terminal-semantics-model) - Explicit outcome meaning for success, partial success, rejection, and failure
+- [Branch Selection Result Model](../development/09-branch-selection-result-model.md#branch-selection-result-model) - Explicit output object for the branch-selection decision surface
+- [Terminal Outcome Result Model](../development/10-terminal-outcome-result-model.md#terminal-outcome-result-model) - Explicit output object for terminal outcome meaning
+- [Task State Machine Sketch](../development/11-task-state-machine-sketch.md#task-state-machine-sketch) - Closed execution skeleton connecting branch selection and terminal outcome
+- [Task Object Model](../development/12-task-object-model.md#task-object-model) - Explicit primary runtime object carrying task identity, state, branch, and outcome
+- [Transition Contracts](../development/13-transition-contracts.md#transition-contracts) - Explicit read/write/decision boundaries for each task-state-machine transition
+- [First Implementation Seam](../development/14-first-implementation-seam.md#first-implementation-seam) - Why `BranchSelectionResult` is the best low-risk first implementation move
+- [Branch Selection Result Implementation Sketch](../development/15-branch-selection-result-implementation-sketch.md#branch-selection-result-implementation-sketch) - Smallest viable first patch for making branch selection explicit
 - [Troubleshooting](../advanced/troubleshooting.md#-troubleshooting) - Common issues and solutions
 - [Contributing](../development/04-contributing.md#-code-of-conduct) - How to contribute to the project
 - [Support](../misc/support.md#support) - Support information and acknowledgments
