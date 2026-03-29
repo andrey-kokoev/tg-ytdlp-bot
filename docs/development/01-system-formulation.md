@@ -383,5 +383,6 @@ This formulation is closed enough for system-level reasoning if further descent 
 
 ## Related Documents
 
-- [`Data Flow Sequence`](./data-flow-sequence.md): runtime actor/request flow and sequence diagrams
-- [`Contributing`](./contributing.md): development workflow and contribution guidance
+- [`Data Flow Sequence`](./02-data-flow-sequence.md): runtime actor/request flow and sequence diagrams
+- [`Incoherence Memo`](./03-incoherence-memo.md): short statement of the main architectural mismatch
+- [`Contributing`](./04-contributing.md): development workflow and contribution guidance

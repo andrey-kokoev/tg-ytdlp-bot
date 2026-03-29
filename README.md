@@ -67,7 +67,7 @@ https://youtube.com/watch?v=dQw4w9WgXcQ
 - [Troubleshooting](docs/advanced/troubleshooting.md) - Common issues and solutions
 
 ### Development and Contributing
-- [Contributing](docs/development/contributing.md) - How to contribute to the project
+- [Contributing](docs/development/04-contributing.md) - How to contribute to the project
 
 ### Additional Information
 - [Support](docs/misc/support.md) - Support information and acknowledgments
