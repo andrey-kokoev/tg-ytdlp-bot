@@ -627,19 +627,24 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
 
         # Check if cookie.txt exists in the user's folder
         user_cookie_path = os.path.join(user_folder, "cookie.txt")
+        user_cookie_exists = os.path.exists(user_cookie_path)
+        downloaded_cookie_path = os.path.join(user_folder, "_downloaded_cookie.txt")
         
         # For YouTube URLs, use optimized cookie logic - check existing first on user's URL, then retry if needed
         if is_youtube_url(url):
             from COMMANDS.cookies_cmd import get_youtube_cookie_urls, test_youtube_cookies_on_url, _download_content
             
             # Always check existing cookies first on user's URL for maximum speed
-            if os.path.exists(user_cookie_path):
+            if user_cookie_exists:
                 logger.info(f"Checking existing YouTube cookies on user's URL for user {user_id}")
                 if test_youtube_cookies_on_url(user_cookie_path, url, user_id):
                     cookie_file = user_cookie_path
                     logger.info(f"Existing YouTube cookies work on user's URL for user {user_id} - using them")
                 else:
-                    logger.info(f"Existing YouTube cookies failed on user's URL, trying to get new ones for user {user_id}")
+                    logger.warning(
+                        f"Existing YouTube cookies failed validation on user's URL for user {user_id}; "
+                        f"keeping them as download fallback and trying remote sources"
+                    )
                     cookie_urls = get_youtube_cookie_urls()
                     if cookie_urls:
                         # Use only unchecked sources for this user
@@ -660,25 +665,31 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                                 try:
                                     ok, status, content, err = _download_content(cookie_url, timeout=30, user_id=user_id)
                                     if ok and content and len(content) <= 100 * 1024:
-                                        with open(user_cookie_path, "wb") as cf:
+                                        with open(downloaded_cookie_path, "wb") as cf:
                                             cf.write(content)
-                                        if test_youtube_cookies_on_url(user_cookie_path, url, user_id):
-                                            cookie_file = user_cookie_path
+                                        if test_youtube_cookies_on_url(downloaded_cookie_path, url, user_id):
+                                            cookie_file = downloaded_cookie_path
                                             logger.info(f"YouTube cookies from source {idx + 1} work on user's URL for user {user_id} - saved to user folder")
                                             success = True
                                             break
                                         else:
-                                            if os.path.exists(user_cookie_path):
-                                                os.remove(user_cookie_path)
+                                            if os.path.exists(downloaded_cookie_path):
+                                                os.remove(downloaded_cookie_path)
                                 except Exception as e:
                                     logger.error(f"Error processing YouTube cookie source {idx + 1} for user {user_id}: {e}")
                                     continue
                             if not success:
-                                cookie_file = None
-                                logger.warning(f"All YouTube cookie sources failed for user {user_id}, will try without cookies")
+                                cookie_file = user_cookie_path
+                                logger.warning(
+                                    f"All remote YouTube cookie sources failed for user {user_id}; "
+                                    f"falling back to existing user cookie for actual download"
+                                )
                     else:
-                        cookie_file = None
-                        logger.warning(f"No YouTube cookie sources configured for user {user_id}, will try without cookies")
+                        cookie_file = user_cookie_path
+                        logger.warning(
+                            f"No YouTube cookie sources configured for user {user_id}; "
+                            f"falling back to existing user cookie for actual download"
+                        )
             else:
                 logger.info(f"No YouTube cookies found for user {user_id}, attempting to get new ones")
                 cookie_urls = get_youtube_cookie_urls()
@@ -701,16 +712,16 @@ def down_and_audio(app, message, url, tags, quality_key=None, playlist_name=None
                             try:
                                 ok, status, content, err = _download_content(cookie_url, timeout=30, user_id=user_id)
                                 if ok and content and len(content) <= 100 * 1024:
-                                    with open(user_cookie_path, "wb") as cf:
+                                    with open(downloaded_cookie_path, "wb") as cf:
                                         cf.write(content)
-                                    if test_youtube_cookies_on_url(user_cookie_path, url, user_id):
-                                        cookie_file = user_cookie_path
+                                    if test_youtube_cookies_on_url(downloaded_cookie_path, url, user_id):
+                                        cookie_file = downloaded_cookie_path
                                         logger.info(f"YouTube cookies from source {idx + 1} work on user's URL for user {user_id} - saved to user folder")
                                         success = True
                                         break
                                     else:
-                                        if os.path.exists(user_cookie_path):
-                                            os.remove(user_cookie_path)
+                                        if os.path.exists(downloaded_cookie_path):
+                                            os.remove(downloaded_cookie_path)
                             except Exception as e:
                                 logger.error(f"Error processing YouTube cookie source {idx + 1} for user {user_id}: {e}")
                                 continue

@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     mediainfo \
     rsync \
+    curl \
+    unzip \
     fonts-noto-core \
     fonts-noto-extra \
     #fonts-kacst \
@@ -29,6 +31,10 @@ RUN git clone https://github.com/aliftype/amiri.git /tmp/amiri \
     && cp /tmp/amiri/fonts/*.ttf /usr/share/fonts/truetype/amiri/ \
     && fc-cache -fv \
     && rm -rf /tmp/amiri
+
+# Install Deno for yt-dlp EJS/YouTube JS challenge solving.
+RUN curl -fsSL https://deno.land/install.sh | sh \
+    && ln -sf /root/.deno/bin/deno /usr/local/bin/deno
 
 WORKDIR /app
 
