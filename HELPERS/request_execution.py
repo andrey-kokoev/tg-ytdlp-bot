@@ -472,14 +472,12 @@ def handle_cookie_menu_selection_request(
     request: CookieMenuSelectionRequested,
 ) -> None:
     from COMMANDS.cookies_cmd import _handle_cookie_menu_selection
-    callback_query = execution_context.callback_query
 
     _handle_cookie_menu_selection(
         app,
+        execution_context=execution_context,
         user_id=request.user_id,
         selection_key=request.selection_key,
-        message=execution_context.source_message,
-        callback_query=callback_query,
     )
 
 
@@ -563,7 +561,7 @@ def handle_browser_cookie_selection_request(
 ) -> None:
     from COMMANDS.cookies_cmd import browser_choice_callback_logic
 
-    browser_choice_callback_logic(app, execution_context.callback_query, request)
+    browser_choice_callback_logic(app, execution_context, request)
 
 
 def handle_gallery_fallback_selection_request(

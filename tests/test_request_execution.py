@@ -610,17 +610,15 @@ def test_handle_cookie_menu_selection_request_routes_request_to_cookie_runtime(m
     def fake_handle_cookie_menu_selection(
         app,
         *,
+        execution_context,
         user_id,
         selection_key,
-        message,
-        callback_query=None,
     ):
         captured["cookie_selection_call"] = {
             "app": app,
+            "execution_context": execution_context,
             "user_id": user_id,
             "selection_key": selection_key,
-            "message": message,
-            "callback_query": callback_query,
         }
 
     fake_cookies_module = ModuleType("COMMANDS.cookies_cmd")
@@ -647,10 +645,9 @@ def test_handle_cookie_menu_selection_request_routes_request_to_cookie_runtime(m
 
     assert captured["cookie_selection_call"] == {
         "app": app,
+        "execution_context": execution_context,
         "user_id": 91363026,
         "selection_key": "youtube",
-        "message": callback_query.message,
-        "callback_query": callback_query,
     }
 
 
@@ -1835,10 +1832,10 @@ def test_handle_clean_option_selection_request_routes_request_to_clean_callback_
 def test_handle_browser_cookie_selection_request_routes_request_to_browser_callback_runtime(monkeypatch):
     captured = {}
 
-    def fake_browser_choice_callback_logic(app, callback_query, request=None):
+    def fake_browser_choice_callback_logic(app, execution_context, request=None):
         captured["browser_choice_call"] = {
             "app": app,
-            "callback_query": callback_query,
+            "execution_context": execution_context,
             "request": request,
         }
 
@@ -1868,7 +1865,7 @@ def test_handle_browser_cookie_selection_request_routes_request_to_browser_callb
 
     assert captured["browser_choice_call"] == {
         "app": app,
-        "callback_query": callback_query,
+        "execution_context": execution_context,
         "request": request,
     }
 
