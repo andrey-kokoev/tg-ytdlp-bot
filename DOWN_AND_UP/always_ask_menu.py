@@ -357,6 +357,13 @@ class AlwaysAskQualitySelectionPlan:
 
 
 @dataclass(frozen=True)
+class AlwaysAskSpecialActionPlan:
+    mode: str
+    answer_text: str | None = None
+    show_alert: bool = False
+
+
+@dataclass(frozen=True)
 class AlwaysAskGalleryFallbackPrompt:
     message_text: str
     callback_data: str
@@ -599,6 +606,34 @@ def _determine_ask_quality_selection_plan(user_id: int, *, data: str) -> AlwaysA
         quality_key=data,
         branch_family="video",
     )
+
+
+def _determine_askq_special_action_plan(
+    user_id: int,
+    *,
+    data: str,
+    source_context: AlwaysAskSourceContext | None,
+) -> AlwaysAskSpecialActionPlan | None:
+    messages = safe_get_messages(user_id)
+    if data == "link":
+        if source_context is None:
+            return AlwaysAskSpecialActionPlan("error", messages.AA_ERROR_ORIGINAL_NOT_FOUND_MSG, True)
+        return AlwaysAskSpecialActionPlan("link", messages.ALWAYS_ASK_GETTING_DIRECT_LINK_MSG)
+    if data == "list":
+        if source_context is None:
+            return AlwaysAskSpecialActionPlan("error", messages.AA_ERROR_ORIGINAL_NOT_FOUND_MSG, True)
+        return AlwaysAskSpecialActionPlan("list", messages.ALWAYS_ASK_GETTING_FORMATS_MSG)
+    if data == "image":
+        if source_context is None:
+            return AlwaysAskSpecialActionPlan("error", messages.AA_ERROR_ORIGINAL_NOT_FOUND_MSG, True)
+        return AlwaysAskSpecialActionPlan("image", messages.ALWAYS_ASK_STARTING_GALLERY_DL_MSG)
+    if data == "quick_embed":
+        if source_context is None:
+            return AlwaysAskSpecialActionPlan("error", messages.AA_ERROR_ORIGINAL_NOT_FOUND_MSG, True)
+        if not source_context.url:
+            return AlwaysAskSpecialActionPlan("error", messages.AA_ERROR_URL_NOT_FOUND_MSG, True)
+        return AlwaysAskSpecialActionPlan("quick_embed")
+    return None
 
 # Proxy functionality is now handled by COMMANDS.proxy_cmd
 logger.info(LoggerMsg.ALWAYS_ASK_IMPORTED_LOG_MSG.format(app_available=app is not None))
@@ -1676,343 +1711,32 @@ def askq_callback(app, callback_query):
                 app.edit_message_reply_markup(chat_id=callback_message.chat.id, message_id=callback_message.id, reply_markup=None)
         callback_query.answer(safe_get_messages(user_id).ALWAYS_ASK_MENU_CLOSED_MSG)
         return
-        
-    # Handle LINK button - get direct link with BV+BA/BEST format
-    if data == "link":
-        if source_context is None:
-            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+    special_action_plan = _determine_askq_special_action_plan(
+        user_id,
+        data=data,
+        source_context=source_context,
+    )
+    if special_action_plan is not None:
+        if special_action_plan.answer_text:
+            safe_callback_answer(
+                callback_query,
+                special_action_plan.answer_text,
+                show_alert=special_action_plan.show_alert,
+            )
+        if special_action_plan.mode == "error":
             return
-        original_message = source_context.original_message
-        url = source_context.url
-
-        safe_callback_answer(callback_query, safe_get_messages(user_id).ALWAYS_ASK_GETTING_DIRECT_LINK_MSG)
-        
-        # Import link function with proxy support
-        from HELPERS.proxy_link_helper import get_direct_link_with_proxy
-        
-        # Get direct link with BV+BA/BEST format using proxy
-        result = get_direct_link_with_proxy(url, "bv+ba/best", user_id)
-        
-        if result.get('success'):
-            title = result.get('title', 'Unknown')
-            duration = result.get('duration', 0)
-            player_urls = result.get('player_urls', {})
-            
-            # Browser button will be sent in main message
-            
-            # Send main response with browser button
-            main_response = safe_get_messages(user_id).STREAM_LINKS_TITLE_MSG
-            main_response += safe_get_messages(user_id).STREAM_TITLE_MSG.format(title=title)
-            if duration and duration > 0:
-                main_response += f"{safe_get_messages(user_id).ALWAYS_ASK_DURATION_MSG} {duration} sec\n"
-            main_response += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_MSG} <code>bv+ba/best</code>\n\n"
-            main_response += f"{safe_get_messages(user_id).ALWAYS_ASK_BROWSER_MSG}\n\n"
-            
-            # Create browser keyboard
-            browser_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_BROWSER_BUTTON_MSG, url=player_urls['direct'])],
-                [InlineKeyboardButton("🔚 Close", callback_data="askq|close")]
-            ])
-            
-            # Send main message with browser button
-            app.send_message(
-                user_id, 
-                main_response, 
-                reply_parameters=ReplyParameters(message_id=original_message.id),
-                reply_markup=browser_keyboard,
-                parse_mode=enums.ParseMode.HTML
-            )
-            
-            # Send VLC iOS message
-            if 'vlc_ios' in player_urls:
-                vlc_ios_keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_VLC_IOS_BUTTON_MSG, url=player_urls['vlc_ios'])],
-                    [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_CLOSE_BUTTON_MSG, callback_data="askq|close")]
-                ])
-                app.send_message(
-                    user_id,
-                    safe_get_messages(user_id).AA_VLC_IOS_MSG,
-                    reply_parameters=ReplyParameters(message_id=original_message.id),
-                    reply_markup=vlc_ios_keyboard,
-                    parse_mode=enums.ParseMode.HTML
-                )
-            
-            # Send VLC Android message
-            if 'vlc_android' in player_urls:
-                vlc_android_keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_VLC_ANDROID_BUTTON_MSG, url=player_urls['vlc_android'])],
-                    [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_CLOSE_BUTTON_MSG, callback_data="askq|close")]
-                ])
-                app.send_message(
-                    user_id,
-                    safe_get_messages(user_id).AA_VLC_ANDROID_MSG,
-                    reply_parameters=ReplyParameters(message_id=original_message.id),
-                    reply_markup=vlc_android_keyboard,
-                    parse_mode=enums.ParseMode.HTML
-                )
-            
-            send_to_logger(original_message, safe_get_messages(user_id).DIRECT_LINK_MENU_CREATED_LOG_MSG.format(user_id=user_id, url=url))
-            
-        else:
-            error_msg = result.get('error', 'Unknown error')
-            app.send_message(
-                user_id,
-                safe_get_messages(user_id).AA_ERROR_GETTING_LINK_MSG.format(error_msg=error_msg),
-                reply_parameters=ReplyParameters(message_id=original_message.id),
-                parse_mode=enums.ParseMode.HTML
-            )
-            
-            log_error_to_channel(original_message, safe_get_messages(user_id).DIRECT_LINK_EXTRACTION_FAILED_LOG_MSG.format(user_id=user_id, url=url, error=error_msg), url)
-        
-        # Delete the Always Ask menu after handling
-        try:
-            safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
-        except Exception as e:
-            logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_DELETE_ALWAYS_ASK_MENU_LOG_MSG}: {e}")
-        return
-
-    # Handle LIST button - get available formats
-    if data == "list":
-        if source_context is None:
-            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if special_action_plan.mode == "link":
+            _execute_askq_link_action(app, callback_query, user_id, source_context)
             return
-        original_message = source_context.original_message
-        url = source_context.url
-
-        safe_callback_answer(callback_query, safe_get_messages(user_id).ALWAYS_ASK_GETTING_FORMATS_MSG)
-        
-        # Import list function
-        from COMMANDS.list_cmd import run_ytdlp_list
-        
-        # Run yt-dlp list command
-        success, output = run_ytdlp_list(url, user_id)
-        
-        if success:
-            # Check if any format contains "audio only" and "video only" and extract format IDs
-            audio_only_formats = []
-            video_only_formats = []
-            lines = output.split('\n')
-            for line in lines:
-                if 'audio only' in line.lower() or 'audio_only' in line.lower():
-                    # Extract format ID from the line (usually at the beginning)
-                    parts = line.strip().split()
-                    if parts and parts[0].isdigit():
-                        format_id = parts[0]
-                        audio_only_formats.append(format_id)
-                elif 'video only' in line.lower() or 'video_only' in line.lower():
-                    # Extract format ID from the line (usually at the beginning)
-                    parts = line.strip().split()
-                    if parts and parts[0].isdigit():
-                        format_id = parts[0]
-                        video_only_formats.append(format_id)
-            
-            # Create temporary file with output
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as temp_file:
-                temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_AVAILABLE_FORMATS_FOR_MSG}: {url}\n")
-                temp_file.write("=" * 50 + "\n\n")
-                temp_file.write(output)
-                temp_file.write("\n\n" + "=" * 50 + "\n")
-                temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_HOW_TO_USE_FORMAT_IDS_MSG}\n")
-                temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_AFTER_GETTING_LIST_MSG}\n")
-                temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ID_401_MSG}\n")
-                temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ID401_MSG}\n")
-                temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ID_140_AUDIO_MSG}\n")
-                
-                # Add special note for audio-only formats
-                if audio_only_formats:
-                    temp_file.write(f"\n{safe_get_messages(user_id).ALWAYS_ASK_AUDIO_ONLY_FORMATS_DETECTED_MSG}: {', '.join(audio_only_formats)}\n")
-                    temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_THESE_FORMATS_MP3_MSG}\n")
-                
-                temp_file_path = temp_file.name
-            
-            try:
-                # Send the file
-                # Build caption with audio-only format info
-                caption = f"{safe_get_messages(user_id).ALWAYS_ASK_AVAILABLE_FORMATS_FOR_MSG}:\n<code>{url}</code>\n\n"
-                caption += f"{safe_get_messages(user_id).ALWAYS_ASK_HOW_TO_SET_FORMAT_MSG}\n"
-                caption += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ID_134_MSG}\n"
-                caption += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_720P_MSG}\n"
-                caption += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_BEST_MSG}\n"
-                caption += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ASK_MSG}\n\n"
-                
-                # Add video-only formats info first
-                if video_only_formats:
-                    video_formats_text = ', '.join([f'<code>{fmt}</code>' for fmt in video_only_formats])
-                    caption += f"\n{safe_get_messages(user_id).LIST_VIDEO_ONLY_FORMATS_MSG.format(formats=video_formats_text)}\n"
-                
-                # Add special note for audio-only formats with monospace formatting
-                if audio_only_formats:
-                    audio_formats_text = ', '.join([f'<code>{fmt}</code>' for fmt in audio_only_formats])
-                    caption += f"{safe_get_messages(user_id).ALWAYS_ASK_AUDIO_ONLY_FORMATS_MSG}: {audio_formats_text}\n"
-                    caption += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ID_140_AUDIO_CAPTION_MSG}\n"
-                    caption += f"{safe_get_messages(user_id).ALWAYS_ASK_THESE_WILL_BE_MP3_MSG}\n\n"
-                
-                caption += f"{safe_get_messages(user_id).ALWAYS_ASK_USE_FORMAT_ID_MSG}"
-                
-                app.send_document(
-                    user_id,
-                    document=temp_file_path,
-                    file_name=f"formats_{user_id}.txt",
-                    caption=caption,
-                    reply_parameters=ReplyParameters(message_id=original_message.id)
-                )
-                
-                send_to_logger(original_message, safe_get_messages(user_id).LIST_COMMAND_EXECUTED_LOG_MSG.format(user_id=user_id, url=url))
-                    
-            except Exception as e:
-                logger.error(f"{LoggerMsg.ALWAYS_ASK_ERROR_SENDING_FORMATS_FILE_LOG_MSG}: {e}")
-                app.send_message(
-                    user_id,
-                    safe_get_messages(user_id).AA_ERROR_SENDING_FORMATS_MSG.format(error=str(e)),
-                    reply_parameters=ReplyParameters(message_id=original_message.id)
-                )
-            finally:
-                # Clean up temporary file
-                try:
-                    os.unlink(temp_file_path)
-                except Exception:
-                    pass
-        else:
-            app.send_message(
-                user_id,
-                safe_get_messages(user_id).AA_FAILED_GET_FORMATS_MSG.format(output=output),
-                reply_parameters=ReplyParameters(message_id=original_message.id)
-            )
-        
-        # Delete the Always Ask menu after handling
-        try:
-            safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
-        except Exception as e:
-            logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_DELETE_ALWAYS_ASK_MENU_LOG_MSG}: {e}")
-        return
-
-    # ---- IMAGE fallback: process via gallery-dl (/img) ----
-    if data == "image":
-        if source_context is None:
-            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if special_action_plan.mode == "list":
+            _execute_askq_list_action(app, callback_query, user_id, source_context)
             return
-        original_message = source_context.original_message
-        # STRICT: use the full original message text
-        url_text = source_context.url_text
-        logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_ORIGINAL_MESSAGE_TEXT_LOG_MSG}: {original_message.text}")
-        logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_ORIGINAL_MESSAGE_CAPTION_LOG_MSG}: {original_message.caption}")
-        logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_URL_TEXT_LOG_MSG}: {url_text}")
-        
-        # STRICT: search for a range URL in the full text
-        import re as _re
-        # First try a URL with *start*end range
-        range_url_match = _re.search(r'(https?://[^\s\*#]+)\*(\d+)\*(\d+)', url_text)
-        if range_url_match:
-            url = range_url_match.group(1)
-            start_range = int(range_url_match.group(2))
-            end_range = int(range_url_match.group(3))
-            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_FOUND_RANGE_URL_LOG_MSG}: {url} with range {start_range}-{end_range}")
-        else:
-            # Fallback to a regular URL
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            start_range = 1
-            end_range = 1
-            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_NO_RANGE_FOUND_LOG_MSG}: {url}")
-        safe_callback_answer(callback_query, safe_get_messages(user_id).ALWAYS_ASK_STARTING_GALLERY_DL_MSG)
-        try:
-            # Check if content is NSFW for fallback - same as original function
-            from HELPERS.porn import is_porn
-            nsfw_enabled = bool(getattr(Config, "NSFW_CHECK_ENABLED", True))
-            is_nsfw = bool(is_porn(url, "", "", None)) if nsfw_enabled else False
-            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_IS_PORN_CHECK_LOG_MSG} {url}: {is_nsfw}")
-            
-            # Check for explicit NSFW tags in original message
-            user_forced_nsfw = bool(re.search(r"(?i)(?:^|\s)#nsfw(?:\s|$)", url_text)) if nsfw_enabled else False
-            if user_forced_nsfw:
-                is_nsfw = True
-                logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_USER_FORCED_NSFW_TAG_DETECTED_LOG_MSG} {url}")
-            
-            # Range already extracted above (STRICT)
-            parsed_url = url
-            
-            # Create fallback command converting *1*10 to 1-10 format
-            if start_range and end_range and start_range != 1 and end_range != 1:
-                # Convert *1*10 format to 1-10 format
-                fallback_text = f"/img {start_range}-{end_range} {parsed_url}"
-                logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_CONVERTING_RANGE_LOG_MSG}: *{start_range}*{end_range} -> {start_range}-{end_range}, fallback_text: {fallback_text}")
-            else:
-                fallback_text = f"/img {url}"
-                logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_NO_RANGE_DETECTED_LOG_MSG}: {fallback_text}")
-            
-            if is_nsfw and "#nsfw" not in fallback_text.lower():
-                fallback_text += " #nsfw"
-                logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_ADDED_NSFW_TAG_LOG_MSG}: {url}")
-            
-            fallback_branch = gallery_fallback_branch(
-                None,
-                origin="always_ask_menu",
-                reason="explicit_image_menu_fallback",
-            )
-            fallback_task = _make_callback_runtime_task(
-                original_message,
-                url=parsed_url,
-                tags=["#nsfw"] if is_nsfw else [],
-                tags_text="#nsfw" if is_nsfw else "",
-                branch_result=fallback_branch,
-                video_count=max(1, end_range - start_range + 1),
-                video_start_with=start_range,
-            )
-            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_FAKE_MSG_DETAILS_LOG_MSG}={original_message.chat.id}, message_thread_id={getattr(original_message, 'message_thread_id', None)}, original_message.chat.id={original_message.chat.id}, original_message.message_thread_id={getattr(original_message, 'message_thread_id', None)}")
-            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_ORIGINAL_MESSAGE_TYPE_LOG_MSG}: {type(original_message)}, original_message.chat type: {type(original_message.chat)}")
-            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_ORIGINAL_MESSAGE_ATTRIBUTES_LOG_MSG}: {dir(original_message)}")
-            fallback_result = _dispatch_gallery_fallback(
-                app,
-                user_id=original_message.chat.id,
-                fallback_text=fallback_text,
-                original_chat_id=original_message.chat.id,
-                message_thread_id=getattr(original_message, 'message_thread_id', None),
-                original_message=original_message,
-                runtime_task=fallback_task,
-            )
-            logger.info(
-                "Always Ask image fallback result: outcome=%s success=%s",
-                fallback_result.outcome_kind if is_gallery_command_result(fallback_result) else None,
-                did_gallery_command_succeed(fallback_result) if is_gallery_command_result(fallback_result) else None,
-            )
-        except Exception as e:
-            logger.error(f"{LoggerMsg.ALWAYS_ASK_IMAGE_FALLBACK_FAILED_LOG_MSG}: {e}")
-        
-        # Delete the Always Ask menu after handling
-        try:
-            safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
-        except Exception as e:
-            logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_DELETE_ALWAYS_ASK_MENU_LOG_MSG}: {e}")
-        return
-    
-    if data == "quick_embed":
-        # Get original URL from the reply message
-        original_message = callback_query.message.reply_to_message
-        if not original_message:
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if special_action_plan.mode == "image":
+            _execute_askq_image_action(app, callback_query, user_id, source_context)
             return
-            
-        url = original_message.text
-        if not url:
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_URL_NOT_FOUND_MSG, show_alert=True)
+        if special_action_plan.mode == "quick_embed":
+            _execute_askq_quick_embed_action(app, callback_query, user_id, source_context)
             return
-            
-        # Transform URL
-        embed_url = transform_to_embed_url(url)
-        if embed_url == url:
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_URL_NOT_EMBEDDABLE_MSG, show_alert=True)
-            return
-            
-        # Send transformed URL
-        app.send_message(
-            callback_query.message.chat.id,
-            embed_url,
-            reply_parameters=ReplyParameters(message_id=original_message.id)
-        )
-        send_to_logger(original_message, safe_get_messages(user_id).QUICK_EMBED_LOG_MSG.format(embed_url=embed_url))
-        safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
-        return
     
     # Handle manual quality selection menu
     if data == "try_manual":
@@ -6587,6 +6311,244 @@ def askq_callback_logic(
         task,
         proc_msg=proc_msg,
     )
+
+
+def _execute_askq_link_action(app, callback_query, user_id: int, source_context: AlwaysAskSourceContext) -> None:
+    original_message = source_context.original_message
+    url = source_context.url
+    from HELPERS.proxy_link_helper import get_direct_link_with_proxy
+
+    result = get_direct_link_with_proxy(url, "bv+ba/best", user_id)
+    if result.get("success"):
+        title = result.get("title", "Unknown")
+        duration = result.get("duration", 0)
+        player_urls = result.get("player_urls", {})
+        main_response = safe_get_messages(user_id).STREAM_LINKS_TITLE_MSG
+        main_response += safe_get_messages(user_id).STREAM_TITLE_MSG.format(title=title)
+        if duration and duration > 0:
+            main_response += f"{safe_get_messages(user_id).ALWAYS_ASK_DURATION_MSG} {duration} sec\n"
+        main_response += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_MSG} <code>bv+ba/best</code>\n\n"
+        main_response += f"{safe_get_messages(user_id).ALWAYS_ASK_BROWSER_MSG}\n\n"
+        browser_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_BROWSER_BUTTON_MSG, url=player_urls["direct"])],
+            [InlineKeyboardButton("🔚 Close", callback_data="askq|close")],
+        ])
+        app.send_message(
+            user_id,
+            main_response,
+            reply_parameters=ReplyParameters(message_id=original_message.id),
+            reply_markup=browser_keyboard,
+            parse_mode=enums.ParseMode.HTML,
+        )
+        if "vlc_ios" in player_urls:
+            vlc_ios_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_VLC_IOS_BUTTON_MSG, url=player_urls["vlc_ios"])],
+                [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_CLOSE_BUTTON_MSG, callback_data="askq|close")],
+            ])
+            app.send_message(
+                user_id,
+                safe_get_messages(user_id).AA_VLC_IOS_MSG,
+                reply_parameters=ReplyParameters(message_id=original_message.id),
+                reply_markup=vlc_ios_keyboard,
+                parse_mode=enums.ParseMode.HTML,
+            )
+        if "vlc_android" in player_urls:
+            vlc_android_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_VLC_ANDROID_BUTTON_MSG, url=player_urls["vlc_android"])],
+                [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_CLOSE_BUTTON_MSG, callback_data="askq|close")],
+            ])
+            app.send_message(
+                user_id,
+                safe_get_messages(user_id).AA_VLC_ANDROID_MSG,
+                reply_parameters=ReplyParameters(message_id=original_message.id),
+                reply_markup=vlc_android_keyboard,
+                parse_mode=enums.ParseMode.HTML,
+            )
+        send_to_logger(original_message, safe_get_messages(user_id).DIRECT_LINK_MENU_CREATED_LOG_MSG.format(user_id=user_id, url=url))
+    else:
+        error_msg = result.get("error", "Unknown error")
+        app.send_message(
+            user_id,
+            safe_get_messages(user_id).AA_ERROR_GETTING_LINK_MSG.format(error_msg=error_msg),
+            reply_parameters=ReplyParameters(message_id=original_message.id),
+            parse_mode=enums.ParseMode.HTML,
+        )
+        log_error_to_channel(
+            original_message,
+            safe_get_messages(user_id).DIRECT_LINK_EXTRACTION_FAILED_LOG_MSG.format(user_id=user_id, url=url, error=error_msg),
+            url,
+        )
+    try:
+        safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+    except Exception as e:
+        logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_DELETE_ALWAYS_ASK_MENU_LOG_MSG}: {e}")
+
+
+def _execute_askq_list_action(app, callback_query, user_id: int, source_context: AlwaysAskSourceContext) -> None:
+    original_message = source_context.original_message
+    url = source_context.url
+    from COMMANDS.list_cmd import run_ytdlp_list
+
+    success, output = run_ytdlp_list(url, user_id)
+    if success:
+        audio_only_formats = []
+        video_only_formats = []
+        for line in output.split("\n"):
+            if "audio only" in line.lower() or "audio_only" in line.lower():
+                parts = line.strip().split()
+                if parts and parts[0].isdigit():
+                    audio_only_formats.append(parts[0])
+            elif "video only" in line.lower() or "video_only" in line.lower():
+                parts = line.strip().split()
+                if parts and parts[0].isdigit():
+                    video_only_formats.append(parts[0])
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as temp_file:
+            temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_AVAILABLE_FORMATS_FOR_MSG}: {url}\n")
+            temp_file.write("=" * 50 + "\n\n")
+            temp_file.write(output)
+            temp_file.write("\n\n" + "=" * 50 + "\n")
+            temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_HOW_TO_USE_FORMAT_IDS_MSG}\n")
+            temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_AFTER_GETTING_LIST_MSG}\n")
+            temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ID_401_MSG}\n")
+            temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ID401_MSG}\n")
+            temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ID_140_AUDIO_MSG}\n")
+            if audio_only_formats:
+                temp_file.write(f"\n{safe_get_messages(user_id).ALWAYS_ASK_AUDIO_ONLY_FORMATS_DETECTED_MSG}: {', '.join(audio_only_formats)}\n")
+                temp_file.write(f"{safe_get_messages(user_id).ALWAYS_ASK_THESE_FORMATS_MP3_MSG}\n")
+            temp_file_path = temp_file.name
+        try:
+            caption = f"{safe_get_messages(user_id).ALWAYS_ASK_AVAILABLE_FORMATS_FOR_MSG}:\n<code>{url}</code>\n\n"
+            caption += f"{safe_get_messages(user_id).ALWAYS_ASK_HOW_TO_SET_FORMAT_MSG}\n"
+            caption += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ID_134_MSG}\n"
+            caption += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_720P_MSG}\n"
+            caption += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_BEST_MSG}\n"
+            caption += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ASK_MSG}\n\n"
+            if video_only_formats:
+                video_formats_text = ", ".join([f"<code>{fmt}</code>" for fmt in video_only_formats])
+                caption += f"\n{safe_get_messages(user_id).LIST_VIDEO_ONLY_FORMATS_MSG.format(formats=video_formats_text)}\n"
+            if audio_only_formats:
+                audio_formats_text = ", ".join([f"<code>{fmt}</code>" for fmt in audio_only_formats])
+                caption += f"{safe_get_messages(user_id).ALWAYS_ASK_AUDIO_ONLY_FORMATS_MSG}: {audio_formats_text}\n"
+                caption += f"{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_ID_140_AUDIO_CAPTION_MSG}\n"
+                caption += f"{safe_get_messages(user_id).ALWAYS_ASK_THESE_WILL_BE_MP3_MSG}\n\n"
+            caption += f"{safe_get_messages(user_id).ALWAYS_ASK_USE_FORMAT_ID_MSG}"
+            app.send_document(
+                user_id,
+                document=temp_file_path,
+                file_name=f"formats_{user_id}.txt",
+                caption=caption,
+                reply_parameters=ReplyParameters(message_id=original_message.id),
+            )
+            send_to_logger(original_message, safe_get_messages(user_id).LIST_COMMAND_EXECUTED_LOG_MSG.format(user_id=user_id, url=url))
+        except Exception as e:
+            logger.error(f"{LoggerMsg.ALWAYS_ASK_ERROR_SENDING_FORMATS_FILE_LOG_MSG}: {e}")
+            app.send_message(
+                user_id,
+                safe_get_messages(user_id).AA_ERROR_SENDING_FORMATS_MSG.format(error=str(e)),
+                reply_parameters=ReplyParameters(message_id=original_message.id),
+            )
+        finally:
+            try:
+                os.unlink(temp_file_path)
+            except Exception:
+                pass
+    else:
+        app.send_message(
+            user_id,
+            safe_get_messages(user_id).AA_FAILED_GET_FORMATS_MSG.format(output=output),
+            reply_parameters=ReplyParameters(message_id=original_message.id),
+        )
+    try:
+        safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+    except Exception as e:
+        logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_DELETE_ALWAYS_ASK_MENU_LOG_MSG}: {e}")
+
+
+def _execute_askq_image_action(app, callback_query, user_id: int, source_context: AlwaysAskSourceContext) -> None:
+    original_message = source_context.original_message
+    url_text = source_context.url_text
+    logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_ORIGINAL_MESSAGE_TEXT_LOG_MSG}: {original_message.text}")
+    logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_ORIGINAL_MESSAGE_CAPTION_LOG_MSG}: {original_message.caption}")
+    logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_URL_TEXT_LOG_MSG}: {url_text}")
+    import re as _re
+    range_url_match = _re.search(r'(https?://[^\s\*#]+)\*(\d+)\*(\d+)', url_text)
+    if range_url_match:
+        url = range_url_match.group(1)
+        start_range = int(range_url_match.group(2))
+        end_range = int(range_url_match.group(3))
+        logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_FOUND_RANGE_URL_LOG_MSG}: {url} with range {start_range}-{end_range}")
+    else:
+        m = _re.search(r'https?://[^\s\*#]+', url_text)
+        url = m.group(0) if m else url_text
+        start_range = 1
+        end_range = 1
+        logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_NO_RANGE_FOUND_LOG_MSG}: {url}")
+    try:
+        from HELPERS.porn import is_porn
+        nsfw_enabled = bool(getattr(Config, "NSFW_CHECK_ENABLED", True))
+        is_nsfw = bool(is_porn(url, "", "", None)) if nsfw_enabled else False
+        logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_IS_PORN_CHECK_LOG_MSG} {url}: {is_nsfw}")
+        user_forced_nsfw = bool(re.search(r"(?i)(?:^|\s)#nsfw(?:\s|$)", url_text)) if nsfw_enabled else False
+        if user_forced_nsfw:
+            is_nsfw = True
+            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_USER_FORCED_NSFW_TAG_DETECTED_LOG_MSG} {url}")
+        parsed_url = url
+        if start_range and end_range and start_range != 1 and end_range != 1:
+            fallback_text = f"/img {start_range}-{end_range} {parsed_url}"
+            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_CONVERTING_RANGE_LOG_MSG}: *{start_range}*{end_range} -> {start_range}-{end_range}, fallback_text: {fallback_text}")
+        else:
+            fallback_text = f"/img {url}"
+            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_NO_RANGE_DETECTED_LOG_MSG}: {fallback_text}")
+        if is_nsfw and "#nsfw" not in fallback_text.lower():
+            fallback_text += " #nsfw"
+            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_ADDED_NSFW_TAG_LOG_MSG}: {url}")
+        fallback_branch = gallery_fallback_branch(None, origin="always_ask_menu", reason="explicit_image_menu_fallback")
+        fallback_task = _make_callback_runtime_task(
+            original_message,
+            url=parsed_url,
+            tags=["#nsfw"] if is_nsfw else [],
+            tags_text="#nsfw" if is_nsfw else "",
+            branch_result=fallback_branch,
+            video_count=max(1, end_range - start_range + 1),
+            video_start_with=start_range,
+        )
+        fallback_result = _dispatch_gallery_fallback(
+            app,
+            user_id=original_message.chat.id,
+            fallback_text=fallback_text,
+            original_chat_id=original_message.chat.id,
+            message_thread_id=getattr(original_message, "message_thread_id", None),
+            original_message=original_message,
+            runtime_task=fallback_task,
+        )
+        logger.info(
+            "Always Ask image fallback result: outcome=%s success=%s",
+            fallback_result.outcome_kind if is_gallery_command_result(fallback_result) else None,
+            did_gallery_command_succeed(fallback_result) if is_gallery_command_result(fallback_result) else None,
+        )
+    except Exception as e:
+        logger.error(f"{LoggerMsg.ALWAYS_ASK_IMAGE_FALLBACK_FAILED_LOG_MSG}: {e}")
+    try:
+        safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+    except Exception as e:
+        logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_DELETE_ALWAYS_ASK_MENU_LOG_MSG}: {e}")
+
+
+def _execute_askq_quick_embed_action(app, callback_query, user_id: int, source_context: AlwaysAskSourceContext) -> None:
+    original_message = source_context.original_message
+    url = source_context.url
+    embed_url = transform_to_embed_url(url)
+    if embed_url == url:
+        safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_URL_NOT_EMBEDDABLE_MSG, show_alert=True)
+        return
+    app.send_message(
+        callback_query.message.chat.id,
+        embed_url,
+        reply_parameters=ReplyParameters(message_id=original_message.id),
+    )
+    send_to_logger(original_message, safe_get_messages(user_id).QUICK_EMBED_LOG_MSG.format(embed_url=embed_url))
+    safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
 
 def analyze_format_type(format_info):
     """
