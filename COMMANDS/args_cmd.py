@@ -96,6 +96,27 @@ class ArgsStorageContext:
     args_file: str
 
 
+@dataclass(frozen=True)
+class ArgsInputStateStore:
+    dm_states: dict
+    topic_states: dict
+    dm_timers: dict
+    topic_timers: dict
+    dm_timeouts: set
+    topic_timeouts: set
+
+
+def _get_args_input_state_store() -> ArgsInputStateStore:
+    return ArgsInputStateStore(
+        dm_states=user_input_states_dm,
+        topic_states=user_input_states_topic,
+        dm_timers=input_state_timers_dm,
+        topic_timers=input_state_timers_topic,
+        dm_timeouts=timeout_sent_dm,
+        topic_timeouts=timeout_sent_topic,
+    )
+
+
 def _build_args_callback_context(execution_context) -> ArgsCallbackContext:
     callback_query = execution_context.callback_query
     source_message = execution_context.source_message or callback_query.message
@@ -130,10 +151,11 @@ def _build_args_text_input_context(execution_context) -> ArgsTextInputContext | 
 
 
 def _get_args_input_state(chat_id: int, owner_id: int, thread_id: int) -> dict[str, Any] | None:
-    if thread_id and (chat_id, thread_id) in user_input_states_topic:
-        return user_input_states_topic[(chat_id, thread_id)]
-    if not thread_id and owner_id in user_input_states_dm:
-        return user_input_states_dm[owner_id]
+    state_store = _get_args_input_state_store()
+    if thread_id and (chat_id, thread_id) in state_store.topic_states:
+        return state_store.topic_states[(chat_id, thread_id)]
+    if not thread_id and owner_id in state_store.dm_states:
+        return state_store.dm_states[owner_id]
     return None
 
 
@@ -145,11 +167,12 @@ def _clear_args_input_state(chat_id: int, owner_id: int, thread_id: int) -> None
 
 
 def _start_args_input_state(chat_id: int, owner_id: int, thread_id: int, state: dict[str, Any]) -> None:
+    state_store = _get_args_input_state_store()
     if thread_id:
-        user_input_states_topic[(chat_id, thread_id)] = state
+        state_store.topic_states[(chat_id, thread_id)] = state
         start_input_state_timer(chat_id, thread_id)
     else:
-        user_input_states_dm[owner_id] = state
+        state_store.dm_states[owner_id] = state
         start_input_state_timer(owner_id)
 
 
@@ -226,49 +249,51 @@ def _update_user_arg_value(user_id: int, param_name: str, value: Any) -> bool:
 def clear_input_state_timer(user_id: int, thread_id: int = None):
     messages = get_messages_instance(user_id)
     """Clear input state and its timer"""
+    state_store = _get_args_input_state_store()
     if thread_id:
         # Clear topic state
-        user_input_states_topic.pop((user_id, thread_id), None)
-        timer = input_state_timers_topic.pop((user_id, thread_id), None)
+        state_store.topic_states.pop((user_id, thread_id), None)
+        timer = state_store.topic_timers.pop((user_id, thread_id), None)
         if timer:
             try:
                 timer.cancel()
             except Exception:
                 pass
         # Clear timeout flag
-        timeout_sent_topic.discard((user_id, thread_id))
+        state_store.topic_timeouts.discard((user_id, thread_id))
     else:
         # Clear DM state
-        user_input_states_dm.pop(user_id, None)
-        timer = input_state_timers_dm.pop(user_id, None)
+        state_store.dm_states.pop(user_id, None)
+        timer = state_store.dm_timers.pop(user_id, None)
         if timer:
             try:
                 timer.cancel()
             except Exception:
                 pass
         # Clear timeout flag
-        timeout_sent_dm.discard(user_id)
+        state_store.dm_timeouts.discard(user_id)
 
 def start_input_state_timer(user_id: int, thread_id: int = None):
     messages = get_messages_instance(user_id)
     """Start a 5-minute timer to auto-close input state"""
     def auto_close():
         messages = get_messages_instance(user_id)
+        state_store = _get_args_input_state_store()
         # Check if timer still exists (not cancelled)
         if thread_id:
-            if (user_id, thread_id) not in input_state_timers_topic:
+            if (user_id, thread_id) not in state_store.topic_timers:
                 return
             # Check if timeout message already sent
-            if (user_id, thread_id) in timeout_sent_topic:
+            if (user_id, thread_id) in state_store.topic_timeouts:
                 return
-            timeout_sent_topic.add((user_id, thread_id))
+            state_store.topic_timeouts.add((user_id, thread_id))
         else:
-            if user_id not in input_state_timers_dm:
+            if user_id not in state_store.dm_timers:
                 return
             # Check if timeout message already sent
-            if user_id in timeout_sent_dm:
+            if user_id in state_store.dm_timeouts:
                 return
-            timeout_sent_dm.add(user_id)
+            state_store.dm_timeouts.add(user_id)
         
         clear_input_state_timer(user_id, thread_id)
         # Send notification to user only once
@@ -283,18 +308,19 @@ def start_input_state_timer(user_id: int, thread_id: int = None):
             logger.error(messages.ARGS_ERROR_SENDING_TIMEOUT_MSG.format(error=e))
     
     # Cancel existing timer if any
+    state_store = _get_args_input_state_store()
     if thread_id:
-        existing_timer = input_state_timers_topic.get((user_id, thread_id))
+        existing_timer = state_store.topic_timers.get((user_id, thread_id))
         if existing_timer:
             existing_timer.cancel()
         timer = threading.Timer(300, auto_close)  # 5 minutes = 300 seconds
-        input_state_timers_topic[(user_id, thread_id)] = timer
+        state_store.topic_timers[(user_id, thread_id)] = timer
     else:
-        existing_timer = input_state_timers_dm.get(user_id)
+        existing_timer = state_store.dm_timers.get(user_id)
         if existing_timer:
             existing_timer.cancel()
         timer = threading.Timer(300, auto_close)  # 5 minutes = 300 seconds
-        input_state_timers_dm[user_id] = timer
+        state_store.dm_timers[user_id] = timer
     
     timer.start()
 
@@ -1689,11 +1715,12 @@ def _has_args_state(flt, client, message) -> bool:
     try:
         chat_id = message.chat.id
         thread_id = getattr(message, 'message_thread_id', None) or 0
+        state_store = _get_args_input_state_store()
         if thread_id:
-            return (chat_id, thread_id) in user_input_states_topic
+            return (chat_id, thread_id) in state_store.topic_states
         else:
             uid = getattr(message, 'from_user', None).id if getattr(message, 'from_user', None) else chat_id
-            return uid in user_input_states_dm
+            return uid in state_store.dm_states
     except Exception:
         return False
 
