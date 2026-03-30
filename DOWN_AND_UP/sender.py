@@ -1,22 +1,167 @@
 # @reply_with_keyboard
+from dataclasses import dataclass
+import json
+import os
+import subprocess
+import time
+
 from pyrogram import enums
 from pyrogram.types import ReplyParameters, InputPaidMediaVideo
 from HELPERS.app_instance import get_app
 from HELPERS.logger import logger
-from HELPERS.logger import get_log_channel
 from HELPERS.download_status import progress_bar
 from HELPERS.limitter import TimeFormatter
 from HELPERS.caption import truncate_caption
 from DOWN_AND_UP.ffmpeg import get_video_info_ffprobe
-import os
-import subprocess
-import json
-from HELPERS.safe_messeger import safe_forward_messages
 from URL_PARSERS.thumbnail_downloader import download_thumbnail
 from CONFIG.config import Config
-from CONFIG.messages import Messages, safe_get_messages
+from CONFIG.messages import safe_get_messages
 from CONFIG.limits import LimitsConfig
-import time
+
+
+@dataclass(frozen=True)
+class SenderExecutionContext:
+    user_id: int
+    source_message: object
+    reply_parameters: ReplyParameters
+    chat_type: object
+    text: str
+    is_private_chat: bool
+
+
+def _build_sender_execution_context(message) -> SenderExecutionContext:
+    chat_type = getattr(message.chat, "type", None)
+    return SenderExecutionContext(
+        user_id=message.chat.id,
+        source_message=message,
+        reply_parameters=ReplyParameters(message_id=message.id),
+        chat_type=chat_type,
+        text=message.text or "",
+        is_private_chat=(chat_type == enums.ChatType.PRIVATE),
+    )
+
+
+def _send_paid_video_media(
+    *,
+    sender_context: SenderExecutionContext,
+    media_path: str,
+    duration: int,
+    width: int | None,
+    height: int | None,
+    cover_path: str | None,
+):
+    try:
+        safe_paid_dur = float(duration) if duration and float(duration) > 0 else 1.0
+    except Exception:
+        safe_paid_dur = 1.0
+    try:
+        safe_w = int(width) if width and int(width) > 0 else 640
+    except Exception:
+        safe_w = 640
+    try:
+        safe_h = int(height) if height and int(height) > 0 else 360
+    except Exception:
+        safe_h = 360
+
+    try:
+        paid_media = InputPaidMediaVideo(
+            media=media_path,
+            cover=cover_path,
+            width=safe_w,
+            height=safe_h,
+            duration=safe_paid_dur,
+            supports_streaming=True,
+        )
+    except TypeError:
+        paid_media = InputPaidMediaVideo(media=media_path)
+
+    allow_broadcast = sender_context.chat_type != enums.ChatType.PRIVATE
+    result = app.send_paid_media(
+        chat_id=sender_context.user_id,
+        media=[paid_media],
+        star_count=LimitsConfig.NSFW_STAR_COST,
+        **({"allow_paid_broadcast": True} if allow_broadcast else {}),
+        payload=str(Config.STAR_RECEIVER),
+        reply_parameters=sender_context.reply_parameters,
+    )
+    try:
+        return result[0] if isinstance(result, list) and result else result
+    except Exception:
+        return result
+
+
+def _send_regular_video_media(
+    *,
+    sender_context: SenderExecutionContext,
+    media_path: str,
+    caption_text: str,
+    duration: int,
+    width: int | None,
+    height: int | None,
+    thumb_path: str | None,
+    info_text: str,
+    progress_message_id: int,
+):
+    return app.send_video(
+        chat_id=sender_context.user_id,
+        video=media_path,
+        caption=caption_text,
+        duration=int(duration) if duration else None,
+        width=int(width) if width else None,
+        height=int(height) if height else None,
+        supports_streaming=True,
+        thumb=thumb_path,
+        has_spoiler=False,
+        progress=progress_bar,
+        progress_args=(
+            sender_context.user_id,
+            progress_message_id,
+            f"{info_text}\n<b>{safe_get_messages(sender_context.user_id).SENDER_VIDEO_DURATION_MSG}</b> <i>{TimeFormatter(duration*1000)}</i>\n\n<i>{safe_get_messages(sender_context.user_id).SENDER_UPLOADING_VIDEO_MSG}</i>"
+        ),
+        reply_parameters=sender_context.reply_parameters,
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+def _send_document_media(
+    *,
+    sender_context: SenderExecutionContext,
+    media_path: str,
+    caption_text: str,
+    thumb_path: str | None,
+    info_text: str,
+    progress_message_id: int,
+    duration: int,
+):
+    return app.send_document(
+        chat_id=sender_context.user_id,
+        document=media_path,
+        file_name=os.path.basename(media_path),
+        caption=caption_text,
+        thumb=thumb_path,
+        progress=progress_bar,
+        progress_args=(
+            sender_context.user_id,
+            progress_message_id,
+            f"{info_text}\n<b>{safe_get_messages(sender_context.user_id).SENDER_VIDEO_DURATION_MSG}</b> <i>{TimeFormatter(duration*1000)}</i>\n\n<i>{safe_get_messages(sender_context.user_id).SENDER_UPLOADING_FILE_MSG}</i>"
+        ),
+        reply_parameters=sender_context.reply_parameters,
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+def _send_description_document(
+    *,
+    sender_context: SenderExecutionContext,
+    description_path: str,
+):
+    return app.send_document(
+        chat_id=sender_context.user_id,
+        document=description_path,
+        caption=safe_get_messages(sender_context.user_id).CHANGE_CAPTION_HINT_MSG,
+        reply_parameters=sender_context.reply_parameters,
+        parse_mode=enums.ParseMode.HTML,
+    )
 
 # Get app instance for decorators
 app = get_app()
@@ -52,10 +197,10 @@ def send_videos(
     tags_text: str = '',
 ):
     import re
-    import os
-    user_id = message.chat.id
+    sender_context = _build_sender_execution_context(message)
+    user_id = sender_context.user_id
     messages = safe_get_messages(user_id)
-    text = message.text or ""
+    text = sender_context.text
     m = re.search(r'https?://[^\s\*]+', text)
     video_url = m.group(0) if m else ""
     temp_desc_path = os.path.join(os.path.dirname(video_abs_path), "full_description.txt")
@@ -254,89 +399,40 @@ def send_videos(
                 return _gen_thumb(video_path)
 
         def _try_send_video(caption_text: str):
-            messages = safe_get_messages(user_id)
             nonlocal was_paid
             # For free messages: external preview without padding; for paid: 320x320 cover
             local_thumb_free = _gen_free_cover(video_abs_path)
             # Paid media only in private chats; in groups/channels send regular video
-            try:
-                chat_type = getattr(message.chat, "type", None)
-                is_private_chat = chat_type == enums.ChatType.PRIVATE
-            except Exception:
-                is_private_chat = True
+            is_private_chat = sender_context.is_private_chat
             if is_spoiler and is_private_chat:
                 try:
-                    # Probe metadata and provide valid cover/parameters
-                    try:
-                        v_w, v_h, v_dur = get_video_info_ffprobe(video_abs_path)
-                    except Exception:
-                        v_w, v_h, v_dur = width, height, duration
-                    # Paid duration must be float and >0
-                    try:
-                        safe_paid_dur = float(v_dur) if v_dur and float(v_dur) > 0 else float(duration) if duration and float(duration) > 0 else 1.0
-                    except Exception:
-                        safe_paid_dur = 1.0
-                    # Width/height must be set (>0)
-                    try:
-                        safe_w = int(v_w) if v_w and int(v_w) > 0 else 640
-                    except Exception:
-                        safe_w = 640
-                    try:
-                        safe_h = int(v_h) if v_h and int(v_h) > 0 else 360
-                    except Exception:
-                        safe_h = 360
-                    paid_media = InputPaidMediaVideo(
-                        media=video_abs_path,
-                        cover=_gen_paid_cover(video_abs_path),
-                        width=safe_w,
-                        height=safe_h,
-                        duration=safe_paid_dur,
-                        supports_streaming=True
-                    )
-                except TypeError:
-                    paid_media = InputPaidMediaVideo(
-                        media=video_abs_path,
-                    )
-                was_paid = True
-                allow_broadcast = getattr(message.chat, "type", None) != enums.ChatType.PRIVATE
-                result = app.send_paid_media(
-                    chat_id=user_id,
-                    media=[paid_media],
-                    star_count=LimitsConfig.NSFW_STAR_COST,
-                    **({"allow_paid_broadcast": True} if allow_broadcast else {}),
-                    payload=str(Config.STAR_RECEIVER),
-                    reply_parameters=ReplyParameters(message_id=message.id),
-                )
-                try:
-                    # Some forks return list for albums; wrap to single message for uniformity
-                    video_msg = result[0] if isinstance(result, list) and result else result
-                    # Paid media will be forwarded to LOGS_PAID_ID in image_cmd.py for caching
-                    return video_msg
+                    v_w, v_h, v_dur = get_video_info_ffprobe(video_abs_path)
                 except Exception:
-                    return result
+                    v_w, v_h, v_dur = width, height, duration
+                was_paid = True
+                return _send_paid_video_media(
+                    sender_context=sender_context,
+                    media_path=video_abs_path,
+                    duration=v_dur or duration,
+                    width=v_w or width,
+                    height=v_h or height,
+                    cover_path=_gen_paid_cover(video_abs_path),
+                )
             # For free media, also keep correct metadata and thumbnail
             try:
                 v_w2, v_h2, v_dur2 = get_video_info_ffprobe(video_abs_path)
             except Exception:
                 v_w2, v_h2, v_dur2 = width, height, duration
-            result = app.send_video(
-                chat_id=user_id,
-                video=video_abs_path,
-                caption=caption_text,
+            result = _send_regular_video_media(
+                sender_context=sender_context,
+                media_path=video_abs_path,
+                caption_text=caption_text,
                 duration=int(v_dur2) if v_dur2 else duration,
                 width=int(v_w2) if v_w2 else width,
                 height=int(v_h2) if v_h2 else height,
-                supports_streaming=True,
-                thumb=local_thumb_free,
-                has_spoiler=False,
-                progress=progress_bar,
-                progress_args=(
-                    user_id,
-                    msg_id,
-                    f"{info_text}\n<b>{safe_get_messages(user_id).SENDER_VIDEO_DURATION_MSG}</b> <i>{TimeFormatter(duration*1000)}</i>\n\n<i>{safe_get_messages(user_id).SENDER_UPLOADING_VIDEO_MSG}</i>"
-                ),
-                reply_parameters=ReplyParameters(message_id=message.id),
-                parse_mode=enums.ParseMode.HTML
+                thumb_path=local_thumb_free,
+                info_text=info_text,
+                progress_message_id=msg_id,
             )
             # Cleanup special thumb (free-only temp files)
             try:
@@ -349,7 +445,6 @@ def send_videos(
             return result
 
         def _fallback_send_document(caption_text: str):
-            messages = safe_get_messages(user_id)
             nonlocal was_paid
             # For free documents: external preview without padding
             local_thumb = _gen_free_cover(video_abs_path) or thumb_file_path
@@ -369,75 +464,29 @@ def send_videos(
                         local_thumb = None
             except Exception:
                 local_thumb = thumb_file_path
-            try:
-                chat_type = getattr(message.chat, "type", None)
-                is_private_chat = chat_type == enums.ChatType.PRIVATE
-            except Exception:
-                is_private_chat = True
+            is_private_chat = sender_context.is_private_chat
             if is_spoiler and is_private_chat:
                 try:
-                    try:
-                        v_w, v_h, v_dur = get_video_info_ffprobe(video_abs_path)
-                    except Exception:
-                        v_w, v_h, v_dur = width, height, duration
-                    # Paid duration must be float and >0
-                    try:
-                        safe_paid_dur = float(v_dur) if v_dur and float(v_dur) > 0 else float(duration) if duration and float(duration) > 0 else 1.0
-                    except Exception:
-                        safe_paid_dur = 1.0
-                    # Width/height must be set (>0)
-                    try:
-                        safe_w = int(v_w) if v_w and int(v_w) > 0 else 640
-                    except Exception:
-                        safe_w = 640
-                    try:
-                        safe_h = int(v_h) if v_h and int(v_h) > 0 else 360
-                    except Exception:
-                        safe_h = 360
-                    paid_media = InputPaidMediaVideo(
-                        media=video_abs_path,
-                        cover=_gen_paid_cover(video_abs_path),
-                        width=safe_w,
-                        height=safe_h,
-                        duration=safe_paid_dur,
-                        supports_streaming=True
-                    )
-                except TypeError:
-                    paid_media = InputPaidMediaVideo(
-                        media=video_abs_path,
-                    )
-                was_paid = True
-                allow_broadcast = getattr(message.chat, "type", None) != enums.ChatType.PRIVATE
-                result = app.send_paid_media(
-                    chat_id=user_id,
-                    media=[paid_media],
-                    star_count=LimitsConfig.NSFW_STAR_COST,
-                    **({"allow_paid_broadcast": True} if allow_broadcast else {}),
-                    payload=str(Config.STAR_RECEIVER),
-                    reply_parameters=ReplyParameters(message_id=message.id),
-                )
-                try:
-                    video_msg = result[0] if isinstance(result, list) and result else result
-                    # Paid media will be forwarded to LOGS_PAID_ID in image_cmd.py for caching
-                    return video_msg
+                    v_w, v_h, v_dur = get_video_info_ffprobe(video_abs_path)
                 except Exception:
-                    return result
-            # Get original filename for document
-            original_filename = os.path.basename(video_abs_path)
-            result = app.send_document(
-                chat_id=user_id,
-                document=video_abs_path,
-                file_name=original_filename,
-                caption=caption_text,
-                thumb=local_thumb,
-                progress=progress_bar,
-                progress_args=(
-                    user_id,
-                    msg_id,
-                    f"{info_text}\n<b>{safe_get_messages(user_id).SENDER_VIDEO_DURATION_MSG}</b> <i>{TimeFormatter(duration*1000)}</i>\n\n<i>{safe_get_messages(user_id).SENDER_UPLOADING_FILE_MSG}</i>"
-                ),
-                reply_parameters=ReplyParameters(message_id=message.id),
-                parse_mode=enums.ParseMode.HTML
+                    v_w, v_h, v_dur = width, height, duration
+                was_paid = True
+                return _send_paid_video_media(
+                    sender_context=sender_context,
+                    media_path=video_abs_path,
+                    duration=v_dur or duration,
+                    width=v_w or width,
+                    height=v_h or height,
+                    cover_path=_gen_paid_cover(video_abs_path),
+                )
+            result = _send_document_media(
+                sender_context=sender_context,
+                media_path=video_abs_path,
+                caption_text=caption_text,
+                thumb_path=local_thumb,
+                info_text=info_text,
+                progress_message_id=msg_id,
+                duration=duration,
             )
             # Cleanup special thumb
             try:
@@ -525,12 +574,9 @@ def send_videos(
                 f.write(full_video_title)
         if was_truncated and os.path.exists(temp_desc_path):
             try:
-                user_doc_msg = app.send_document(
-                    chat_id=user_id,
-                    document=temp_desc_path,
-                    caption=safe_get_messages(user_id).CHANGE_CAPTION_HINT_MSG,
-                    reply_parameters=ReplyParameters(message_id=message.id),
-                    parse_mode=enums.ParseMode.HTML
+                user_doc_msg = _send_description_document(
+                    sender_context=sender_context,
+                    description_path=temp_desc_path,
                 )
                 # Note: Description file forwarding is handled in down_and_up.py
             except Exception as e:
