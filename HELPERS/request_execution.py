@@ -958,6 +958,17 @@ def normalize_url_download_runtime_request(
     return normalized, tag_error
 
 
+@dataclass(frozen=True)
+class UrlRuntimeDecision:
+    mode: str
+    request: UrlDownloadRequested | SimpleNamespace
+    saved_format: str | None = None
+    tag_error: object | None = None
+    error_text: str | None = None
+    should_clear_playlist_errors: bool = False
+    playlist_name_to_clear: str | None = None
+
+
 def resolve_saved_format_policy(*, user_id: int) -> tuple[bool, str | None]:
     user_dir = os.path.join("users", str(user_id))
     os.makedirs(user_dir, exist_ok=True)
@@ -972,6 +983,73 @@ def resolve_saved_format_policy(*, user_id: int) -> tuple[bool, str | None]:
             should_ask = False
             saved_format = fmt
     return should_ask, saved_format
+
+
+def determine_url_runtime_decision(
+    *,
+    user_id: int,
+    raw_input: str,
+    source_message_id: int | None,
+    request: UrlDownloadRequested | None = None,
+    has_active_download: bool = False,
+    invalid_input_text: str | None = None,
+) -> UrlRuntimeDecision:
+    runtime_request, tag_error = normalize_url_download_runtime_request(
+        user_id=user_id,
+        source_message_id=source_message_id,
+        raw_input=raw_input,
+        request=request,
+    )
+    should_ask, saved_format = resolve_saved_format_policy(user_id=user_id)
+
+    if should_ask:
+        return UrlRuntimeDecision(
+            mode="quality_menu",
+            request=runtime_request,
+            tag_error=tag_error,
+        )
+
+    if has_active_download:
+        return UrlRuntimeDecision(
+            mode="wait_download",
+            request=runtime_request,
+            saved_format=saved_format,
+            should_clear_playlist_errors=True,
+        )
+
+    if tag_error:
+        return UrlRuntimeDecision(
+            mode="tag_error",
+            request=runtime_request,
+            saved_format=saved_format,
+            tag_error=tag_error,
+            should_clear_playlist_errors=True,
+        )
+
+    if not runtime_request.url:
+        return UrlRuntimeDecision(
+            mode="invalid_input",
+            request=runtime_request,
+            saved_format=saved_format,
+            error_text=invalid_input_text,
+            should_clear_playlist_errors=True,
+        )
+
+    if is_url_blacklisted(raw_input):
+        return UrlRuntimeDecision(
+            mode="blacklisted",
+            request=runtime_request,
+            saved_format=saved_format,
+            should_clear_playlist_errors=True,
+        )
+
+    return UrlRuntimeDecision(
+        mode="saved_format",
+        request=runtime_request,
+        saved_format=saved_format,
+        should_clear_playlist_errors=True,
+        playlist_name_to_clear=runtime_request.playlist_name or None,
+    )
 
 
 def derive_playlist_start_index(video_start_with: int, video_end_with: int) -> int:

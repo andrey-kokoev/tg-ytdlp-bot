@@ -6,12 +6,10 @@ from HELPERS.logger import send_to_logger, logger
 from HELPERS.request_execution import (
     build_message_execution_context,
     clear_user_playlist_error_state,
+    determine_url_runtime_decision,
     derive_url_runtime_media_policy,
     handle_saved_format_url_runtime,
     handle_url_quality_menu_runtime,
-    is_url_blacklisted,
-    normalize_url_download_runtime_request,
-    resolve_saved_format_policy,
     send_url_runtime_error,
     send_url_tag_error,
     send_url_wait_download_notice,
@@ -33,22 +31,27 @@ def video_url_extractor(app, message=None, url_request=None, execution_context=N
     global active_downloads
     user_id = message.chat.id
     full_string = getattr(url_request, "raw_input", None) or message.text
-    runtime_request, tag_error = normalize_url_download_runtime_request(
+    decision = determine_url_runtime_decision(
         user_id=user_id,
-        source_message_id=getattr(message, "id", None),
         raw_input=full_string,
+        source_message_id=getattr(message, "id", None),
         request=url_request,
+        has_active_download=bool(get_active_download(user_id)),
+        invalid_input_text=safe_get_messages(user_id).URL_PARSER_USER_ENTERED_INVALID_MSG.format(
+            input=full_string,
+            error_msg=safe_get_messages(user_id).ERROR1,
+        ),
     )
-    should_ask, saved_format = resolve_saved_format_policy(user_id=user_id)
+    runtime_request = decision.request
 
-    if should_ask:
+    if decision.mode == "quality_menu":
         logger.info(f"🔍 [DEBUG] video_extractor: full_string='{full_string}'")
         logger.info(
             f"🔍 [DEBUG] video_extractor: after extract_url_range_tags: url='{runtime_request.url}', "
             f"video_start_with={runtime_request.video_start_with}, video_end_with={runtime_request.video_end_with}"
         )
-        if tag_error:
-            send_url_tag_error(app, execution_context, user_id=user_id, tag_error=tag_error)
+        if decision.tag_error:
+            send_url_tag_error(app, execution_context, user_id=user_id, tag_error=decision.tag_error)
             return
         logger.info(
             "🔍 [DEBUG] video_extractor: video_start_with=%s, video_end_with=%s",
@@ -59,9 +62,13 @@ def video_url_extractor(app, message=None, url_request=None, execution_context=N
         return
 
     # This code is executed only if the user has selected a specific format
-    clear_user_playlist_error_state(user_id=user_id)
-            
-    if get_active_download(user_id):
+    if decision.should_clear_playlist_errors:
+        clear_user_playlist_error_state(
+            user_id=user_id,
+            playlist_name=decision.playlist_name_to_clear,
+        )
+
+    if decision.mode == "wait_download":
         send_url_wait_download_notice(
             app,
             execution_context,
@@ -69,11 +76,11 @@ def video_url_extractor(app, message=None, url_request=None, execution_context=N
             text=safe_get_messages(user_id).VIDEO_EXTRACTOR_WAIT_DOWNLOAD_MSG,
         )
         return
-        
-    if tag_error:
-        send_url_tag_error(app, execution_context, user_id=user_id, tag_error=tag_error)
+
+    if decision.mode == "tag_error":
+        send_url_tag_error(app, execution_context, user_id=user_id, tag_error=decision.tag_error)
         return
-    
+
     # Checking the range limit
     if not check_playlist_range_limits(
         runtime_request.url,
@@ -84,36 +91,27 @@ def video_url_extractor(app, message=None, url_request=None, execution_context=N
     ):
         return
     
-    if runtime_request.url:
+    if decision.mode == "saved_format":
         users_first_name = message.chat.first_name
         send_to_logger(message, safe_get_messages(user_id).URL_PARSER_USER_ENTERED_URL_LOG_MSG.format(user_name=users_first_name, url=full_string))
-        if is_url_blacklisted(full_string):
-            send_url_runtime_error(
-                execution_context,
-                safe_get_messages(user_id).PORN_CONTENT_CANNOT_DOWNLOAD_MSG,
-            )
-            return
         media_policy = derive_url_runtime_media_policy(runtime_request)
-        if runtime_request.playlist_name:
-            clear_user_playlist_error_state(
-                user_id=user_id,
-                playlist_name=runtime_request.playlist_name,
-            )
-        handle_saved_format_url_runtime(
+        return handle_saved_format_url_runtime(
             app,
             execution_context,
             runtime_request,
-            saved_format=saved_format,
+            saved_format=decision.saved_format,
             tags=list(media_policy["all_tags"]),
             tags_text=media_policy["tags_text"],
             video_count=media_policy["video_count"],
             force_no_title=media_policy["force_no_title"],
         )
-    else:
+
+    if decision.mode == "blacklisted":
         send_url_runtime_error(
             execution_context,
-            safe_get_messages(user_id).URL_PARSER_USER_ENTERED_INVALID_MSG.format(
-                input=full_string,
-                error_msg=safe_get_messages(user_id).ERROR1,
-            ),
+            safe_get_messages(user_id).PORN_CONTENT_CANNOT_DOWNLOAD_MSG,
         )
+        return
+
+    if decision.mode == "invalid_input":
+        send_url_runtime_error(execution_context, decision.error_text)
