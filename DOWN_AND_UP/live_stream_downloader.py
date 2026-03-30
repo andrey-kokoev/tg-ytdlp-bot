@@ -1,6 +1,7 @@
 # Live Stream Downloader
 # Downloads live streams in chunks and sends them immediately
 
+from dataclasses import dataclass
 import os
 import yt_dlp
 import time
@@ -9,7 +10,95 @@ from CONFIG.limits import LimitsConfig
 from CONFIG.messages import safe_get_messages
 from HELPERS.logger import logger
 from DOWN_AND_UP.sender import send_videos
-from DOWN_AND_UP.ffmpeg import get_duration_thumb, get_video_info_ffprobe
+from DOWN_AND_UP.ffmpeg import (
+    FfmpegExecutionContext,
+    _build_ffmpeg_execution_context,
+    get_duration_thumb,
+    get_video_info_ffprobe,
+)
+
+
+@dataclass(frozen=True)
+class LiveStreamExecutionContext:
+    user_id: int
+    source_message: object
+    proc_msg_id: int
+    current_total_process: str
+    ffmpeg_context: FfmpegExecutionContext | None
+
+
+def _build_live_stream_execution_context(
+    *,
+    message,
+    user_id: int,
+    proc_msg_id: int,
+    current_total_process: str,
+) -> LiveStreamExecutionContext:
+    return LiveStreamExecutionContext(
+        user_id=user_id,
+        source_message=message,
+        proc_msg_id=proc_msg_id,
+        current_total_process=current_total_process,
+        ffmpeg_context=_build_ffmpeg_execution_context(message),
+    )
+
+
+def _emit_live_stream_progress(
+    execution_context: LiveStreamExecutionContext,
+    *,
+    chunk_idx: int,
+    max_chunks: int,
+    split_hours: int,
+) -> None:
+    from HELPERS.safe_messeger import safe_edit_message_text
+
+    progress_text = (
+        f"{execution_context.current_total_process}\n"
+        f"📡 <b>Live Stream Download</b>\n"
+        f"Chunk {chunk_idx + 1}/{max_chunks}\n"
+        f"Duration: {split_hours} hour(s) per chunk"
+    )
+    safe_edit_message_text(execution_context.user_id, execution_context.proc_msg_id, progress_text)
+
+
+def _emit_live_stream_final_status(
+    execution_context: LiveStreamExecutionContext,
+    *,
+    successful_chunks: int,
+) -> None:
+    from HELPERS.safe_messeger import safe_edit_message_text
+
+    final_text = (
+        f"{execution_context.current_total_process}\n"
+        f"✅ <b>Live Stream Download Complete</b>\n"
+        f"Downloaded {successful_chunks} chunk(s)"
+    )
+    safe_edit_message_text(execution_context.user_id, execution_context.proc_msg_id, final_text)
+
+
+def _send_live_stream_chunk(
+    execution_context: LiveStreamExecutionContext,
+    *,
+    chunk_file: str,
+    chunk_caption: str,
+    duration: int,
+    thumb_file: str,
+    chunk_idx: int,
+    max_chunks: int,
+    video_title: str,
+    tags_text: str,
+):
+    return send_videos(
+        execution_context.source_message,
+        chunk_file,
+        chunk_caption,
+        duration,
+        thumb_file or "",
+        f"Chunk {chunk_idx + 1}/{max_chunks}",
+        execution_context.proc_msg_id,
+        f"{video_title} - Chunk {chunk_idx + 1}",
+        tags_text,
+    )
 
 
 def download_live_stream_chunked(
@@ -38,6 +127,12 @@ def download_live_stream_chunked(
         bool: True if successful, False otherwise
     """
     try:
+        execution_context = _build_live_stream_execution_context(
+            message=message,
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            current_total_process=current_total_process,
+        )
         # Get configuration
         split_hours = LimitsConfig.SPLIT_LIVE_STREAM_BY_HOURS
         max_duration = LimitsConfig.MAX_LIVE_STREAM_DURATION
@@ -215,14 +310,12 @@ def download_live_stream_chunked(
             
             # Update progress
             try:
-                from HELPERS.safe_messeger import safe_edit_message_text
-                progress_text = (
-                    f"{current_total_process}\n"
-                    f"📡 <b>Live Stream Download</b>\n"
-                    f"Chunk {chunk_idx + 1}/{max_chunks}\n"
-                    f"Duration: {split_hours} hour(s) per chunk"
+                _emit_live_stream_progress(
+                    execution_context,
+                    chunk_idx=chunk_idx,
+                    max_chunks=max_chunks,
+                    split_hours=split_hours,
                 )
-                safe_edit_message_text(user_id, proc_msg_id, progress_text)
             except Exception as e:
                 logger.error(f"Error updating progress: {e}")
             
@@ -283,7 +376,13 @@ def download_live_stream_chunked(
                 thumb_file = None
                 try:
                     thumb_name = f"{safe_title}_chunk_{chunk_idx:03d}"
-                    result = get_duration_thumb(message, user_dir_name, chunk_file, thumb_name)
+                    result = get_duration_thumb(
+                        message,
+                        user_dir_name,
+                        chunk_file,
+                        thumb_name,
+                        execution_context=execution_context.ffmpeg_context,
+                    )
                     if result:
                         duration_from_thumb, thumb_file = result
                         # Update duration if we got it from thumbnail extraction
@@ -305,16 +404,16 @@ def download_live_stream_chunked(
                 # Send chunk immediately
                 logger.info(f"Sending chunk {chunk_idx + 1} to user: {chunk_file}")
                 
-                chunk_msg = send_videos(
-                    message,
-                    chunk_file,
-                    chunk_caption,
-                    int(duration) if duration else segment_time,
-                    thumb_file or "",
-                    f"Chunk {chunk_idx + 1}/{max_chunks}",
-                    proc_msg_id,
-                    f"{video_title} - Chunk {chunk_idx + 1}",
-                    tags_text
+                chunk_msg = _send_live_stream_chunk(
+                    execution_context,
+                    chunk_file=chunk_file,
+                    chunk_caption=chunk_caption,
+                    duration=int(duration) if duration else segment_time,
+                    thumb_file=thumb_file or "",
+                    chunk_idx=chunk_idx,
+                    max_chunks=max_chunks,
+                    video_title=video_title,
+                    tags_text=tags_text,
                 )
                 
                 if chunk_msg:
@@ -346,13 +445,10 @@ def download_live_stream_chunked(
         
         # Final progress update
         try:
-            from HELPERS.safe_messeger import safe_edit_message_text
-            final_text = (
-                f"{current_total_process}\n"
-                f"✅ <b>Live Stream Download Complete</b>\n"
-                f"Downloaded {successful_chunks} chunk(s)"
+            _emit_live_stream_final_status(
+                execution_context,
+                successful_chunks=successful_chunks,
             )
-            safe_edit_message_text(user_id, proc_msg_id, final_text)
         except Exception as e:
             logger.error(f"Error updating final progress: {e}")
         
@@ -364,4 +460,3 @@ def download_live_stream_chunked(
         import traceback
         logger.error(traceback.format_exc())
         return False
-
