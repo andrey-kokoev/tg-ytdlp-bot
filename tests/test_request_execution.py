@@ -767,10 +767,10 @@ def test_handle_format_command_request_routes_request_to_format_runtime(monkeypa
 def test_handle_settings_menu_selection_request_routes_request_to_settings_runtime(monkeypatch):
     captured = {}
 
-    def fake_settings_menu_callback_logic(app, callback_query, request):
+    def fake_settings_menu_callback_logic(app, execution_context, request):
         captured["settings_menu_call"] = {
             "app": app,
-            "callback_query": callback_query,
+            "execution_context": execution_context,
             "request": request,
         }
 
@@ -796,7 +796,7 @@ def test_handle_settings_menu_selection_request_routes_request_to_settings_runti
 
     assert captured["settings_menu_call"] == {
         "app": app,
-        "callback_query": callback_query,
+        "execution_context": execution_context,
         "request": request,
     }
 
@@ -840,10 +840,10 @@ def test_handle_settings_menu_open_request_routes_request_to_settings_runtime(mo
 def test_handle_settings_command_selection_request_routes_request_to_settings_runtime(monkeypatch):
     captured = {}
 
-    def fake_settings_cmd_callback_logic(app, callback_query, request):
+    def fake_settings_cmd_callback_logic(app, execution_context, request):
         captured["settings_cmd_call"] = {
             "app": app,
-            "callback_query": callback_query,
+            "execution_context": execution_context,
             "request": request,
         }
 
@@ -869,7 +869,7 @@ def test_handle_settings_command_selection_request_routes_request_to_settings_ru
 
     assert captured["settings_cmd_call"] == {
         "app": app,
-        "callback_query": callback_query,
+        "execution_context": execution_context,
         "request": request,
     }
 

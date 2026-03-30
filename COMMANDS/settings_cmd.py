@@ -121,7 +121,33 @@ def settings_menu_callback(app, callback_query: CallbackQuery):
     )
 
 
-def settings_menu_callback_logic(app, callback_query: CallbackQuery, request):
+def _answer_settings_callback(callback_query: CallbackQuery, text: str | None = None, *, show_alert: bool = False) -> None:
+    try:
+        if text is None:
+            callback_query.answer()
+        else:
+            callback_query.answer(text, show_alert=show_alert)
+    except Exception:
+        pass
+
+
+def _edit_settings_callback_message(execution_context, text: str, *, reply_markup=None) -> None:
+    source_message = execution_context.source_message
+    if source_message is None:
+        raise ValueError("Settings callback message edit requires source message context")
+    safe_edit_message_text(
+        source_message.chat.id,
+        source_message.id,
+        text,
+        reply_markup=reply_markup,
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+def settings_menu_callback_logic(app, execution_context, request):
+    callback_query = execution_context.callback_query
+    if callback_query is None:
+        raise ValueError("Settings menu callback logic requires callback execution context")
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     data = request.selection_key
@@ -130,10 +156,7 @@ def settings_menu_callback_logic(app, callback_query: CallbackQuery, request):
             callback_query.message.delete()
         except Exception:
             callback_query.edit_message_reply_markup(reply_markup=None)
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_MENU_CLOSED_MSG)
-        except Exception:
-            pass
+        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_MENU_CLOSED_MSG)
         return
     if data == "language":
         # Import language command
@@ -145,15 +168,9 @@ def settings_menu_callback_logic(app, callback_query: CallbackQuery, request):
             os.makedirs(user_dir, exist_ok=True)
             with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
                 f.write(str(e.value))
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
             return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
+        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         return
     if data == "clean":
         # Show the cleaning menu
@@ -187,15 +204,12 @@ def settings_menu_callback_logic(app, callback_query: CallbackQuery, request):
             ],
             [InlineKeyboardButton(safe_get_messages(user_id).SUBS_BACK_BUTTON_MSG, callback_data="settings__menu__back")]
         ])
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id,
-safe_get_messages(user_id).SETTINGS_CLEAN_TITLE_MSG,
-                               reply_markup=keyboard,
-                               parse_mode=enums.ParseMode.HTML)
-
-        try:
-            callback_query.answer()
-        except Exception:
-            pass
+        _edit_settings_callback_message(
+            execution_context,
+            safe_get_messages(user_id).SETTINGS_CLEAN_TITLE_MSG,
+            reply_markup=keyboard,
+        )
+        _answer_settings_callback(callback_query)
 
         return
     if data == "cookies":
@@ -210,15 +224,12 @@ safe_get_messages(user_id).SETTINGS_CLEAN_TITLE_MSG,
                                   callback_data="settings__cmd__save_as_cookie")],
             [InlineKeyboardButton(safe_get_messages(user_id).SUBS_BACK_BUTTON_MSG, callback_data="settings__menu__back")]
         ])
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id,
-safe_get_messages(user_id).SETTINGS_COOKIES_TITLE_MSG,
-                               reply_markup=keyboard,
-                               parse_mode=enums.ParseMode.HTML)
-
-        try:
-            callback_query.answer()
-        except Exception:
-            pass
+        _edit_settings_callback_message(
+            execution_context,
+            safe_get_messages(user_id).SETTINGS_COOKIES_TITLE_MSG,
+            reply_markup=keyboard,
+        )
+        _answer_settings_callback(callback_query)
 
         return
     if data == "media":
@@ -232,15 +243,12 @@ safe_get_messages(user_id).SETTINGS_COOKIES_TITLE_MSG,
             [InlineKeyboardButton(safe_get_messages(user_id).SETTINGS_IMG_CMD_BUTTON_MSG, callback_data="settings__cmd__img")],
             [InlineKeyboardButton(safe_get_messages(user_id).SUBS_BACK_BUTTON_MSG, callback_data="settings__menu__back")]
         ])
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id,
-safe_get_messages(user_id).SETTINGS_MEDIA_TITLE_MSG,
-                               reply_markup=keyboard,
-                               parse_mode=enums.ParseMode.HTML)
-
-        try:
-            callback_query.answer()
-        except Exception:
-            pass
+        _edit_settings_callback_message(
+            execution_context,
+            safe_get_messages(user_id).SETTINGS_MEDIA_TITLE_MSG,
+            reply_markup=keyboard,
+        )
+        _answer_settings_callback(callback_query)
 
         return
     if data == "logs":
@@ -252,15 +260,12 @@ safe_get_messages(user_id).SETTINGS_MEDIA_TITLE_MSG,
             [InlineKeyboardButton(safe_get_messages(user_id).SETTINGS_ADD_BOT_CMD_BUTTON_MSG, callback_data="settings__cmd__add_bot_to_group")],
             [InlineKeyboardButton(safe_get_messages(user_id).SUBS_BACK_BUTTON_MSG, callback_data="settings__menu__back")]
         ])
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id,
-safe_get_messages(user_id).SETTINGS_LOGS_TITLE_MSG,
-                               reply_markup=keyboard,
-                               parse_mode=enums.ParseMode.HTML)
-
-        try:
-            callback_query.answer()
-        except Exception:
-            pass
+        _edit_settings_callback_message(
+            execution_context,
+            safe_get_messages(user_id).SETTINGS_LOGS_TITLE_MSG,
+            reply_markup=keyboard,
+        )
+        _answer_settings_callback(callback_query)
 
         return
     if data == "more":
@@ -273,15 +278,12 @@ safe_get_messages(user_id).SETTINGS_LOGS_TITLE_MSG,
             [InlineKeyboardButton(safe_get_messages(user_id).SETTINGS_NSFW_CMD_BUTTON_MSG, callback_data="settings__cmd__nsfw")],
             [InlineKeyboardButton(safe_get_messages(user_id).SUBS_BACK_BUTTON_MSG, callback_data="settings__menu__back")]
         ])
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id,
-safe_get_messages(user_id).SETTINGS_MORE_TITLE_MSG,
-                               reply_markup=keyboard,
-                               parse_mode=enums.ParseMode.HTML)
-
-        try:
-            callback_query.answer()
-        except Exception:
-            pass
+        _edit_settings_callback_message(
+            execution_context,
+            safe_get_messages(user_id).SETTINGS_MORE_TITLE_MSG,
+            reply_markup=keyboard,
+        )
+        _answer_settings_callback(callback_query)
 
         return
     if data == "back":
@@ -303,15 +305,12 @@ safe_get_messages(user_id).SETTINGS_MORE_TITLE_MSG,
                 InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="settings__menu__close"),
             ]
         ])
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id,
-                       safe_get_messages(user_id).SETTINGS_TITLE_MSG,
-                               reply_markup=keyboard,
-                               parse_mode=enums.ParseMode.HTML)
-
-        try:
-            callback_query.answer()
-        except Exception:
-            pass
+        _edit_settings_callback_message(
+            execution_context,
+            safe_get_messages(user_id).SETTINGS_TITLE_MSG,
+            reply_markup=keyboard,
+        )
+        _answer_settings_callback(callback_query)
 
         return
 
@@ -330,7 +329,10 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
     )
 
 
-def settings_cmd_callback_logic(app, callback_query: CallbackQuery, request):
+def settings_cmd_callback_logic(app, execution_context, request):
+    callback_query = execution_context.callback_query
+    if callback_query is None:
+        raise ValueError("Settings command callback logic requires callback execution context")
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     # Lazy import to avoid circular dependency
@@ -385,15 +387,9 @@ def settings_cmd_callback_logic(app, callback_query: CallbackQuery, request):
             os.makedirs(user_dir, exist_ok=True)
             with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
                 f.write(str(e.value))
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
             return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
+        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         return
     if data == "cookies_from_browser":
         try:
@@ -403,15 +399,9 @@ def settings_cmd_callback_logic(app, callback_query: CallbackQuery, request):
             os.makedirs(user_dir, exist_ok=True)
             with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
                 f.write(str(e.value))
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
             return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
+        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         return
     if data == "check_cookie":
         try:
@@ -421,15 +411,9 @@ def settings_cmd_callback_logic(app, callback_query: CallbackQuery, request):
             os.makedirs(user_dir, exist_ok=True)
             with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
                 f.write(str(e.value))
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
             return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
+        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         return
     if data == "save_as_cookie":
         keyboard = InlineKeyboardMarkup([

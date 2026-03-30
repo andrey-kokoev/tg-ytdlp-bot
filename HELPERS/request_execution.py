@@ -509,9 +509,8 @@ def handle_settings_menu_selection_request(
     request: SettingsMenuSelectionRequested,
 ) -> None:
     from COMMANDS.settings_cmd import settings_menu_callback_logic
-    callback_query = execution_context.callback_query
 
-    settings_menu_callback_logic(app, callback_query, request)
+    settings_menu_callback_logic(app, execution_context, request)
 
 
 def handle_settings_menu_open_request(
@@ -710,9 +709,8 @@ def handle_settings_command_selection_request(
     request: SettingsCommandSelectionRequested,
 ) -> None:
     from COMMANDS.settings_cmd import settings_cmd_callback_logic
-    callback_query = execution_context.callback_query
 
-    settings_cmd_callback_logic(app, callback_query, request)
+    settings_cmd_callback_logic(app, execution_context, request)
 
 
 def handle_close_message_request(
