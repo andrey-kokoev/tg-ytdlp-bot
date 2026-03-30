@@ -7,8 +7,24 @@ from CONFIG.messages import Messages, safe_get_messages
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyParameters
 
 from HELPERS.app_instance import get_app
+from HELPERS.ingress_models import (
+    build_telegram_callback_envelope,
+    build_telegram_command_envelope,
+)
+from HELPERS.ingress_requests import (
+    build_close_message_request,
+    build_mediainfo_command_request,
+    build_mediainfo_option_selection_request,
+)
 from HELPERS.filesystem_hlp import create_directory
 from HELPERS.logger import send_to_logger, logger, send_to_all, send_error_to_user
+from HELPERS.request_execution import (
+    build_callback_execution_context,
+    build_message_execution_context,
+    handle_close_message_request,
+    handle_mediainfo_command_request,
+    handle_mediainfo_option_selection_request,
+)
 from HELPERS.safe_messeger import safe_send_message, safe_edit_message_text
 from HELPERS.decorators import background_handler
 from HELPERS.limitter import is_user_in_channel
@@ -20,6 +36,12 @@ app = get_app()
 # @reply_with_keyboard
 @background_handler(label="mediainfo_command")
 def mediainfo_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_mediainfo_command_request(envelope)
+    handle_mediainfo_command_request(app, build_message_execution_context(message), request)
+
+
+def mediainfo_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     user_id = message.chat.id
     logger.info(safe_get_messages(user_id).MEDIAINFO_USER_REQUESTED_MSG.format(user_id=user_id))
@@ -66,23 +88,39 @@ safe_get_messages(user_id).MEDIAINFO_MENU_TITLE_MSG,
 @app.on_callback_query(filters.regex(r"^mediainfo_option\|"))
 # @reply_with_keyboard
 def mediainfo_option_callback(app, callback_query):
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_mediainfo_option_selection_request(
+        callback_envelope,
+        selection_key=callback_query.data.split("|")[1],
+    )
+    handle_mediainfo_option_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
+
+
+def mediainfo_option_callback_logic(app, execution_context, request):
+    callback_query = execution_context.callback_query
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     logger.info(safe_get_messages(user_id).MEDIAINFO_CALLBACK_MSG.format(callback_data=callback_query.data))
-    data = callback_query.data.split("|")[1]
+    data = request.selection_key
     user_dir = os.path.join("users", str(user_id))
     create_directory(user_dir)
     mediainfo_file = os.path.join(user_dir, "mediainfo.txt")
-    if callback_query.data == "mediainfo_option|close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        try:
-            callback_query.answer(safe_get_messages(user_id).MEDIAINFO_MENU_CLOSED_MSG)
-        except Exception:
-            pass
-        send_to_logger(callback_query.message, safe_get_messages(user_id).MEDIAINFO_MENU_CLOSED_LOG_MSG)
+    if data == "close":
+        close_request = build_close_message_request(
+            build_telegram_callback_envelope(callback_query),
+            close_scope="mediainfo_option",
+        )
+        handle_close_message_request(
+            app,
+            execution_context,
+            close_request,
+            answer_text=safe_get_messages(user_id).MEDIAINFO_MENU_CLOSED_MSG,
+            log_text=safe_get_messages(user_id).MEDIAINFO_MENU_CLOSED_LOG_MSG,
+        )
         return
     if data == "on":
         with open(mediainfo_file, "w", encoding="utf-8") as f:

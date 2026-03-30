@@ -9,6 +9,21 @@ from HELPERS.logger import send_to_logger
 from HELPERS.limitter import is_user_in_channel
 
 from HELPERS.app_instance import get_app
+from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_command_envelope
+from HELPERS.ingress_requests import (
+    build_close_message_request,
+    build_settings_menu_open_request,
+    build_settings_command_selection_request,
+    build_settings_menu_selection_request,
+)
+from HELPERS.request_execution import (
+    build_message_execution_context,
+    build_callback_execution_context,
+    handle_close_message_request,
+    handle_settings_menu_open_request,
+    handle_settings_command_selection_request,
+    handle_settings_menu_selection_request,
+)
 from HELPERS.safe_messeger import fake_message, safe_send_message, safe_edit_message_text
 from HELPERS.message_bridge import bridge_message_from_existing
 from HELPERS.decorators import background_handler
@@ -52,6 +67,12 @@ app = get_app()
 # @reply_with_keyboard
 @background_handler(label="settings_command")
 def settings_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_settings_menu_open_request(envelope)
+    handle_settings_menu_open_request(app, build_message_execution_context(message), request)
+
+
+def settings_command_logic(app, message, request=None):
     user_id = message.chat.id
     # Subscription check for non-admins
     if int(user_id) not in Config.ADMIN and not is_user_in_channel(app, message):
@@ -88,9 +109,22 @@ def settings_command(app, message):
 @app.on_callback_query(filters.regex(r"^settings__menu__"))
 # @reply_with_keyboard
 def settings_menu_callback(app, callback_query: CallbackQuery):
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_settings_menu_selection_request(
+        callback_envelope,
+        selection_key=callback_query.data.split("__")[-1],
+    )
+    handle_settings_menu_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
+
+
+def settings_menu_callback_logic(app, callback_query: CallbackQuery, request):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
-    data = callback_query.data.split("__")[-1]
+    data = request.selection_key
     if data == "close":
         try:
             callback_query.message.delete()
@@ -284,13 +318,26 @@ safe_get_messages(user_id).SETTINGS_MORE_TITLE_MSG,
 @app.on_callback_query(filters.regex(r"^settings__cmd__"))
 # @reply_with_keyboard
 def settings_cmd_callback(app, callback_query: CallbackQuery):
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_settings_command_selection_request(
+        callback_envelope,
+        selection_key=callback_query.data.split("__")[2],
+    )
+    handle_settings_command_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
+
+
+def settings_cmd_callback_logic(app, callback_query: CallbackQuery, request):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     # Lazy import to avoid circular dependency
     from URL_PARSERS.url_extractor import url_distractor
     def _bridged_command_message(text: str, *, command=None):
         return bridge_message_from_existing(callback_query.message, text, command=command)
-    data = callback_query.data.split("__")[2]
+    data = request.selection_key
 
     # For commands that are processed only via url_distractor, create a temporary Message
     if data == "clean":
@@ -738,17 +785,18 @@ def hint_callback(app, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     """Handle hint callback close buttons"""
-    data = callback_query.data.split("|")[-1]
+    scope, data = callback_query.data.split("|", 1)
     
     if data == "close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_HINT_CLOSED_MSG)
-        except Exception:
-            pass
+        callback_envelope = build_telegram_callback_envelope(callback_query)
+        request = build_close_message_request(callback_envelope, close_scope=scope)
+        handle_close_message_request(
+            app,
+            build_callback_execution_context(callback_query),
+            request,
+            answer_text=safe_get_messages(user_id).SETTINGS_HINT_CLOSED_MSG,
+            log_text=safe_get_messages(user_id).SETTINGS_HINT_CLOSED_MSG,
+        )
         return
     
     try:

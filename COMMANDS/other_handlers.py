@@ -7,15 +7,24 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyPara
 from HELPERS.safe_messeger import safe_send_message
 from HELPERS.ingress_models import (
     build_telegram_message_envelope,
+    build_telegram_callback_envelope,
 )
 from HELPERS.ingress_requests import (
     build_audio_download_request,
+    build_close_message_request,
     build_concat_request,
+    build_help_command_request,
+    build_playlist_help_request,
     build_rename_request,
 )
 from HELPERS.request_execution import (
+    build_callback_execution_context,
+    build_message_execution_context,
     handle_audio_download_request,
     handle_concat_request,
+    handle_close_message_request,
+    handle_help_command_request,
+    handle_playlist_help_request,
     handle_rename_request,
 )
 
@@ -47,16 +56,51 @@ app = get_app()
 # Keep only the callback handler for help close button
 @app.on_callback_query(filters.regex(r"^help_msg\|"))
 def help_msg_callback(app, callback_query):
-    messages = safe_get_messages(None)
-    data = callback_query.data.split("|")[1]
-    if data == "close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        callback_query.answer(safe_get_messages(user_id).OTHER_HELP_CLOSED_MSG)
-        send_to_logger(callback_query.message, safe_get_messages(user_id).HELP_MESSAGE_CLOSED_LOG_MSG)
+    user_id = callback_query.from_user.id
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_close_message_request(callback_envelope, close_scope="help_msg")
+    handle_close_message_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+        answer_text=safe_get_messages(user_id).OTHER_HELP_CLOSED_MSG,
+        log_text=safe_get_messages(user_id).HELP_MESSAGE_CLOSED_LOG_MSG,
+    )
+
+
+def help_command(app, message):
+    envelope = build_telegram_message_envelope(message, event_kind="command_message")
+    request = build_help_command_request(envelope)
+    handle_help_command_request(app, build_message_execution_context(message), request)
+
+
+def help_command_logic(app, message, request=None):
+    user_id = message.chat.id
+    if not is_user_in_channel(app, message):
         return
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(safe_get_messages(user_id).SETTINGS_DEV_GITHUB_BUTTON_MSG, url="https://github.com/upekshaip/tg-ytdlp-bot"),
+            InlineKeyboardButton(safe_get_messages(user_id).SETTINGS_CONTR_GITHUB_BUTTON_MSG, url="https://github.com/chelaxian/tg-ytdlp-bot")
+        ],
+        [InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="help_msg|close")]
+    ])
+    try:
+        safe_send_message(
+            message.chat.id,
+            safe_get_messages(user_id).HELP_MSG,
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=keyboard,
+            message=message,
+        )
+    except Exception:
+        safe_send_message(
+            message.chat.id,
+            safe_get_messages(user_id).HELP_MSG,
+            reply_markup=keyboard,
+            message=message,
+        )
+    send_to_logger(message, LoggerMsg.HELP_SENT_TO_USER)
 
 
 #############################################################################################################################
@@ -143,7 +187,7 @@ def audio_command_handler(app, message):
         video_count=video_count,
         video_start_with=video_start_with,
     )
-    handle_audio_download_request(app, message, request)
+    handle_audio_download_request(app, build_message_execution_context(message), request)
 
 
 def _normalize_concat_command_text(text: str) -> tuple[str, bool, bool]:
@@ -254,7 +298,7 @@ def audio_concat_command_handler(app, message):
         video_start_with=video_start_with,
         video_end_with=video_end_with,
     )
-    handle_concat_request(app, message, request)
+    handle_concat_request(app, build_message_execution_context(message), request)
 
 @app.on_message(filters.command(["arename", "rename"]) & filters.private)
 @background_handler(label="audio_concat_rename_command")
@@ -280,7 +324,7 @@ def audio_concat_rename_command_handler(app, message):
         target_kind="audio_concat",
         new_name=match.group(1).strip(),
     )
-    handle_rename_request(app, message, request)
+    handle_rename_request(app, build_message_execution_context(message), request)
 
 
 # /Link Command
@@ -307,6 +351,12 @@ def proxy_command_handler(app, message):
 # @reply_with_keyboard
 @background_handler(label="playlist_command")
 def playlist_command(app, message):
+    envelope = build_telegram_message_envelope(message, event_kind="command_message")
+    request = build_playlist_help_request(envelope)
+    handle_playlist_help_request(app, build_message_execution_context(message), request)
+
+
+def playlist_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     user_id = message.chat.id
     if int(user_id) not in Config.ADMIN and not is_user_in_channel(app, message):
@@ -320,40 +370,40 @@ def playlist_command(app, message):
 
 @app.on_callback_query(filters.regex(r"^playlist_help\|"))
 def playlist_help_callback(app, callback_query):
-    messages = safe_get_messages(None)
-    data = callback_query.data.split("|")[1]
-    if data == "close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        callback_query.answer(safe_get_messages(user_id).PLAYLIST_HELP_CLOSED_MSG)
-        send_to_logger(callback_query.message, safe_get_messages(user_id).PLAYLIST_HELP_CLOSED_LOG_MSG)
-        return
+    user_id = callback_query.from_user.id
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_close_message_request(callback_envelope, close_scope="playlist_help")
+    handle_close_message_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+        answer_text=safe_get_messages(user_id).PLAYLIST_HELP_CLOSED_MSG,
+        log_text=safe_get_messages(user_id).PLAYLIST_HELP_CLOSED_LOG_MSG,
+    )
 
 
 @app.on_callback_query(filters.regex(r"^userlogs_close\|"))
 def userlogs_close_callback(app, callback_query):
-    messages = safe_get_messages(None)
-    data = callback_query.data.split("|")[1]
-    if data == "close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        callback_query.answer(safe_get_messages(user_id).OTHER_LOGS_MESSAGE_CLOSED_MSG)
-        send_to_logger(callback_query.message, safe_get_messages(user_id).USERLOGS_CLOSED_MSG)
-        return
+    user_id = callback_query.from_user.id
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_close_message_request(callback_envelope, close_scope="userlogs_close")
+    handle_close_message_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+        answer_text=safe_get_messages(user_id).OTHER_LOGS_MESSAGE_CLOSED_MSG,
+        log_text=safe_get_messages(user_id).USERLOGS_CLOSED_MSG,
+    )
 
 @app.on_callback_query(filters.regex(r"^audio_hint\|"))
 def audio_hint_callback(app, callback_query):
-    messages = safe_get_messages(None)
-    data = callback_query.data.split("|")[1]
-    if data == "close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        callback_query.answer(safe_get_messages(user_id).AUDIO_HELP_CLOSED_MSG)
-        send_to_logger(callback_query.message, safe_get_messages(user_id).AUDIO_HINT_CLOSED_LOG_MSG)
-        return
+    user_id = callback_query.from_user.id
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_close_message_request(callback_envelope, close_scope="audio_hint")
+    handle_close_message_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+        answer_text=safe_get_messages(user_id).AUDIO_HELP_CLOSED_MSG,
+        log_text=safe_get_messages(user_id).AUDIO_HINT_CLOSED_LOG_MSG,
+    )

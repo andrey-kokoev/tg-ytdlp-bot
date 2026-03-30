@@ -10,6 +10,19 @@ from HELPERS.filesystem_hlp import create_directory
 from HELPERS.logger import send_to_logger, logger
 from CONFIG.logger_msg import LoggerMsg
 from HELPERS.safe_messeger import safe_send_message, safe_edit_message_text
+from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_command_envelope
+from HELPERS.ingress_requests import (
+    build_close_message_request,
+    build_nsfw_command_request,
+    build_nsfw_option_selection_request,
+)
+from HELPERS.request_execution import (
+    build_message_execution_context,
+    build_callback_execution_context,
+    handle_close_message_request,
+    handle_nsfw_command_request,
+    handle_nsfw_option_selection_request,
+)
 from HELPERS.decorators import background_handler
 from HELPERS.limitter import is_user_in_channel
 
@@ -20,6 +33,12 @@ app = get_app()
 @app.on_message(filters.command("nsfw"))
 @background_handler(label="nsfw_command")
 def nsfw_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_nsfw_command_request(envelope)
+    handle_nsfw_command_request(app, build_message_execution_context(message), request)
+
+
+def nsfw_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     chat_id = message.chat.id
     chat_type = getattr(message.chat, "type", None)
@@ -99,10 +118,23 @@ safe_get_messages(user_id).NSFW_BLUR_SETTINGS_TITLE_MSG.format(status=status_tex
 
 @app.on_callback_query(filters.regex(r"^nsfw_option\|"))
 def nsfw_option_callback(app, callback_query):
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_nsfw_option_selection_request(
+        callback_envelope,
+        selection_key=callback_query.data.split("|")[1],
+    )
+    handle_nsfw_option_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
+
+
+def nsfw_option_callback_logic(app, execution_context, request) -> None:
+    callback_query = execution_context.callback_query
     user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
     logger.info(f"[NSFW] callback: {callback_query.data}")
-    data = callback_query.data.split("|")[1]
+    data = request.selection_key
     chat = getattr(callback_query, "message", None).chat if getattr(callback_query, "message", None) else None
     chat_id = getattr(chat, "id", None) if chat else user_id
     # Store per-chat: in groups use chat_id (negative), in private chat_id == user id
@@ -111,16 +143,18 @@ def nsfw_option_callback(app, callback_query):
     create_directory(user_dir)
     nsfw_file = os.path.join(user_dir, "nsfw_blur.txt")
     
-    if callback_query.data == "nsfw_option|close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        try:
-            callback_query.answer(safe_get_messages(user_id).NSFW_MENU_CLOSED_MSG)
-        except Exception:
-            pass
-        send_to_logger(callback_query.message, safe_get_messages(user_id).NSFW_MENU_CLOSED_LOG_MSG)
+    if data == "close":
+        close_request = build_close_message_request(
+            build_telegram_callback_envelope(callback_query),
+            close_scope="nsfw_option",
+        )
+        handle_close_message_request(
+            app,
+            execution_context,
+            close_request,
+            answer_text=safe_get_messages(user_id).NSFW_MENU_CLOSED_MSG,
+            log_text=safe_get_messages(user_id).NSFW_MENU_CLOSED_LOG_MSG,
+        )
         return
     
     if data == "on":

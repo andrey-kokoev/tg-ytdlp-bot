@@ -18,6 +18,13 @@ except ImportError:
     sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'CONFIG', 'LANGUAGES'))
     from language_router import language_router, get_messages, set_user_language # type: ignore
 
+from HELPERS.ingress_models import build_telegram_command_envelope
+from HELPERS.ingress_requests import build_language_command_request
+from HELPERS.request_execution import (
+    build_message_execution_context,
+    handle_language_command_request,
+)
+
 def lang_command_handler(update, context):
     """
     Handle /lang command - show language selection menu or quick language switch
@@ -125,6 +132,12 @@ def lang_command_handler(update, context):
     )
 
 def lang_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_language_command_request(envelope)
+    handle_language_command_request(app, build_message_execution_context(message), request)
+
+
+def lang_command_logic(app, message, request=None):
     """
     Handle /lang command for pyrogram - show language selection menu or quick language switch
     """

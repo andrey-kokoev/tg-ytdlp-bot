@@ -11,6 +11,19 @@ from HELPERS.app_instance import get_app
 from HELPERS.filesystem_hlp import create_directory
 from HELPERS.logger import send_to_logger, logger, send_to_all
 from HELPERS.safe_messeger import safe_send_message, safe_edit_message_text
+from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_command_envelope
+from HELPERS.ingress_requests import (
+    build_close_message_request,
+    build_proxy_command_request,
+    build_proxy_option_selection_request,
+)
+from HELPERS.request_execution import (
+    build_message_execution_context,
+    build_callback_execution_context,
+    handle_close_message_request,
+    handle_proxy_command_request,
+    handle_proxy_option_selection_request,
+)
 from HELPERS.decorators import background_handler
 from HELPERS.limitter import is_user_in_channel
 
@@ -49,6 +62,12 @@ def safe_write_file(file_path, content):
 @app.on_message(filters.command("proxy") & filters.private)
 @background_handler(label="proxy_command")
 def proxy_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_proxy_command_request(envelope)
+    handle_proxy_command_request(app, build_message_execution_context(message), request)
+
+
+def proxy_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     user_id = message.chat.id
     logger.info(LoggerMsg.PROXY_CMD_USER_REQUESTED_LOG_MSG.format(user_id=user_id))
@@ -110,24 +129,39 @@ def proxy_command(app, message):
 
 @app.on_callback_query(filters.regex(r"^proxy_option\|"))
 def proxy_option_callback(app, callback_query):
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_proxy_option_selection_request(
+        callback_envelope,
+        selection_key=callback_query.data.split("|")[1],
+    )
+    handle_proxy_option_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
+
+
+def proxy_option_callback_logic(app, execution_context, request) -> None:
+    callback_query = execution_context.callback_query
     user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
     logger.info(LoggerMsg.PROXY_CMD_CALLBACK_LOG_MSG.format(callback_data=callback_query.data))
-    data = callback_query.data.split("|")[1]
+    data = request.selection_key
     user_dir = os.path.join("users", str(user_id))
     create_directory(user_dir)
     proxy_file = os.path.join(user_dir, "proxy.txt")
     
-    if callback_query.data == "proxy_option|close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        try:
-            callback_query.answer(safe_get_messages(user_id).PROXY_MENU_CLOSED_MSG)
-        except Exception:
-            pass
-        send_to_logger(callback_query.message, safe_get_messages(user_id).PROXY_MENU_CLOSED_LOG_MSG)
+    if data == "close":
+        close_request = build_close_message_request(
+            build_telegram_callback_envelope(callback_query),
+            close_scope="proxy_option",
+        )
+        handle_close_message_request(
+            app,
+            execution_context,
+            close_request,
+            answer_text=safe_get_messages(user_id).PROXY_MENU_CLOSED_MSG,
+            log_text=safe_get_messages(user_id).PROXY_MENU_CLOSED_LOG_MSG,
+        )
         return
     
     if data == "on":

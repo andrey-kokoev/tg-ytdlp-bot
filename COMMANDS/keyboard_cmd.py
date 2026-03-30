@@ -2,12 +2,31 @@
 import os
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove, ReplyKeyboardMarkup, ReplyParameters
 from pyrogram import enums
+from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_command_envelope
+from HELPERS.ingress_requests import (
+    build_close_message_request,
+    build_keyboard_command_request,
+    build_keyboard_option_selection_request,
+)
 from HELPERS.logger import send_to_all, send_to_logger
 from CONFIG.config import Config
 from CONFIG.messages import Messages, safe_get_messages
+from HELPERS.request_execution import (
+    build_callback_execution_context,
+    build_message_execution_context,
+    handle_close_message_request,
+    handle_keyboard_command_request,
+    handle_keyboard_option_selection_request,
+)
 from HELPERS.safe_messeger import safe_send_message, safe_edit_message_text
 
 def keyboard_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_keyboard_command_request(envelope)
+    handle_keyboard_command_request(app, build_message_execution_context(message), request)
+
+
+def keyboard_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     """Handle keyboard settings command"""
     user_id = str(message.chat.id)
@@ -113,20 +132,45 @@ def keyboard_command(app, message):
     safe_send_message(message.chat.id, safe_get_messages(user_id).KEYBOARD_ACTIVATED_MSG, reply_markup=reply_markup, message=message)
 
 def keyboard_callback_handler(app, callback_query):
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_keyboard_option_selection_request(
+        callback_envelope,
+        selection_key=callback_query.data.split("|")[1],
+    )
+    handle_keyboard_option_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
+
+
+def keyboard_callback_logic(app, execution_context, request):
     """Handle keyboard setting callbacks"""
+    callback_query = execution_context.callback_query
     user_id = str(callback_query.from_user.id)
     messages = safe_get_messages(user_id)
-    setting = callback_query.data.split("|")[1]
+    setting = request.selection_key
     
     # Handle close button
     if setting == "close":
+        close_request = build_close_message_request(
+            build_telegram_callback_envelope(callback_query),
+            close_scope="keyboard",
+        )
         try:
-            callback_query.message.delete()
-            callback_query.answer(safe_get_messages(user_id).URL_EXTRACTOR_CLOSED_MSG)
-            return
-        except Exception as e:
+            handle_close_message_request(
+                app,
+                execution_context,
+                close_request,
+                answer_text=safe_get_messages(user_id).URL_EXTRACTOR_CLOSED_MSG,
+                log_text=safe_get_messages(user_id).KEYBOARD_SET_CALLBACK_LOG_MSG.format(
+                    user_id=user_id,
+                    setting="CLOSE",
+                ),
+            )
+        except Exception:
             callback_query.answer(safe_get_messages(user_id).URL_EXTRACTOR_ERROR_OCCURRED_MSG, show_alert=True)
-            return
+        return
     
     user_dir = f'./users/{user_id}'
     keyboard_file = os.path.join(user_dir, 'keyboard.txt')

@@ -118,6 +118,442 @@ class AudioDownloadRequested:
 
 
 @dataclass(frozen=True)
+class SettingsMenuOpenRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ListFormatsRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    url: str | None
+
+
+@dataclass(frozen=True)
+class TagsCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BrowserCookiesRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CookieMenuRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CheckCookieRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SaveCookieTextRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class MediaInfoCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class MediaInfoOptionSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    selection_key: str
+
+
+@dataclass(frozen=True)
+class LinkCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ImageCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SearchCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class KeyboardCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class KeyboardOptionSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    selection_key: str
+
+
+@dataclass(frozen=True)
+class FormatCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ProxyCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class NsfwCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SplitCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ArgsCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SubtitleSettingsCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LanguageCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PlaylistHelpRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class HelpCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class StartCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AddBotToGroupRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AddBotToGroupSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    action_kind: str
+    action_value: str | None
+
+
+@dataclass(frozen=True)
+class UsageCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class UncacheCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ReloadCacheCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AutoCacheCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RuntimeCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class UserLogsCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class UserDetailsCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BanTimeCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BroadcastCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BlockUserCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class UnblockUserCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CleanCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LanguageSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    action_kind: str
+    action_value: str | None
+
+
+@dataclass(frozen=True)
 class UrlDownloadRequested:
     request_kind: str
     user_id: int
@@ -225,6 +661,78 @@ class FormatMenuSelectionRequested:
     provenance: dict[str, Any]
     action_kind: str
     action_value: str | None
+
+
+@dataclass(frozen=True)
+class SettingsMenuSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    selection_key: str
+
+
+@dataclass(frozen=True)
+class SettingsCommandSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    selection_key: str
+
+
+@dataclass(frozen=True)
+class CloseMessageRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    close_scope: str
+
+
+@dataclass(frozen=True)
+class ProxyOptionSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    selection_key: str
+
+
+@dataclass(frozen=True)
+class NsfwOptionSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    selection_key: str
+
+
+@dataclass(frozen=True)
+class SplitSizeSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    selection_key: str
 
 
 def build_telegram_message_envelope(

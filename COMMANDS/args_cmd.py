@@ -16,6 +16,12 @@ from HELPERS.app_instance import get_app
 from HELPERS.logger import logger, send_to_user, send_error_to_user
 from HELPERS.limitter import check_user, is_user_in_channel
 from HELPERS.safe_messeger import safe_send_message
+from HELPERS.ingress_models import build_telegram_command_envelope
+from HELPERS.ingress_requests import build_args_command_request
+from HELPERS.request_execution import (
+    build_message_execution_context,
+    handle_args_command_request,
+)
 from HELPERS.decorators import background_handler
 from CONFIG.config import Config
 from CONFIG.messages import Messages, get_messages_instance, safe_get_messages
@@ -1136,6 +1142,12 @@ def parse_import_message(text: str, user_id: int = None) -> Dict[str, Any]:
 @app.on_message(filters.command("args"))
 @background_handler(label="args_command")
 def args_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_args_command_request(envelope)
+    handle_args_command_request(app, build_message_execution_context(message), request)
+
+
+def args_command_logic(app, message, request=None):
     messages = get_messages_instance(message.chat.id)
     """Handle /args command"""
     chat_id = message.chat.id

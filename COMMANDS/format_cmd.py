@@ -11,9 +11,17 @@ from HELPERS.logger import send_to_logger, logger
 from HELPERS.filesystem_hlp import create_directory
 from HELPERS.limitter import is_user_in_channel
 from HELPERS.safe_messeger import safe_send_message, safe_edit_message_text
-from HELPERS.ingress_models import build_telegram_callback_envelope
-from HELPERS.ingress_requests import build_format_menu_selection_request
-from HELPERS.request_execution import handle_format_menu_selection_request
+from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_command_envelope
+from HELPERS.ingress_requests import (
+    build_format_command_request,
+    build_format_menu_selection_request,
+)
+from HELPERS.request_execution import (
+    build_message_execution_context,
+    build_callback_execution_context,
+    handle_format_command_request,
+    handle_format_menu_selection_request,
+)
 from HELPERS.decorators import background_handler
 from urllib.parse import urlparse
 import os
@@ -138,6 +146,12 @@ app = get_app()
 # @reply_with_keyboard
 @background_handler(label="format_command")
 def set_format(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_format_command_request(envelope)
+    handle_format_command_request(app, build_message_execution_context(message), request)
+
+
+def set_format_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     user_id = message.chat.id
     # For non-admins, we check the subscription
@@ -255,7 +269,11 @@ def format_option_callback(app, callback_query):
         action_kind="format_option",
         action_value=callback_query.data.split("|")[1],
     )
-    handle_format_menu_selection_request(app, callback_query, request)
+    handle_format_menu_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
 
 # Callback processor for codec selection
 @app.on_callback_query(filters.regex(r"^format_codec\|"))
@@ -266,7 +284,11 @@ def format_codec_callback(app, callback_query):
         action_kind="format_codec",
         action_value=callback_query.data.split("|")[1],
     )
-    handle_format_menu_selection_request(app, callback_query, request)
+    handle_format_menu_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
 
 @app.on_callback_query(filters.regex(r"^format_container\|"))
 def format_container_callback(app, callback_query):
@@ -276,7 +298,11 @@ def format_container_callback(app, callback_query):
         action_kind="format_container",
         action_value=callback_query.data.split("|")[1],
     )
-    handle_format_menu_selection_request(app, callback_query, request)
+    handle_format_menu_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
 
 # Callback processor to close the message
 @app.on_callback_query(filters.regex(r"^format_custom\|"))
@@ -287,7 +313,11 @@ def format_custom_callback(app, callback_query):
         action_kind="format_custom",
         action_value=callback_query.data.split("|")[1],
     )
-    handle_format_menu_selection_request(app, callback_query, request)
+    handle_format_menu_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
 
 
 def _build_format_main_keyboard(user_id):

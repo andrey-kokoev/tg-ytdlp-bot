@@ -13,14 +13,19 @@ from HELPERS.limitter import is_user_in_channel
 from HELPERS.safe_messeger import safe_forward_messages
 from HELPERS.ingress_models import (
     build_telegram_callback_envelope,
+    build_telegram_command_envelope,
     build_telegram_message_envelope,
 )
 from HELPERS.ingress_requests import (
     build_subtitle_only_request,
+    build_subtitle_settings_command_request,
     build_subtitle_settings_selection_request,
 )
 from HELPERS.request_execution import (
+    build_callback_execution_context,
+    build_message_execution_context,
     handle_subtitle_only_request,
+    handle_subtitle_settings_command_request,
     handle_subtitle_settings_selection_request,
 )
 from DOWN_AND_UP.yt_dlp_hook import get_video_formats
@@ -355,6 +360,16 @@ def get_flag(lang_code: str, use_second_part: bool = False) -> str:
 @reply_with_keyboard
 @background_handler(label="subs_command")
 def subs_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_subtitle_settings_command_request(envelope)
+    handle_subtitle_settings_command_request(
+        app,
+        build_message_execution_context(message),
+        request,
+    )
+
+
+def subs_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     """Handle /subs command - show language selection menu"""
     user_id = message.from_user.id
@@ -511,7 +526,7 @@ def subtitle_download_command(app, message):
         video_count=video_count,
         video_start_with=video_start_with,
     )
-    handle_subtitle_only_request(app, message, request)
+    handle_subtitle_only_request(app, build_message_execution_context(message), request)
 
 
 @app.on_callback_query(filters.regex(r"^subs_page\|"))
@@ -524,7 +539,11 @@ def subs_page_callback(app, callback_query):
         action_value="page",
         page=int(callback_query.data.split("|")[1]),
     )
-    handle_subtitle_settings_selection_request(app, callback_query, request)
+    handle_subtitle_settings_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
 
 
 @app.on_callback_query(filters.regex(r"^subs_lang\|"))
@@ -536,7 +555,11 @@ def subs_lang_callback(app, callback_query):
         action_kind="lang",
         action_value=callback_query.data.split("|")[1],
     )
-    handle_subtitle_settings_selection_request(app, callback_query, request)
+    handle_subtitle_settings_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
 
 @app.on_callback_query(filters.regex(r"^subs_auto\|"))
 def subs_auto_callback(app, callback_query):
@@ -549,7 +572,11 @@ def subs_auto_callback(app, callback_query):
         action_value=parts[1],
         page=int(parts[2]) if len(parts) > 2 else 0,
     )
-    handle_subtitle_settings_selection_request(app, callback_query, request)
+    handle_subtitle_settings_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
 
 
 @app.on_callback_query(filters.regex(r"^subs_always_ask\|"))
@@ -563,7 +590,11 @@ def subs_always_ask_callback(app, callback_query):
         action_value=parts[1],
         page=int(parts[2]) if len(parts) > 2 else 0,
     )
-    handle_subtitle_settings_selection_request(app, callback_query, request)
+    handle_subtitle_settings_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
 
 
 @app.on_callback_query(filters.regex(r"^subs_lang_close\|"))
@@ -574,7 +605,11 @@ def subs_lang_close_callback(app, callback_query):
         action_kind="close",
         action_value=callback_query.data.split("|")[1],
     )
-    handle_subtitle_settings_selection_request(app, callback_query, request)
+    handle_subtitle_settings_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
 
 
 def subtitle_settings_callback_logic(app, callback_query, request) -> None:

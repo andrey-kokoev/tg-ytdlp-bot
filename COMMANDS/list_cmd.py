@@ -12,7 +12,15 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from HELPERS.app_instance import get_app
 from HELPERS.logger import logger, send_to_user, send_error_to_user
+from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_command_envelope
+from HELPERS.ingress_requests import build_close_message_request, build_list_formats_request
 from HELPERS.limitter import is_user_in_channel
+from HELPERS.request_execution import (
+    build_message_execution_context,
+    build_callback_execution_context,
+    handle_close_message_request,
+    handle_list_formats_request,
+)
 from HELPERS.safe_messeger import safe_send_message
 from HELPERS.decorators import background_handler
 from CONFIG.config import Config
@@ -89,6 +97,14 @@ def run_ytdlp_list(url: str, user_id: int) -> tuple[bool, str]:
 @app.on_message(filters.command("list") & filters.private)
 @background_handler(label="list_command")
 def list_command(app, message):
+    parts = message.text.strip().split(maxsplit=1)
+    url = parts[1].strip() if len(parts) >= 2 else None
+    envelope = build_telegram_command_envelope(message)
+    request = build_list_formats_request(envelope, url=url)
+    handle_list_formats_request(app, build_message_execution_context(message), request)
+
+
+def list_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     """Handle /list command"""
     user_id = message.chat.id
@@ -99,8 +115,8 @@ def list_command(app, message):
     
     # Parse command arguments
     try:
-        parts = message.text.strip().split(maxsplit=1)
-        if len(parts) < 2:
+        url = request.url if request is not None else None
+        if not url:
             # Show help message
             help_text = (
 safe_get_messages(user_id).LIST_HELP_MSG
@@ -115,9 +131,7 @@ safe_get_messages(user_id).LIST_HELP_MSG
                 message=message
             )
             return
-        
-        url = parts[1].strip()
-        
+
         # Basic URL validation
         if not (url.startswith("http://") or url.startswith("https://")):
             send_error_to_user(message, safe_get_messages(user_id).LIST_INVALID_URL_MSG)
@@ -227,13 +241,17 @@ safe_get_messages(user_id).LIST_PROCESSING_MSG,
 @app.on_callback_query(filters.regex("^list_help\\|"))
 def list_help_callback(app, callback_query):
     user_id = callback_query.from_user.id
-    messages = safe_get_messages(None)
     """Handle list help callback"""
     try:
-        data = callback_query.data.split("|")[1]
-        if data == "close":
-            callback_query.message.delete()
-            callback_query.answer(safe_get_messages(user_id).HELP_CLOSED_MSG)
+        callback_envelope = build_telegram_callback_envelope(callback_query)
+        request = build_close_message_request(callback_envelope, close_scope="list_help")
+        handle_close_message_request(
+            app,
+            build_callback_execution_context(callback_query),
+            request,
+            answer_text=safe_get_messages(user_id).HELP_CLOSED_MSG,
+            log_text=safe_get_messages(user_id).HELP_CLOSED_MSG,
+        )
     except Exception as e:
         logger.error(LoggerMsg.LIST_ERROR_IN_HELP_CALLBACK_LOG_MSG.format(e=e))
         callback_query.answer(safe_get_messages(user_id).LIST_ERROR_CALLBACK_MSG, show_alert=True)

@@ -16,6 +16,7 @@ from HELPERS.ingress_requests import (
     build_ask_quality_selection_request,
 )
 from HELPERS.request_execution import (
+    build_callback_execution_context,
     handle_ask_filter_selection_request,
     handle_ask_quality_selection_request,
 )
@@ -841,7 +842,11 @@ def ask_filter_callback(app, callback_query):
             filter_kind=kind,
             filter_value=value,
         )
-        handle_ask_filter_selection_request(app, callback_query, filter_request)
+        handle_ask_filter_selection_request(
+            app,
+            build_callback_execution_context(callback_query),
+            filter_request,
+        )
 
 
 def ask_filter_callback_logic(app, callback_query, filter_request):
@@ -2939,7 +2944,7 @@ def askq_callback(app, callback_query):
                 # The video was already sent successfully in the try block
                 handle_ask_quality_selection_request(
                     app,
-                    callback_query,
+                    build_callback_execution_context(callback_query),
                     selection_request,
                     original_message=original_message,
                     url=url,
@@ -2961,7 +2966,7 @@ def askq_callback(app, callback_query):
             logger.info(f"[VIDEO CACHE] Skipping cache check because need_subs=True: url={url}, quality={data}")
     handle_ask_quality_selection_request(
         app,
-        callback_query,
+        build_callback_execution_context(callback_query),
         selection_request,
         original_message=original_message,
         url=url,

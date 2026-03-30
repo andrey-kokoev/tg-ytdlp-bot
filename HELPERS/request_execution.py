@@ -1,16 +1,63 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from HELPERS.ingress_models import (
+    AddBotToGroupSelectionRequested,
+    AddBotToGroupRequested,
+    ArgsCommandRequested,
     AudioDownloadRequested,
+    AutoCacheCommandRequested,
     AskFilterSelectionRequested,
+    BanTimeCommandRequested,
     ImageRangeSelectionRequested,
+    BrowserCookiesRequested,
+    BlockUserCommandRequested,
+    BroadcastCommandRequested,
+    CheckCookieRequested,
+    CleanCommandRequested,
+    CookieMenuRequested,
+    LanguageCommandRequested,
+    LanguageSelectionRequested,
+    ListFormatsRequested,
+    LinkCommandRequested,
+    KeyboardCommandRequested,
+    KeyboardOptionSelectionRequested,
+    MediaInfoCommandRequested,
+    MediaInfoOptionSelectionRequested,
+    NsfwCommandRequested,
+    NsfwOptionSelectionRequested,
+    PlaylistHelpRequested,
+    ProxyCommandRequested,
     AskQualitySelectionRequested,
     ConcatRequested,
+    CloseMessageRequested,
     CookieMenuSelectionRequested,
+    FormatCommandRequested,
     FormatMenuSelectionRequested,
+    HelpCommandRequested,
+    ImageCommandRequested,
+    ProxyOptionSelectionRequested,
+    ReloadCacheCommandRequested,
     RenameRequested,
+    RuntimeCommandRequested,
+    SaveCookieTextRequested,
+    SearchCommandRequested,
+    StartCommandRequested,
+    SettingsMenuOpenRequested,
+    SettingsCommandSelectionRequested,
+    SettingsMenuSelectionRequested,
+    SplitCommandRequested,
+    TagsCommandRequested,
+    SplitSizeSelectionRequested,
     SubtitleOnlyRequested,
+    SubtitleSettingsCommandRequested,
     SubtitleSettingsSelectionRequested,
+    UncacheCommandRequested,
+    UnblockUserCommandRequested,
+    UserDetailsCommandRequested,
+    UserLogsCommandRequested,
+    UsageCommandRequested,
     UrlDownloadRequested,
 )
 
@@ -19,7 +66,40 @@ import os
 from types import SimpleNamespace
 
 
-def handle_subtitle_only_request(app, message, request: SubtitleOnlyRequested) -> None:
+@dataclass(frozen=True)
+class TelegramExecutionContext:
+    chat_id: int | None
+    source_message_id: int | None
+    source_message: object | None = None
+    callback_query: object | None = None
+    message_thread_id: int | None = None
+
+
+def build_message_execution_context(message) -> TelegramExecutionContext:
+    return TelegramExecutionContext(
+        chat_id=getattr(getattr(message, "chat", None), "id", None),
+        source_message_id=getattr(message, "id", None),
+        source_message=message,
+        message_thread_id=getattr(message, "message_thread_id", None),
+    )
+
+
+def build_callback_execution_context(callback_query) -> TelegramExecutionContext:
+    message = getattr(callback_query, "message", None)
+    return TelegramExecutionContext(
+        chat_id=getattr(getattr(message, "chat", None), "id", None),
+        source_message_id=getattr(message, "id", None),
+        source_message=message,
+        callback_query=callback_query,
+        message_thread_id=getattr(message, "message_thread_id", None),
+    )
+
+
+def handle_subtitle_only_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: SubtitleOnlyRequested,
+) -> None:
     from COMMANDS.subtitles_cmd import download_subtitles_only, get_or_compute_subs_langs
     from URL_PARSERS.tags import save_user_tags
 
@@ -28,7 +108,7 @@ def handle_subtitle_only_request(app, message, request: SubtitleOnlyRequested) -
     available_langs = sorted(set((normal_langs or []) + (auto_langs or [])))
     download_subtitles_only(
         app,
-        message,
+        execution_context.source_message,
         request.url,
         request.tags,
         available_langs,
@@ -39,9 +119,229 @@ def handle_subtitle_only_request(app, message, request: SubtitleOnlyRequested) -
     )
 
 
+def handle_subtitle_settings_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: SubtitleSettingsCommandRequested,
+) -> None:
+    from COMMANDS.subtitles_cmd import subs_command_logic
+
+    subs_command_logic(app, execution_context.source_message, request)
+
+
+def handle_language_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: LanguageCommandRequested,
+) -> None:
+    from COMMANDS.lang_cmd import lang_command_logic
+
+    lang_command_logic(app, execution_context.source_message, request)
+
+
+def handle_playlist_help_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: PlaylistHelpRequested,
+) -> None:
+    from COMMANDS.other_handlers import playlist_command_logic
+
+    playlist_command_logic(app, execution_context.source_message, request)
+
+
+def handle_help_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: HelpCommandRequested,
+) -> None:
+    from COMMANDS.other_handlers import help_command_logic
+
+    help_command_logic(app, execution_context.source_message, request)
+
+
+def handle_image_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: ImageCommandRequested,
+) -> None:
+    from COMMANDS.image_cmd import image_command_logic
+
+    image_command_logic(app, execution_context.source_message, request)
+
+
+def handle_start_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: StartCommandRequested,
+) -> None:
+    from URL_PARSERS.url_extractor import start_command_logic
+
+    start_command_logic(app, execution_context.source_message, request)
+
+
+def handle_add_bot_to_group_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: AddBotToGroupRequested,
+) -> None:
+    from URL_PARSERS.url_extractor import add_bot_to_group_command_logic
+
+    add_bot_to_group_command_logic(app, execution_context.source_message, request)
+
+
+def handle_add_bot_to_group_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: AddBotToGroupSelectionRequested,
+) -> None:
+    from URL_PARSERS.url_extractor import add_group_msg_callback_logic
+
+    add_group_msg_callback_logic(app, execution_context.callback_query, request)
+
+
+def handle_usage_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: UsageCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import get_user_usage_stats
+
+    get_user_usage_stats(app, execution_context.source_message)
+
+
+def handle_uncache_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: UncacheCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import uncache_command
+
+    uncache_command(app, execution_context.source_message)
+
+
+def handle_reload_cache_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: ReloadCacheCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import reload_firebase_cache_command
+
+    reload_firebase_cache_command(app, execution_context.source_message)
+
+
+def handle_auto_cache_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: AutoCacheCommandRequested,
+) -> None:
+    from DATABASE.cache_db import auto_cache_command
+
+    auto_cache_command(app, execution_context.source_message)
+
+
+def handle_runtime_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: RuntimeCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import check_runtime
+
+    check_runtime(execution_context.source_message)
+
+
+def handle_user_logs_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: UserLogsCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import get_user_log
+
+    get_user_log(app, execution_context.source_message)
+
+
+def handle_user_details_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: UserDetailsCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import get_user_details
+
+    get_user_details(app, execution_context.source_message)
+
+
+def handle_ban_time_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: BanTimeCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import ban_time_command
+
+    ban_time_command(app, execution_context.source_message)
+
+
+def handle_broadcast_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: BroadcastCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import send_promo_message
+
+    send_promo_message(app, execution_context.source_message)
+
+
+def handle_block_user_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: BlockUserCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import block_user
+
+    block_user(app, execution_context.source_message)
+
+
+def handle_unblock_user_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: UnblockUserCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import unblock_user
+
+    unblock_user(app, execution_context.source_message)
+
+
+def handle_clean_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: CleanCommandRequested,
+) -> None:
+    from COMMANDS.clean_cmd import clean_command_logic
+
+    clean_command_logic(app, execution_context.source_message, request)
+
+
+def handle_language_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: LanguageSelectionRequested,
+) -> None:
+    from URL_PARSERS.url_extractor import lang_callback_logic
+
+    lang_callback_logic(app, execution_context.callback_query, request)
+
+
+def handle_args_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: ArgsCommandRequested,
+) -> None:
+    from COMMANDS.args_cmd import args_command_logic
+
+    args_command_logic(app, execution_context.source_message, request)
+
+
 def handle_ask_quality_selection_request(
     app,
-    callback_query,
+    execution_context: TelegramExecutionContext,
     request: AskQualitySelectionRequested,
     *,
     original_message,
@@ -51,6 +351,7 @@ def handle_ask_quality_selection_request(
     proc_msg=None,
 ) -> None:
     from DOWN_AND_UP.always_ask_menu import askq_callback_logic
+    callback_query = execution_context.callback_query
 
     askq_callback_logic(
         app,
@@ -66,10 +367,11 @@ def handle_ask_quality_selection_request(
 
 def handle_ask_filter_selection_request(
     app,
-    callback_query,
+    execution_context: TelegramExecutionContext,
     request: AskFilterSelectionRequested,
 ) -> None:
     from DOWN_AND_UP.always_ask_menu import ask_filter_callback_logic
+    callback_query = execution_context.callback_query
 
     ask_filter_callback_logic(
         app,
@@ -80,60 +382,321 @@ def handle_ask_filter_selection_request(
 
 def handle_image_range_selection_request(
     app,
-    callback_query,
+    execution_context: TelegramExecutionContext,
     request: ImageRangeSelectionRequested,
 ) -> None:
     from COMMANDS.image_cmd import image_command
     from HELPERS.safe_messeger import fake_message
+    callback_query = execution_context.callback_query
 
     range_command = f"/img {request.start_index}-{request.end_index} {request.url}"
     mock_message = fake_message(
         range_command,
         request.user_id,
-        original_chat_id=callback_query.message.chat.id,
-        message_thread_id=getattr(callback_query.message, "message_thread_id", None),
-        original_message=callback_query.message,
+        original_chat_id=execution_context.chat_id,
+        message_thread_id=execution_context.message_thread_id,
+        original_message=execution_context.source_message,
     )
     image_command(app, mock_message)
 
 
 def handle_cookie_menu_selection_request(
     app,
-    callback_query,
+    execution_context: TelegramExecutionContext,
     request: CookieMenuSelectionRequested,
 ) -> None:
     from COMMANDS.cookies_cmd import _handle_cookie_menu_selection
+    callback_query = execution_context.callback_query
 
     _handle_cookie_menu_selection(
         app,
         user_id=request.user_id,
         selection_key=request.selection_key,
-        message=callback_query.message,
+        message=execution_context.source_message,
         callback_query=callback_query,
     )
 
 
 def handle_subtitle_settings_selection_request(
     app,
-    callback_query,
+    execution_context: TelegramExecutionContext,
     request: SubtitleSettingsSelectionRequested,
 ) -> None:
     from COMMANDS.subtitles_cmd import subtitle_settings_callback_logic
+    callback_query = execution_context.callback_query
 
     subtitle_settings_callback_logic(app, callback_query, request)
 
 
 def handle_format_menu_selection_request(
     app,
-    callback_query,
+    execution_context: TelegramExecutionContext,
     request: FormatMenuSelectionRequested,
 ) -> None:
     from COMMANDS.format_cmd import format_menu_callback_logic
+    callback_query = execution_context.callback_query
 
     format_menu_callback_logic(app, callback_query, request)
 
 
-def handle_concat_request(app, message, request: ConcatRequested) -> None:
+def handle_settings_menu_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: SettingsMenuSelectionRequested,
+) -> None:
+    from COMMANDS.settings_cmd import settings_menu_callback_logic
+    callback_query = execution_context.callback_query
+
+    settings_menu_callback_logic(app, callback_query, request)
+
+
+def handle_settings_menu_open_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: SettingsMenuOpenRequested,
+) -> None:
+    from COMMANDS.settings_cmd import settings_command_logic
+
+    settings_command_logic(app, execution_context.source_message, request)
+
+
+def handle_list_formats_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: ListFormatsRequested,
+) -> None:
+    from COMMANDS.list_cmd import list_command_logic
+
+    list_command_logic(app, execution_context.source_message, request)
+
+
+def handle_tags_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: TagsCommandRequested,
+) -> None:
+    from COMMANDS.tag_cmd import tags_command_logic
+
+    tags_command_logic(app, execution_context.source_message, request)
+
+
+def handle_browser_cookies_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: BrowserCookiesRequested,
+) -> None:
+    from COMMANDS.cookies_cmd import cookies_from_browser_logic
+
+    cookies_from_browser_logic(app, execution_context.source_message, request)
+
+
+def handle_cookie_menu_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: CookieMenuRequested,
+) -> None:
+    from COMMANDS.cookies_cmd import download_cookie_logic
+
+    download_cookie_logic(app, execution_context.source_message, request)
+
+
+def handle_check_cookie_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: CheckCookieRequested,
+) -> None:
+    from COMMANDS.cookies_cmd import checking_cookie_file_logic
+
+    checking_cookie_file_logic(app, execution_context.source_message, request)
+
+
+def handle_save_cookie_text_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: SaveCookieTextRequested,
+) -> None:
+    from COMMANDS.cookies_cmd import save_as_cookie_file_logic
+
+    save_as_cookie_file_logic(app, execution_context.source_message, request)
+
+
+def handle_mediainfo_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: MediaInfoCommandRequested,
+) -> None:
+    from COMMANDS.mediainfo_cmd import mediainfo_command_logic
+
+    mediainfo_command_logic(app, execution_context.source_message, request)
+
+
+def handle_mediainfo_option_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: MediaInfoOptionSelectionRequested,
+) -> None:
+    from COMMANDS.mediainfo_cmd import mediainfo_option_callback_logic
+
+    mediainfo_option_callback_logic(app, execution_context, request)
+
+
+def handle_link_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: LinkCommandRequested,
+) -> None:
+    from COMMANDS.link_cmd import link_command_logic
+
+    link_command_logic(app, execution_context.source_message, request)
+
+
+def handle_search_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: SearchCommandRequested,
+) -> None:
+    from COMMANDS.search import search_command_logic
+
+    search_command_logic(app, execution_context.source_message, request)
+
+
+def handle_keyboard_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: KeyboardCommandRequested,
+) -> None:
+    from COMMANDS.keyboard_cmd import keyboard_command_logic
+
+    keyboard_command_logic(app, execution_context.source_message, request)
+
+
+def handle_keyboard_option_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: KeyboardOptionSelectionRequested,
+) -> None:
+    from COMMANDS.keyboard_cmd import keyboard_callback_logic
+
+    keyboard_callback_logic(app, execution_context, request)
+
+
+def handle_format_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: FormatCommandRequested,
+) -> None:
+    from COMMANDS.format_cmd import set_format_logic
+
+    set_format_logic(app, execution_context.source_message, request)
+
+
+def handle_proxy_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: ProxyCommandRequested,
+) -> None:
+    from COMMANDS.proxy_cmd import proxy_command_logic
+
+    proxy_command_logic(app, execution_context.source_message, request)
+
+
+def handle_nsfw_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: NsfwCommandRequested,
+) -> None:
+    from COMMANDS.nsfw_cmd import nsfw_command_logic
+
+    nsfw_command_logic(app, execution_context.source_message, request)
+
+
+def handle_split_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: SplitCommandRequested,
+) -> None:
+    from COMMANDS.split_sizer import split_command_logic
+
+    split_command_logic(app, execution_context.source_message, request)
+
+
+def handle_settings_command_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: SettingsCommandSelectionRequested,
+) -> None:
+    from COMMANDS.settings_cmd import settings_cmd_callback_logic
+    callback_query = execution_context.callback_query
+
+    settings_cmd_callback_logic(app, callback_query, request)
+
+
+def handle_close_message_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: CloseMessageRequested,
+    *,
+    answer_text: str,
+    log_text: str,
+) -> None:
+    from HELPERS.logger import send_to_logger
+
+    callback_query = execution_context.callback_query
+    if callback_query is None:
+        return
+    try:
+        execution_context.source_message.delete()
+    except Exception:
+        try:
+            from HELPERS.safe_messeger import safe_edit_reply_markup
+
+            safe_edit_reply_markup(
+                execution_context.chat_id,
+                execution_context.source_message_id,
+                reply_markup=None,
+                _callback_query=callback_query,
+            )
+        except Exception:
+            callback_query.edit_message_reply_markup(reply_markup=None)
+    callback_query.answer(answer_text)
+    send_to_logger(execution_context.source_message, log_text)
+
+
+def handle_proxy_option_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: ProxyOptionSelectionRequested,
+) -> None:
+    from COMMANDS.proxy_cmd import proxy_option_callback_logic
+
+    proxy_option_callback_logic(app, execution_context, request)
+
+
+def handle_nsfw_option_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: NsfwOptionSelectionRequested,
+) -> None:
+    from COMMANDS.nsfw_cmd import nsfw_option_callback_logic
+
+    nsfw_option_callback_logic(app, execution_context, request)
+
+
+def handle_split_size_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: SplitSizeSelectionRequested,
+) -> None:
+    from COMMANDS.split_sizer import split_size_callback_logic
+
+    split_size_callback_logic(app, execution_context, request)
+
+
+def handle_concat_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: ConcatRequested,
+) -> None:
     from DOWN_AND_UP.audio_concat import concat_audio_playlist_range
     from DOWN_AND_UP.branch_selection_result import (
         audio_concat_branch,
@@ -189,7 +752,7 @@ def handle_concat_request(app, message, request: ConcatRequested) -> None:
     if request.media_mode == "audio":
         concat_audio_playlist_range(
             app,
-            message,
+            execution_context.source_message,
             url=request.url,
             video_start_with=request.video_start_with,
             video_end_with=request.video_end_with,
@@ -201,7 +764,7 @@ def handle_concat_request(app, message, request: ConcatRequested) -> None:
 
     concat_video_playlist_range(
         app,
-        message,
+        execution_context.source_message,
         url=request.url,
         video_start_with=request.video_start_with,
         video_end_with=request.video_end_with,
@@ -211,13 +774,25 @@ def handle_concat_request(app, message, request: ConcatRequested) -> None:
     )
 
 
-def handle_rename_request(app, message, request: RenameRequested) -> None:
+def handle_rename_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: RenameRequested,
+) -> None:
     from DOWN_AND_UP.audio_concat import resend_last_audio_concat_with_new_name
 
-    resend_last_audio_concat_with_new_name(app, message, new_name=request.new_name)
+    resend_last_audio_concat_with_new_name(
+        app,
+        execution_context.source_message,
+        new_name=request.new_name,
+    )
 
 
-def handle_audio_download_request(app, message, request: AudioDownloadRequested) -> None:
+def handle_audio_download_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: AudioDownloadRequested,
+) -> None:
     from DOWN_AND_UP.branch_selection_result import audio_download_branch, log_branch_selection
     from DOWN_AND_UP.down_and_audio import down_and_audio
     from DOWN_AND_UP.runtime_task import make_runtime_task, with_branch_selection
@@ -250,17 +825,21 @@ def handle_audio_download_request(app, message, request: AudioDownloadRequested)
     )
     down_and_audio(
         app,
-        message,
+        execution_context.source_message,
         quality_key=request.quality_key,
         format_override=request.format_override,
         task_context=task,
     )
 
 
-def handle_url_download_request(app, message, request: UrlDownloadRequested) -> None:
+def handle_url_download_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: UrlDownloadRequested,
+) -> None:
     from URL_PARSERS.video_extractor import video_url_extractor
 
-    video_url_extractor(app, message, url_request=request)
+    video_url_extractor(app, execution_context=execution_context, url_request=request)
 
 
 def normalize_url_download_runtime_request(
@@ -323,7 +902,7 @@ def derive_playlist_start_index(video_start_with: int, video_end_with: int) -> i
 
 def handle_url_quality_menu_runtime(
     app,
-    message,
+    execution_context: TelegramExecutionContext,
     request: UrlDownloadRequested,
 ) -> None:
     from DOWN_AND_UP.always_ask_menu import ask_quality_menu
@@ -334,7 +913,7 @@ def handle_url_quality_menu_runtime(
     )
     ask_quality_menu(
         app,
-        message,
+        execution_context.source_message,
         request.url,
         list(request.tags),
         playlist_start_index,
@@ -415,7 +994,13 @@ def derive_url_runtime_media_policy(request: UrlDownloadRequested | SimpleNamesp
     }
 
 
-def send_url_tag_error(app, message, *, user_id: int, tag_error) -> None:
+def send_url_tag_error(
+    app,
+    execution_context: TelegramExecutionContext,
+    *,
+    user_id: int,
+    tag_error,
+) -> None:
     if not tag_error:
         return
     from CONFIG.messages import safe_get_messages
@@ -430,9 +1015,34 @@ def send_url_tag_error(app, message, *, user_id: int, tag_error) -> None:
     app.send_message(
         user_id,
         error_msg,
-        reply_parameters=ReplyParameters(message_id=message.id),
+        reply_parameters=ReplyParameters(message_id=execution_context.source_message_id),
     )
-    log_error_to_channel(message, error_msg)
+    log_error_to_channel(execution_context.source_message, error_msg)
+
+
+def send_url_wait_download_notice(
+    app,
+    execution_context: TelegramExecutionContext,
+    *,
+    user_id: int,
+    text: str,
+) -> None:
+    from pyrogram.types import ReplyParameters
+
+    app.send_message(
+        user_id,
+        text,
+        reply_parameters=ReplyParameters(message_id=execution_context.source_message_id),
+    )
+
+
+def send_url_runtime_error(
+    execution_context: TelegramExecutionContext,
+    text: str,
+) -> None:
+    from HELPERS.logger import send_error_to_user
+
+    send_error_to_user(execution_context.source_message, text)
 
 
 def clear_user_playlist_error_state(*, user_id: int, playlist_name: str | None = None) -> None:
@@ -458,7 +1068,7 @@ def is_url_blacklisted(raw_input: str) -> bool:
 
 def handle_saved_format_url_runtime(
     app,
-    message,
+    execution_context: TelegramExecutionContext,
     request: UrlDownloadRequested,
     *,
     saved_format: str,
@@ -498,7 +1108,7 @@ def handle_saved_format_url_runtime(
     log_branch_selection(logger, branch_result, user_id=request.user_id)
     down_and_up(
         app,
-        message,
+        execution_context.source_message,
         format_override=saved_format,
         quality_key=quality_key,
         task_context=task,

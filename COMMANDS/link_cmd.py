@@ -8,9 +8,15 @@ import yt_dlp
 from pyrogram.types import ReplyParameters
 from pyrogram import enums
 from HELPERS.app_instance import get_app
+from HELPERS.ingress_models import build_telegram_command_envelope
+from HELPERS.ingress_requests import build_link_command_request
 from HELPERS.logger import logger, send_to_logger, send_to_user, send_to_all
 from HELPERS.limitter import check_user, is_user_in_channel
 from HELPERS.filesystem_hlp import create_directory
+from HELPERS.request_execution import (
+    build_message_execution_context,
+    handle_link_command_request,
+)
 from CONFIG.config import Config
 from CONFIG.messages import Messages, safe_get_messages
 from CONFIG.logger_msg import LoggerMsg
@@ -367,6 +373,12 @@ def get_direct_link(url, user_id, quality_arg=None, cookies_already_checked=Fals
         return {'error': f'Error: {error_text}'}
 
 def link_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_link_command_request(envelope)
+    handle_link_command_request(app, build_message_execution_context(message), request)
+
+
+def link_command_logic(app, message, request=None):
     """
     Handler for /link command
     """

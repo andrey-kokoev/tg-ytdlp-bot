@@ -38,9 +38,19 @@ from URL_PARSERS.service_api_info import get_service_account_info, build_tags
 from DOWN_AND_UP.gallery_command_result import GalleryCommandResult
 from DOWN_AND_UP.runtime_task import with_terminal_outcome
 from DOWN_AND_UP.terminal_outcome_result import failed_terminal_outcome, upload_terminal_outcome
-from HELPERS.ingress_models import build_telegram_callback_envelope
-from HELPERS.ingress_requests import build_image_range_selection_request
-from HELPERS.request_execution import handle_image_range_selection_request
+from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_command_envelope
+from HELPERS.ingress_requests import (
+    build_close_message_request,
+    build_image_command_request,
+    build_image_range_selection_request,
+)
+from HELPERS.request_execution import (
+    build_callback_execution_context,
+    build_message_execution_context,
+    handle_close_message_request,
+    handle_image_command_request,
+    handle_image_range_selection_request,
+)
 
 # Unified helpers to create thumbnails/covers for videos
 def _get_file_mb(file_path):
@@ -840,6 +850,13 @@ def _record_gallery_command_result(
 
 @background_handler(label="image_command")
 def image_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_image_command_request(envelope)
+    execution_context = build_message_execution_context(message)
+    handle_image_command_request(app, execution_context, request)
+
+
+def image_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     """Handle /img command for downloading images"""
     user_id = message.from_user.id
@@ -4176,19 +4193,17 @@ def image_command(app, message):
 @app.on_callback_query(filters.regex(r"^img_help\|"))
 def img_help_callback(app, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
-    messages = safe_get_messages(None)
     """Handle img help callback"""
-    data = callback_query.data.split("|")[-1]
-    
-    if data == "close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        try:
-            callback_query.answer(safe_get_messages(user_id).IMG_HELP_CLOSED_MSG)
-        except Exception:
-            pass
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_close_message_request(callback_envelope, close_scope="img_help")
+    if request.raw_input and request.raw_input.split("|")[-1] == "close":
+        handle_close_message_request(
+            app,
+            build_callback_execution_context(callback_query),
+            request,
+            answer_text=safe_get_messages(user_id).IMG_HELP_CLOSED_MSG,
+            log_text=safe_get_messages(user_id).IMG_HELP_CLOSED_MSG,
+        )
         return
     
     try:
@@ -4254,7 +4269,11 @@ def img_range_callback(app, callback_query: CallbackQuery):
         logger.info(
             f"[IMG_RANGE_CALLBACK] Dispatching image range request: start={start}, end={end}, url={url}"
         )
-        handle_image_range_selection_request(app, callback_query, range_request)
+        handle_image_range_selection_request(
+            app,
+            build_callback_execution_context(callback_query),
+            range_request,
+        )
         logger.info(f"[IMG_RANGE_CALLBACK] image_command completed")
         
     except Exception as e:

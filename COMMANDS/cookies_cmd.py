@@ -13,10 +13,31 @@ from HELPERS.limitter import is_user_in_channel
 from HELPERS.logger import send_to_logger, logger, send_to_user, send_to_all
 from HELPERS.filesystem_hlp import create_directory
 from HELPERS.safe_messeger import safe_send_message, safe_edit_message_text
-from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_document_envelope
-from HELPERS.ingress_requests import build_cookie_menu_selection_request, build_cookie_upload_request
+from HELPERS.ingress_models import (
+    build_telegram_callback_envelope,
+    build_telegram_command_envelope,
+    build_telegram_document_envelope,
+)
+from HELPERS.ingress_requests import (
+    build_browser_cookies_request,
+    build_check_cookie_request,
+    build_close_message_request,
+    build_cookie_menu_request,
+    build_cookie_menu_selection_request,
+    build_cookie_upload_request,
+    build_save_cookie_text_request,
+)
 from HELPERS.message_bridge import bridge_message_from_existing
-from HELPERS.request_execution import handle_cookie_menu_selection_request
+from HELPERS.request_execution import (
+    build_message_execution_context,
+    build_callback_execution_context,
+    handle_browser_cookies_request,
+    handle_check_cookie_request,
+    handle_close_message_request,
+    handle_cookie_menu_request,
+    handle_cookie_menu_selection_request,
+    handle_save_cookie_text_request,
+)
 from pyrogram.errors import FloodWait
 import subprocess
 import os
@@ -380,6 +401,12 @@ def get_unchecked_cookie_sources(user_id: int, cookie_urls: list) -> list:
 # @reply_with_keyboard
 @background_handler(label="cookies_from_browser")
 def cookies_from_browser(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_browser_cookies_request(envelope)
+    handle_browser_cookies_request(app, build_message_execution_context(message), request)
+
+
+def cookies_from_browser_logic(app, message, request=None):
     """
     Let the user choose a browser to extract cookies from.
     
@@ -673,7 +700,7 @@ def download_cookie_callback(app, callback_query):
     )
     handle_cookie_menu_selection_request(
         app,
-        callback_query,
+        build_callback_execution_context(callback_query),
         selection_request,
     )
 
@@ -700,7 +727,7 @@ def _handle_cookie_menu_selection(app, *, user_id: int, selection_key: str, mess
         download_and_save_cookie(app, callback_query or message, Config.VK_COOKIE_URL, "vk")
     elif selection_key == "check_cookie":
         try:
-            checking_cookie_file(app, bridge_message_from_existing(message, Config.CHECK_COOKIE_COMMAND))
+            check_cookie_command(app, bridge_message_from_existing(message, Config.CHECK_COOKIE_COMMAND))
             if callback_query is not None:
                 try:
                     app.answer_callback_query(callback_query.id)
@@ -768,18 +795,28 @@ def save_as_cookie_hint_callback(app, callback_query):
         callback_query: Callback query
     """
     user_id = callback_query.from_user.id
-    data = callback_query.data.split("|")[1]
-    if data == "close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        callback_query.answer(safe_get_messages(user_id).COOKIES_HINT_CLOSED_MSG)
-        send_to_logger(callback_query.message, safe_get_messages(user_id).COOKIES_SAVE_AS_HINT_CLOSED_MSG)
-        return
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_close_message_request(callback_envelope, close_scope="save_as_cookie_hint")
+    handle_close_message_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+        answer_text=safe_get_messages(user_id).COOKIES_HINT_CLOSED_MSG,
+        log_text=safe_get_messages(user_id).COOKIES_SAVE_AS_HINT_CLOSED_MSG,
+    )
 
 # Called from url_distractor - no decorator needed
+def check_cookie_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_check_cookie_request(envelope)
+    handle_check_cookie_request(app, build_message_execution_context(message), request)
+
+
 def checking_cookie_file(app, message):
+    check_cookie_command(app, message)
+
+
+def checking_cookie_file_logic(app, message, request=None):
     """
     Validate an existing user cookie file.
     
@@ -837,6 +874,12 @@ def checking_cookie_file(app, message):
 
 # @reply_with_keyboard
 def download_cookie(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_cookie_menu_request(envelope)
+    handle_cookie_menu_request(app, build_message_execution_context(message), request)
+
+
+def download_cookie_logic(app, message, request=None):
     """
     Show a menu with buttons to download cookie files for different services.
     
@@ -1066,6 +1109,12 @@ def download_and_save_cookie(app, callback_query, url, service):
 # Updating The Cookie File.
 # @reply_with_keyboard
 def save_as_cookie_file(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_save_cookie_text_request(envelope)
+    handle_save_cookie_text_request(app, build_message_execution_context(message), request)
+
+
+def save_as_cookie_file_logic(app, message, request=None):
     """
     Save cookies provided by the user as plain text.
     
