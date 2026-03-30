@@ -3,7 +3,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram import enums
 
 from HELPERS.app_instance import get_app
-from HELPERS.safe_messeger import fake_message
+from HELPERS.message_bridge import bridge_message_from_existing
 from HELPERS.logger import logger
 from CONFIG.messages import Messages, safe_get_messages
 # Lazy import to avoid circular dependency - import url_distractor inside functions
@@ -27,58 +27,60 @@ def clean_option_callback(app, callback_query):
     messages = safe_get_messages(user_id)
     # Lazy import to avoid circular dependency
     from URL_PARSERS.url_extractor import url_distractor
+    def _bridged_command_message(text: str):
+        return bridge_message_from_existing(callback_query.message, text)
     data = callback_query.data.split("|")[1]
 
     if data == "cookies":
-        url_distractor(app, fake_message("/clean cookie", user_id))
+        url_distractor(app, _bridged_command_message("/clean cookie"))
         callback_query.answer(messages.CLEAN_COOKIES_CLEANED_MSG)
         return
     elif data == "logs":
-        url_distractor(app, fake_message("/clean logs", user_id))
+        url_distractor(app, _bridged_command_message("/clean logs"))
         callback_query.answer(messages.CLEAN_LOGS_CLEANED_MSG)
         return
     elif data == "tags":
-        url_distractor(app, fake_message("/clean tags", user_id))
+        url_distractor(app, _bridged_command_message("/clean tags"))
         callback_query.answer(messages.CLEAN_TAGS_CLEANED_MSG)
         return
     elif data == "format":
-        url_distractor(app, fake_message("/clean format", user_id))
+        url_distractor(app, _bridged_command_message("/clean format"))
         callback_query.answer(messages.CLEAN_FORMAT_CLEANED_MSG)
         return
     elif data == "split":
-        url_distractor(app, fake_message("/clean split", user_id))
+        url_distractor(app, _bridged_command_message("/clean split"))
         callback_query.answer(messages.CLEAN_SPLIT_CLEANED_MSG)
         return
     elif data == "mediainfo":
-        url_distractor(app, fake_message("/clean mediainfo", user_id))
+        url_distractor(app, _bridged_command_message("/clean mediainfo"))
         callback_query.answer(messages.CLEAN_MEDIAINFO_CLEANED_MSG)
         return
     elif data == "subs":
-        url_distractor(app, fake_message("/clean subs", user_id))
+        url_distractor(app, _bridged_command_message("/clean subs"))
         callback_query.answer(messages.CLEAN_SUBS_CLEANED_MSG)
         return
     elif data == "keyboard":
-        url_distractor(app, fake_message("/clean keyboard", user_id))
+        url_distractor(app, _bridged_command_message("/clean keyboard"))
         callback_query.answer(messages.CLEAN_KEYBOARD_CLEANED_MSG)
         return
     elif data == "args":
-        url_distractor(app, fake_message("/clean args", user_id))
+        url_distractor(app, _bridged_command_message("/clean args"))
         callback_query.answer(messages.CLEAN_ARGS_CLEANED_MSG)
         return
     elif data == "nsfw":
-        url_distractor(app, fake_message("/clean nsfw", user_id))
+        url_distractor(app, _bridged_command_message("/clean nsfw"))
         callback_query.answer(messages.CLEAN_NSFW_CLEANED_MSG)
         return
     elif data == "proxy":
-        url_distractor(app, fake_message("/clean proxy", user_id))
+        url_distractor(app, _bridged_command_message("/clean proxy"))
         callback_query.answer(messages.CLEAN_PROXY_CLEANED_MSG)
         return
     elif data == "flood_wait":
-        url_distractor(app, fake_message("/clean flood_wait", user_id))
+        url_distractor(app, _bridged_command_message("/clean flood_wait"))
         callback_query.answer(messages.CLEAN_FLOOD_WAIT_CLEANED_MSG)
         return
     elif data == "all":
-        url_distractor(app, fake_message("/clean all", user_id))
+        url_distractor(app, _bridged_command_message("/clean all"))
         callback_query.answer(messages.CLEAN_ALL_CLEANED_MSG)
         return
     elif data == "back":

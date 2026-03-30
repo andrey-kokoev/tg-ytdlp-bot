@@ -11,6 +11,8 @@ from HELPERS.logger import send_to_logger, logger
 from HELPERS.filesystem_hlp import create_directory
 from HELPERS.limitter import is_user_in_channel
 from HELPERS.safe_messeger import safe_send_message, safe_edit_message_text
+from HELPERS.ingress_models import build_telegram_callback_envelope
+from HELPERS.ingress_requests import build_format_menu_selection_request
 from HELPERS.decorators import background_handler
 from urllib.parse import urlparse
 import os
@@ -249,7 +251,13 @@ def format_option_callback(app, callback_query):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     logger.info(LoggerMsg.FORMAT_CALLBACK_LOG_MSG.format(callback_data=callback_query.data))
-    data = callback_query.data.split("|")[1]
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_format_menu_selection_request(
+        callback_envelope,
+        action_kind="format_option",
+        action_value=callback_query.data.split("|")[1],
+    )
+    data = request.action_value
 
     # If you press the close button
     if data == "close":
@@ -451,7 +459,13 @@ safe_get_messages(user_id).FORMAT_CUSTOM_HINT_MSG,
 def format_codec_callback(app, callback_query):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
-    data = callback_query.data.split("|")[1]
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_format_menu_selection_request(
+        callback_envelope,
+        action_kind="format_codec",
+        action_value=callback_query.data.split("|")[1],
+    )
+    data = request.action_value
     
     if data in ["avc1", "av01", "vp9"]:
         set_user_codec_preference(user_id, data)
@@ -498,7 +512,13 @@ def format_codec_callback(app, callback_query):
 def format_container_callback(app, callback_query):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
-    data = callback_query.data.split("|")[1]
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_format_menu_selection_request(
+        callback_envelope,
+        action_kind="format_container",
+        action_value=callback_query.data.split("|")[1],
+    )
+    data = request.action_value
     if data == "mkv_toggle":
         mkv_on = toggle_user_mkv_preference(user_id)
         # Re-render Others menu
@@ -528,7 +548,13 @@ def format_container_callback(app, callback_query):
 def format_custom_callback(app, callback_query):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
-    data = callback_query.data.split("|")[1]
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_format_menu_selection_request(
+        callback_envelope,
+        action_kind="format_custom",
+        action_value=callback_query.data.split("|")[1],
+    )
+    data = request.action_value
     if data == "close":
         try:
             callback_query.message.delete()

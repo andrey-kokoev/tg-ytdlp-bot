@@ -10,6 +10,11 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyPara
 import requests
 from DOWN_AND_UP.branch_selection_result import BranchSelectionResult
 from DOWN_AND_UP.runtime_task import RuntimeTask, ensure_runtime_task, make_runtime_task, with_branch_selection
+from HELPERS.ingress_models import build_telegram_callback_envelope
+from HELPERS.ingress_requests import (
+    build_ask_filter_selection_request,
+    build_ask_quality_selection_request,
+)
 
 def safe_callback_answer(callback_query, text, show_alert=False):
     """Safely answer callback query, handling QueryIdInvalid errors"""
@@ -828,6 +833,14 @@ def ask_filter_callback(app, callback_query):
     parts = callback_query.data.split("|")
     if len(parts) >= 3:
         _, kind, value = parts[:3]
+        callback_envelope = build_telegram_callback_envelope(callback_query)
+        filter_request = build_ask_filter_selection_request(
+            callback_envelope,
+            filter_kind=kind,
+            filter_value=value,
+        )
+        kind = filter_request.filter_kind
+        value = filter_request.filter_value
         logger.info(LoggerMsg.ALWAYS_ASK_PARSED_LOG_MSG.format(kind=kind, value=value))
 
         # --- SUBS handlers must run BEFORE generic filter rebuild ---
@@ -1369,9 +1382,15 @@ def askq_callback(app, callback_query):
     # Parse callback data correctly - handle both old and new formats
     parts = callback_query.data.split("|")
     if len(parts) >= 3 and parts[1] == "other_id":
-        data = f"other_id_{parts[2]}"  # Reconstruct other_id_XXX format
+        selection_token = f"other_id_{parts[2]}"  # Reconstruct other_id_XXX format
     else:
-        data = parts[1] if len(parts) > 1 else ""
+        selection_token = parts[1] if len(parts) > 1 else ""
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    selection_request = build_ask_quality_selection_request(
+        callback_envelope,
+        selection_token=selection_token,
+    )
+    data = selection_request.selection_token
     found_type = None
     
     logger.info(f"Processing callback data: '{data}' for user {user_id}")

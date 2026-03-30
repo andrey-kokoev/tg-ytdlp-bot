@@ -24,7 +24,7 @@ import hashlib
 app = get_app()
 
 # Called from url_distractor - no decorator needed
-def video_url_extractor(app, message):
+def video_url_extractor(app, message, url_request=None):
     messages = safe_get_messages(message.chat.id)
     global active_downloads
     user_id = message.chat.id
@@ -47,9 +47,16 @@ def video_url_extractor(app, message):
             saved_format = fmt
 
     if should_ask:
-        full_string = message.text
+        full_string = getattr(url_request, "raw_input", None) or message.text
         logger.info(f"🔍 [DEBUG] video_extractor: full_string='{full_string}'")
-        url, video_start_with, video_end_with, _, tags, _, tag_error = extract_url_range_tags(full_string)
+        if url_request is not None:
+            url = url_request.url
+            video_start_with = url_request.video_start_with
+            video_end_with = url_request.video_end_with
+            tags = list(url_request.tags)
+            tag_error = None
+        else:
+            url, video_start_with, video_end_with, _, tags, _, tag_error = extract_url_range_tags(full_string)
         logger.info(f"🔍 [DEBUG] video_extractor: after extract_url_range_tags: url='{url}', video_start_with={video_start_with}, video_end_with={video_end_with}")
         # Add tag error check
         if tag_error:
@@ -78,9 +85,18 @@ def video_url_extractor(app, message):
         app.send_message(user_id, safe_get_messages(user_id).VIDEO_EXTRACTOR_WAIT_DOWNLOAD_MSG, reply_parameters=ReplyParameters(message_id=message.id))
         return
         
-    full_string = message.text
+    full_string = getattr(url_request, "raw_input", None) or message.text
     # Also add tag error check here
-    url, video_start_with, video_end_with, playlist_name, tags, tags_text, tag_error = extract_url_range_tags(full_string)
+    if url_request is not None:
+        url = url_request.url
+        video_start_with = url_request.video_start_with
+        video_end_with = url_request.video_end_with
+        playlist_name = url_request.playlist_name
+        tags = list(url_request.tags)
+        tags_text = url_request.tags_text
+        tag_error = None
+    else:
+        url, video_start_with, video_end_with, playlist_name, tags, tags_text, tag_error = extract_url_range_tags(full_string)
     if tag_error:
         wrong, example = tag_error
         error_msg = safe_get_messages(user_id).TAG_FORBIDDEN_CHARS_MSG.format(tag=wrong, example=example)

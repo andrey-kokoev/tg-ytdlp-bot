@@ -38,6 +38,8 @@ from URL_PARSERS.service_api_info import get_service_account_info, build_tags
 from DOWN_AND_UP.gallery_command_result import GalleryCommandResult
 from DOWN_AND_UP.runtime_task import with_terminal_outcome
 from DOWN_AND_UP.terminal_outcome_result import failed_terminal_outcome, upload_terminal_outcome
+from HELPERS.ingress_models import build_telegram_callback_envelope
+from HELPERS.ingress_requests import build_image_range_selection_request
 
 # Unified helpers to create thumbnails/covers for videos
 def _get_file_mb(file_path):
@@ -4225,6 +4227,16 @@ def img_range_callback(app, callback_query: CallbackQuery):
         start = int(data_parts[1])
         end = int(data_parts[2])
         url = data_parts[3]
+        callback_envelope = build_telegram_callback_envelope(callback_query)
+        range_request = build_image_range_selection_request(
+            callback_envelope,
+            start_index=start,
+            end_index=end,
+            url=url,
+        )
+        start = range_request.start_index
+        end = range_request.end_index
+        url = range_request.url
         
         logger.info(f"[IMG_RANGE_CALLBACK] Parsed: start={start}, end={end}, url={url}")
         
@@ -4241,21 +4253,18 @@ def img_range_callback(app, callback_query: CallbackQuery):
         # Create new message with range command
         range_command = f"/img {start}-{end} {url}"
         logger.info(f"[IMG_RANGE_CALLBACK] Created command: {range_command}")
-        
-        # Send the command as if user typed it
-        from pyrogram.types import Message
-        from pyrogram.types import Message as MessageType
-        
-        # Create a mock message object
-        mock_message = MessageType(
-            id=callback_query.message.id + 1,
-            from_user=callback_query.from_user,
-            chat=callback_query.message.chat,
-            text=range_command,
-            date=callback_query.message.date,
-            reply_to_message=None
+
+        # Re-enter the image command through the existing fake-message helper,
+        # but keep the callback parsed as a real callback request first.
+        from HELPERS.safe_messeger import fake_message
+        mock_message = fake_message(
+            range_command,
+            user_id,
+            original_chat_id=callback_query.message.chat.id,
+            message_thread_id=getattr(callback_query.message, "message_thread_id", None),
+            original_message=callback_query.message,
         )
-        
+
         # Call the image command function
         logger.info(f"[IMG_RANGE_CALLBACK] Calling image_command with mock_message")
         image_command(app, mock_message)

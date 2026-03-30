@@ -5,6 +5,14 @@ import re
 from pyrogram import filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyParameters
 from HELPERS.safe_messeger import safe_send_message
+from HELPERS.ingress_models import (
+    build_telegram_message_envelope,
+)
+from HELPERS.ingress_requests import (
+    build_audio_download_request,
+    build_concat_request,
+    build_rename_request,
+)
 
 from HELPERS.app_instance import get_app
 from HELPERS.decorators import reply_with_keyboard, send_reply_keyboard_always, background_handler
@@ -92,6 +100,7 @@ def audio_command_handler(app, message):
                         text = f"/audio {url_candidate}*{start_val}*"
     except Exception:
         pass
+    envelope = build_telegram_message_envelope(message, raw_text=text, event_kind="command_message")
     url, _, _, _, tags, tags_text, tag_error = extract_url_range_tags(text)
     if tag_error:
         wrong, example = tag_error
@@ -139,25 +148,36 @@ def audio_command_handler(app, message):
         origin="audio_command_handler",
         provenance={"command": "/audio"},
     )
+    request = build_audio_download_request(
+        envelope,
+        url=url,
+        quality_key="mp3",
+        format_override="ba",
+        tags=list(tags),
+        tags_text=tags_text,
+        playlist_name=playlist_name,
+        video_count=video_count,
+        video_start_with=video_start_with,
+    )
     log_branch_selection(logger, branch_result, user_id=user_id)
     task = with_branch_selection(
         make_runtime_task(
             user_id=user_id,
             source_message_id=getattr(message, "id", None),
-            url=url,
-            tags_text=" ".join(tags),
-            tags=list(tags),
-            playlist_name=playlist_name,
-            video_count=video_count,
-            video_start_with=video_start_with,
+            url=request.url,
+            tags_text=request.tags_text,
+            tags=request.tags,
+            playlist_name=request.playlist_name,
+            video_count=request.video_count,
+            video_start_with=request.video_start_with,
         ),
         branch_result,
     )
     down_and_audio(
         app,
         message,
-        quality_key="mp3",
-        format_override="ba",
+        quality_key=request.quality_key,
+        format_override=request.format_override,
         task_context=task,
     )
 
@@ -198,6 +218,7 @@ def audio_concat_command_handler(app, message):
     text, reverse_output, audio_only = _normalize_concat_command_text(message.text or "")
     if not text:
         text = "/concat"
+    envelope = build_telegram_message_envelope(message, raw_text=text, event_kind="command_message")
 
     command_name = text.split(maxsplit=1)[0].lower()
 
@@ -256,24 +277,37 @@ def audio_concat_command_handler(app, message):
         return
 
     video_count = abs(video_end_with - video_start_with) + 1
+    request = build_concat_request(
+        envelope,
+        url=url,
+        media_mode="audio" if audio_only else "video",
+        reverse_output=reverse_output,
+        output_name_override=output_name_override,
+        tags=list(tags),
+        tags_text=tags_text,
+        playlist_name=playlist_name,
+        video_count=video_count,
+        video_start_with=video_start_with,
+        video_end_with=video_end_with,
+    )
     if audio_only:
         branch_result = audio_concat_branch(
-            video_count=video_count,
+            video_count=request.video_count,
             selected_by="explicit_command",
             origin="audio_concat_command_handler",
-            provenance={"command": command_name, "reverse_output": reverse_output, "audio_only": True},
+            provenance={"command": command_name, "reverse_output": request.reverse_output, "audio_only": True},
         )
     else:
         branch_result = video_concat_branch(
-            video_count=video_count,
+            video_count=request.video_count,
             selected_by="explicit_command",
             origin="audio_concat_command_handler",
             provenance={
                 "command": command_name,
-                "reverse_output": reverse_output,
+                "reverse_output": request.reverse_output,
                 "audio_only": False,
-                "concat_policy": "direct_concat_only",
-                "chapter_policy": "none",
+                "concat_policy": request.concat_policy,
+                "chapter_policy": request.chapter_policy,
             },
         )
     log_branch_selection(logger, branch_result, user_id=user_id)
@@ -281,16 +315,16 @@ def audio_concat_command_handler(app, message):
         make_runtime_task(
             user_id=user_id,
             source_message_id=getattr(message, "id", None),
-            url=url,
-            tags_text=tags_text,
-            tags=list(tags),
-            playlist_name=playlist_name,
-            video_count=video_count,
-            video_start_with=video_start_with,
-            concat_policy="direct_concat_only",
-            concat_ordering="reverse" if reverse_output else "original",
-            chapter_policy="none",
-            output_name_override=output_name_override,
+            url=request.url,
+            tags_text=request.tags_text,
+            tags=request.tags,
+            playlist_name=request.playlist_name,
+            video_count=request.video_count,
+            video_start_with=request.video_start_with,
+            concat_policy=request.concat_policy,
+            concat_ordering=request.concat_ordering,
+            chapter_policy=request.chapter_policy,
+            output_name_override=request.output_name_override,
         ),
         branch_result,
     )
@@ -298,22 +332,22 @@ def audio_concat_command_handler(app, message):
         concat_audio_playlist_range(
             app,
             message,
-            url=url,
-            video_start_with=video_start_with,
-            video_end_with=video_end_with,
-            reverse_output=reverse_output,
-            output_name_override=output_name_override,
+            url=request.url,
+            video_start_with=request.video_start_with,
+            video_end_with=request.video_end_with,
+            reverse_output=request.reverse_output,
+            output_name_override=request.output_name_override,
             task_context=task,
         )
     else:
         concat_video_playlist_range(
             app,
             message,
-            url=url,
-            video_start_with=video_start_with,
-            video_end_with=video_end_with,
-            reverse_output=reverse_output,
-            output_name_override=output_name_override,
+            url=request.url,
+            video_start_with=request.video_start_with,
+            video_end_with=request.video_end_with,
+            reverse_output=request.reverse_output,
+            output_name_override=request.output_name_override,
             task_context=task,
         )
 
@@ -335,7 +369,13 @@ def audio_concat_rename_command_handler(app, message):
         )
         return
 
-    resend_last_audio_concat_with_new_name(app, message, new_name=match.group(1).strip())
+    envelope = build_telegram_message_envelope(message, raw_text=text, event_kind="command_message")
+    request = build_rename_request(
+        envelope,
+        target_kind="audio_concat",
+        new_name=match.group(1).strip(),
+    )
+    resend_last_audio_concat_with_new_name(app, message, new_name=request.new_name)
 
 
 # /Link Command

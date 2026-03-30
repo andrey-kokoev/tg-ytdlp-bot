@@ -89,6 +89,10 @@ https://youtube.com/watch?v=dQw4w9WgXcQ
 - [Video Concat Chapter Policy Model](../development/24-video-concat-chapter-policy-model.md#video-concat-chapter-policy-model) - Explicit policy separation for playlist-item chapter metadata on composite video output
 - [Video Concat Object Chain Implementation Sketch](../development/25-video-concat-object-chain-implementation-sketch.md#video-concat-object-chain-implementation-sketch) - First coherent implementation sketch for branch, manifest, compatibility, concat execution, and terminal outcome
 - [Video Concat Policy Partition](../development/26-video-concat-policy-partition.md#video-concat-policy-partition) - Explicit separation of concat admissibility, delivery admissibility, and terminal rendering policy
+- [Ingress Segmentation Model](../development/27-ingress-segmentation-model.md#ingress-segmentation-model) - PDA-aligned decomposition of Telegram ingress into transport, envelope, task request, and execution
+- [Ingress Envelope Model](../development/28-ingress-envelope-model.md#ingress-envelope-model) - Minimal normalized carrier between Telegram transport events and task-request formation
+- [Task Request Ingress Model](../development/29-task-request-ingress-model.md#task-request-ingress-model) - First business-level request objects formed from ingress envelopes
+- [Ingress Implementation Status](../development/30-ingress-implementation-status.md#ingress-implementation-status) - What ingress seams are already implemented in code, what still bypasses them, and the next migration targets
 - [Troubleshooting](../advanced/troubleshooting.md#-troubleshooting) - Common issues and solutions
 - [Contributing](../development/04-contributing.md#-code-of-conduct) - How to contribute to the project
 - [Support](../misc/support.md#support) - Support information and acknowledgments

@@ -11,6 +11,14 @@ from HELPERS.decorators import reply_with_keyboard, background_handler
 from HELPERS.logger import logger, send_to_logger
 from HELPERS.limitter import is_user_in_channel
 from HELPERS.safe_messeger import safe_forward_messages
+from HELPERS.ingress_models import (
+    build_telegram_callback_envelope,
+    build_telegram_message_envelope,
+)
+from HELPERS.ingress_requests import (
+    build_subtitle_only_request,
+    build_subtitle_settings_selection_request,
+)
 from DOWN_AND_UP.yt_dlp_hook import get_video_formats
 from URL_PARSERS.tags import extract_url_range_tags, save_user_tags
 from URL_PARSERS.youtube import is_youtube_url
@@ -452,6 +460,7 @@ def subtitle_download_command(app, message):
     if "--text-only" in text:
         text_only = True
         text = re.sub(r"\s*--text-only\b", "", text).strip()
+    envelope = build_telegram_message_envelope(message, raw_text=text, event_kind="command_message")
     url, video_start_with, video_end_with, playlist_name, tags, _, tag_error = extract_url_range_tags(text)
     if tag_error:
         wrong, example = tag_error
@@ -490,18 +499,27 @@ def subtitle_download_command(app, message):
         return
 
     save_user_tags(user_id, tags)
+    request = build_subtitle_only_request(
+        envelope,
+        url=url,
+        tags=list(tags),
+        text_only=text_only,
+        playlist_name=playlist_name,
+        video_count=video_count,
+        video_start_with=video_start_with,
+    )
     normal_langs, auto_langs = get_or_compute_subs_langs(user_id, url)
     available_langs = sorted(set((normal_langs or []) + (auto_langs or [])))
     download_subtitles_only(
         app,
         message,
-        url,
-        tags,
+        request.url,
+        request.tags,
         available_langs,
-        playlist_name=playlist_name,
-        video_count=video_count,
-        video_start_with=video_start_with,
-        text_only=text_only,
+        playlist_name=request.playlist_name,
+        video_count=request.video_count,
+        video_start_with=request.video_start_with,
+        text_only=request.text_only,
     )
 
 
@@ -510,7 +528,14 @@ def subs_page_callback(app, callback_query):
     """Handle page navigation in subtitle language selection menu"""
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
-    page = int(callback_query.data.split("|")[1])
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_subtitle_settings_selection_request(
+        callback_envelope,
+        action_kind="page",
+        action_value="page",
+        page=int(callback_query.data.split("|")[1]),
+    )
+    page = request.page
     current_lang = get_user_subs_language(user_id)
     auto_mode = get_user_subs_auto_mode(user_id)
     
@@ -539,7 +564,13 @@ def subs_lang_callback(app, callback_query):
     """Handle language selection in subtitle language menu"""
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
-    lang_code = callback_query.data.split("|")[1]
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_subtitle_settings_selection_request(
+        callback_envelope,
+        action_kind="lang",
+        action_value=callback_query.data.split("|")[1],
+    )
+    lang_code = request.action_value
     
     save_user_subs_language(user_id, lang_code)
     
@@ -558,8 +589,15 @@ def subs_auto_callback(app, callback_query):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     parts = callback_query.data.split("|")
-    action = parts[1]
-    page = int(parts[2]) if len(parts) > 2 else 0  # <- Here!
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_subtitle_settings_selection_request(
+        callback_envelope,
+        action_kind="auto",
+        action_value=parts[1],
+        page=int(parts[2]) if len(parts) > 2 else 0,
+    )
+    action = request.action_value
+    page = request.page
     
     if action == "toggle":
         current_auto = get_user_subs_auto_mode(user_id)
@@ -600,8 +638,15 @@ def subs_always_ask_callback(app, callback_query):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     parts = callback_query.data.split("|")
-    action = parts[1]
-    page = int(parts[2]) if len(parts) > 2 else 0
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_subtitle_settings_selection_request(
+        callback_envelope,
+        action_kind="always_ask",
+        action_value=parts[1],
+        page=int(parts[2]) if len(parts) > 2 else 0,
+    )
+    action = request.action_value
+    page = request.page
     
     if action == "toggle":
         current_always_ask = is_subs_always_ask(user_id)
@@ -626,7 +671,13 @@ def subs_always_ask_callback(app, callback_query):
 def subs_lang_close_callback(app, callback_query):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
-    data = callback_query.data.split("|")[1]
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_subtitle_settings_selection_request(
+        callback_envelope,
+        action_kind="close",
+        action_value=callback_query.data.split("|")[1],
+    )
+    data = request.action_value
     if data == "close":
         try:
             callback_query.message.delete()

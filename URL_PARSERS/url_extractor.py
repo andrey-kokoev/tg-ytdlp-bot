@@ -37,6 +37,8 @@ from HELPERS.logger import logger
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram import enums
 from HELPERS.safe_messeger import fake_message
+from HELPERS.ingress_models import build_telegram_message_envelope
+from HELPERS.ingress_requests import build_url_download_request
 
 # Get app instance for decorators
 app = get_app()
@@ -164,8 +166,8 @@ def url_distractor(app, message):
     if text in emoji_to_command:
         mapped = emoji_to_command[text]
         # Emulate a user command for the mapped emoji
-        from HELPERS.safe_messeger import fake_message
-        fake_msg = fake_message(mapped, user_id)
+        from HELPERS.message_bridge import bridge_message_from_existing
+        fake_msg = bridge_message_from_existing(message, mapped)
         fake_msg._is_emoji_command = True  # Mark as emoji command to prevent recursion
         
         # Special case: headphones emoji should work exactly like /audio command
@@ -1076,7 +1078,27 @@ def url_distractor(app, message):
                 logger.error(LoggerMsg.URL_EXTRACTOR_ENGINE_ROUTER_ERROR_LOG_MSG.format(error=route_e))
             try:
                 logger.info(f"🔍 [DEBUG] url_extractor: before calling video_url_extractor, message.text='{message.text}'")
-                video_url_extractor(app, message)
+                envelope = build_telegram_message_envelope(message, raw_text=final_text, event_kind="text_message")
+                url, video_start_with, video_end_with, playlist_name, tags, tags_text, tag_error = extract_url_range_tags(final_text)
+                if tag_error:
+                    wrong, example = tag_error
+                    error_msg = safe_get_messages(user_id).TAG_FORBIDDEN_CHARS_MSG.format(tag=wrong, example=example)
+                    safe_send_message(user_id, error_msg, message=message)
+                    from HELPERS.logger import log_error_to_channel
+                    log_error_to_channel(message, error_msg)
+                    return
+                if not url:
+                    raise ValueError("URL message reached download path without extractable URL")
+                request = build_url_download_request(
+                    envelope,
+                    url=url,
+                    tags=list(tags),
+                    tags_text=tags_text,
+                    playlist_name=playlist_name,
+                    video_start_with=video_start_with,
+                    video_end_with=video_end_with,
+                )
+                video_url_extractor(app, message, url_request=request)
             except Exception as e:
                 logger.error(LoggerMsg.URL_EXTRACTOR_VIDEO_EXTRACTOR_FAILED_LOG_MSG.format(e=e))
                 try:

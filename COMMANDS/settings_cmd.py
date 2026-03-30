@@ -10,6 +10,7 @@ from HELPERS.limitter import is_user_in_channel
 
 from HELPERS.app_instance import get_app
 from HELPERS.safe_messeger import fake_message, safe_send_message, safe_edit_message_text
+from HELPERS.message_bridge import bridge_message_from_existing
 from HELPERS.decorators import background_handler
 from pyrogram.errors import FloodWait
 import os
@@ -287,6 +288,8 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
     messages = safe_get_messages(user_id)
     # Lazy import to avoid circular dependency
     from URL_PARSERS.url_extractor import url_distractor
+    def _bridged_command_message(text: str, *, command=None):
+        return bridge_message_from_existing(callback_query.message, text, command=command)
     data = callback_query.data.split("__")[2]
 
     # For commands that are processed only via url_distractor, create a temporary Message
@@ -329,7 +332,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "download_cookie":
         try:
-            url_distractor(app, fake_message("/cookie", user_id))
+            url_distractor(app, _bridged_command_message("/cookie"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -347,7 +350,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "cookies_from_browser":
         try:
-            cookies_from_browser(app, fake_message("/cookies_from_browser", user_id))
+            cookies_from_browser(app, _bridged_command_message("/cookies_from_browser"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -365,7 +368,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "check_cookie":
         try:
-            url_distractor(app, fake_message("/check_cookie", user_id))
+            url_distractor(app, _bridged_command_message("/check_cookie"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -397,7 +400,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
     if data == "format":
         # Add the command attribute for set_format to work correctly
         try:
-            set_format(app, fake_message("/format", user_id, command=["format"]))
+            set_format(app, _bridged_command_message("/format", command=["format"]))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -416,7 +419,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
     # /Subs Command
     if data == "subs":
         try:
-            subs_command(app, fake_message("/subs", user_id))
+            subs_command(app, _bridged_command_message("/subs"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -434,7 +437,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
 
     if data == "mediainfo":
         try:
-            mediainfo_command(app, fake_message("/mediainfo", user_id))
+            mediainfo_command(app, _bridged_command_message("/mediainfo"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -451,7 +454,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "split":
         try:
-            split_command(app, fake_message("/split", user_id))
+            split_command(app, _bridged_command_message("/split"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -480,7 +483,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "tags":
         try:
-            tags_command(app, fake_message("/tags", user_id))
+            tags_command(app, _bridged_command_message("/tags"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -496,7 +499,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "help":
         try:
-            res = command2(app, fake_message("/help", user_id))
+            res = command2(app, _bridged_command_message("/help"))
 
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
@@ -524,7 +527,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "usage":
         try:
-            url_distractor(app, fake_message("/usage", user_id))
+            url_distractor(app, _bridged_command_message("/usage"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -544,7 +547,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "playlist":
         try:
-            playlist_command(app, fake_message("/playlist", user_id))
+            playlist_command(app, _bridged_command_message("/playlist"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -597,7 +600,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "proxy":
         try:
-            url_distractor(app, fake_message("/proxy", user_id))
+            url_distractor(app, _bridged_command_message("/proxy"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -615,7 +618,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "keyboard":
         try:
-            url_distractor(app, fake_message("/keyboard", user_id))
+            url_distractor(app, _bridged_command_message("/keyboard"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -671,7 +674,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
         return
     if data == "add_bot_to_group":
         try:
-            url_distractor(app, fake_message("/add_bot_to_group", user_id))
+            url_distractor(app, _bridged_command_message("/add_bot_to_group"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -690,7 +693,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
     if data == "args":
         try:
             from COMMANDS.args_cmd import args_command
-            args_command(app, fake_message("/args", user_id))
+            args_command(app, _bridged_command_message("/args"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -709,7 +712,7 @@ def settings_cmd_callback(app, callback_query: CallbackQuery):
     if data == "nsfw":
         try:
             from COMMANDS.nsfw_cmd import nsfw_command
-            nsfw_command(app, fake_message("/nsfw", user_id))
+            nsfw_command(app, _bridged_command_message("/nsfw"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)

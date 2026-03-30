@@ -11,6 +11,7 @@ from pyrogram.errors import FloodWait
 import os
 from pyrogram.types import ReplyParameters
 from pyrogram import enums
+from HELPERS.message_bridge import bridge_message_from_existing
 
 # Configure local logger
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ def fake_message(
         except Exception:
             pass
     return m
+
 
 def fake_message_with_context(text, user_id, context_message=None, command=None):
     """

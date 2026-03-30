@@ -12,7 +12,10 @@ from HELPERS.decorators import reply_with_keyboard, background_handler
 from HELPERS.limitter import is_user_in_channel
 from HELPERS.logger import send_to_logger, logger, send_to_user, send_to_all
 from HELPERS.filesystem_hlp import create_directory
-from HELPERS.safe_messeger import fake_message, safe_send_message, safe_edit_message_text
+from HELPERS.safe_messeger import safe_send_message, safe_edit_message_text
+from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_document_envelope
+from HELPERS.ingress_requests import build_cookie_menu_selection_request, build_cookie_upload_request
+from HELPERS.message_bridge import bridge_message_from_existing
 from pyrogram.errors import FloodWait
 import subprocess
 import os
@@ -610,18 +613,20 @@ def save_my_cookie(app, message):
         message: Message containing the document
     """
     user_id = str(message.chat.id)
+    envelope = build_telegram_document_envelope(message)
+    request = build_cookie_upload_request(envelope)
     # Check file size
-    if message.document.file_size > 100 * 1024:
+    if request.file_size > 100 * 1024:
         send_to_all(message, safe_get_messages(user_id).COOKIES_FILE_TOO_LARGE_MSG)
         return
     # Check extension
-    if not message.document.file_name.lower().endswith('.txt'):
+    if not request.file_name.lower().endswith('.txt'):
         send_to_all(message, safe_get_messages(user_id).COOKIES_INVALID_FORMAT_MSG)
         return
     # Download the file to a temporary folder to check the contents
     import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = os.path.join(tmpdir, message.document.file_name)
+        tmp_path = os.path.join(tmpdir, request.file_name)
         app.download_media(message, file_name=tmp_path)
         try:
             with open(tmp_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -659,76 +664,94 @@ def download_cookie_callback(app, callback_query):
         callback_query: Callback query with selected service
     """
     user_id = callback_query.from_user.id
-    data = callback_query.data.split("|")[1]
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    selection_key = callback_query.data.split("|")[1]
+    selection_request = build_cookie_menu_selection_request(
+        callback_envelope,
+        selection_key=selection_key,
+    )
+    _handle_cookie_menu_selection(
+        app,
+        user_id=user_id,
+        selection_key=selection_request.selection_key,
+        message=callback_query.message,
+        callback_query=callback_query,
+    )
 
-    if data == "youtube":
-        # Send initial message about starting the process
-        safe_edit_message_text(
-            callback_query.message.chat.id, 
-            callback_query.message.id, 
-            safe_get_messages(user_id).COOKIES_YOUTUBE_TEST_START_MSG
-        )
-        download_and_validate_youtube_cookies(app, callback_query, user_id=user_id)
-    elif data == "instagram":
-        download_and_save_cookie(app, callback_query, Config.INSTAGRAM_COOKIE_URL, "instagram")
-    elif data == "twitter":
-        download_and_save_cookie(app, callback_query, Config.TWITTER_COOKIE_URL, "twitter")
-    elif data == "tiktok":
-        download_and_save_cookie(app, callback_query, Config.TIKTOK_COOKIE_URL, "tiktok")
-    elif data == "vk":
-        download_and_save_cookie(app, callback_query, Config.VK_COOKIE_URL, "vk")
-    elif data == "check_cookie":
+
+def _handle_cookie_menu_selection(app, *, user_id: int, selection_key: str, message, callback_query=None):
+    if selection_key == "youtube":
+        if callback_query is not None:
+            safe_edit_message_text(
+                callback_query.message.chat.id,
+                callback_query.message.id,
+                safe_get_messages(user_id).COOKIES_YOUTUBE_TEST_START_MSG
+            )
+            download_and_validate_youtube_cookies(app, callback_query, user_id=user_id)
+        else:
+            send_to_user(message, safe_get_messages(user_id).COOKIES_YOUTUBE_TEST_START_MSG)
+            download_and_validate_youtube_cookies(app, message, user_id=user_id)
+    elif selection_key == "instagram":
+        download_and_save_cookie(app, callback_query or message, Config.INSTAGRAM_COOKIE_URL, "instagram")
+    elif selection_key == "twitter":
+        download_and_save_cookie(app, callback_query or message, Config.TWITTER_COOKIE_URL, "twitter")
+    elif selection_key == "tiktok":
+        download_and_save_cookie(app, callback_query or message, Config.TIKTOK_COOKIE_URL, "tiktok")
+    elif selection_key == "vk":
+        download_and_save_cookie(app, callback_query or message, Config.VK_COOKIE_URL, "vk")
+    elif selection_key == "check_cookie":
         try:
-            # Run cookie checking directly using a fake message
-            checking_cookie_file(app, fake_message(Config.CHECK_COOKIE_COMMAND, user_id))
+            checking_cookie_file(app, bridge_message_from_existing(message, Config.CHECK_COOKIE_COMMAND))
+            if callback_query is not None:
+                try:
+                    app.answer_callback_query(callback_query.id)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(LoggerMsg.COOKIES_FAILED_START_BROWSER_LOG_MSG.format(e=e))
+            if callback_query is not None:
+                try:
+                    app.answer_callback_query(callback_query.id, safe_get_messages(user_id).COOKIES_FAILED_RUN_CHECK_MSG, show_alert=False)
+                except Exception:
+                    pass
+    elif selection_key == "own":
+        if callback_query is not None:
             try:
                 app.answer_callback_query(callback_query.id)
             except Exception:
                 pass
-        except Exception as e:
-            logger.error(LoggerMsg.COOKIES_FAILED_START_BROWSER_LOG_MSG.format(e=e))
-            try:
-                app.answer_callback_query(callback_query.id, safe_get_messages(user_id).COOKIES_FAILED_RUN_CHECK_MSG, show_alert=False)
-            except Exception:
-                pass
-    #elif data == "facebook":
-        #download_and_save_cookie(app, callback_query, Config.FACEBOOK_COOKIE_URL, "facebook")
-    elif data == "own":
-        try:
-            app.answer_callback_query(callback_query.id)
-        except Exception:
-            pass
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_SAVE_AS_COOKIE_HINT_CLOSE_BUTTON_MSG, callback_data="save_as_cookie_hint|close")]
         ])
-        from HELPERS.safe_messeger import safe_send_message
         safe_send_message(
-            callback_query.message.chat.id,
+            message.chat.id,
             safe_get_messages(user_id).SAVE_AS_COOKIE_HINT,
-            reply_parameters=ReplyParameters(message_id=callback_query.message.id if hasattr(callback_query.message, 'id') else None),
+            reply_parameters=ReplyParameters(message_id=message.id if hasattr(message, 'id') else None),
             reply_markup=keyboard,
             _callback_query=callback_query,
             _fallback_notice=safe_get_messages(user_id).FLOOD_LIMIT_TRY_LATER_MSG
         )
-    elif data == "from_browser":
+    elif selection_key == "from_browser":
         try:
-            cookies_from_browser(app, fake_message("/cookies_from_browser", user_id))
+            cookies_from_browser(app, bridge_message_from_existing(message, "/cookies_from_browser"))
         except FloodWait as e:
             user_dir = os.path.join("users", str(user_id))
             os.makedirs(user_dir, exist_ok=True)
             with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
                 f.write(str(e.value))
-            try:
-                app.answer_callback_query(callback_query.id, safe_get_messages(user_id).COOKIES_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
+            if callback_query is not None:
+                try:
+                    app.answer_callback_query(callback_query.id, safe_get_messages(user_id).COOKIES_FLOOD_LIMIT_MSG, show_alert=False)
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(LoggerMsg.COOKIES_FAILED_START_BROWSER_LOG_MSG.format(e=e))
-            try:
-                app.answer_callback_query(callback_query.id, safe_get_messages(user_id).COOKIES_FAILED_OPEN_BROWSER_MSG, show_alert=True)
-            except Exception:
-                pass
-    elif data == "close":
+            if callback_query is not None:
+                try:
+                    app.answer_callback_query(callback_query.id, safe_get_messages(user_id).COOKIES_FAILED_OPEN_BROWSER_MSG, show_alert=True)
+                except Exception:
+                    pass
+    elif selection_key == "close" and callback_query is not None:
         try:
             callback_query.message.delete()
         except Exception:
@@ -863,12 +886,13 @@ def download_cookie(app, message):
                 download_and_validate_youtube_cookies(app, message, selected_index=selected_index, user_id=user_id)
                 return
             elif service in ["instagram", "twitter", "tiktok", "facebook", "own", "from_browser", "vk"]:
-                # Fast command - directly call the callback
-                fake_callback = fake_message(f"/cookie {service}", user_id)
-                fake_callback.data = f"download_cookie|{service}"
-                fake_callback.from_user = message.from_user
-                fake_callback.message = message
-                download_cookie_callback(app, fake_callback)
+                _handle_cookie_menu_selection(
+                    app,
+                    user_id=int(user_id),
+                    selection_key=service,
+                    message=message,
+                    callback_query=None,
+                )
                 return
     except Exception as e:
         logger.error(LoggerMsg.COOKIES_ERROR_FAST_COMMAND_LOG_MSG.format(e=e))
