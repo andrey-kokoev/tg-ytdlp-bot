@@ -1,4 +1,5 @@
 
+from dataclasses import dataclass
 import os
 import math
 import hashlib
@@ -16,9 +17,91 @@ from CONFIG.messages import Messages, safe_get_messages
 from HELPERS.safe_messeger import safe_forward_messages
 from COMMANDS.format_cmd import get_user_mkv_preference
 from pyrogram import enums
+from pyrogram.types import ReplyParameters
 
 # Get app instance for decorators
 app = get_app()
+
+
+@dataclass(frozen=True)
+class FfmpegExecutionContext:
+    user_id: int
+    source_message: object
+    reply_parameters: ReplyParameters | None
+
+
+@dataclass(frozen=True)
+class SubtitleArtifactPlan:
+    subtitle_path: str
+    should_send_to_user: bool
+
+
+def _build_ffmpeg_execution_context(message) -> FfmpegExecutionContext | None:
+    if message is None:
+        return None
+    user_id = getattr(getattr(message, "chat", None), "id", None)
+    if user_id is None:
+        return None
+    message_id = getattr(message, "id", None)
+    reply_parameters = ReplyParameters(message_id=message_id) if message_id is not None else None
+    return FfmpegExecutionContext(
+        user_id=user_id,
+        source_message=message,
+        reply_parameters=reply_parameters,
+    )
+
+
+def _emit_ffmpeg_processing_error(
+    execution_context: FfmpegExecutionContext | None,
+    rendered_text: str,
+) -> None:
+    if execution_context is None:
+        return
+    send_to_all(execution_context.source_message, rendered_text)
+
+
+def _send_subtitles_document_artifact(
+    *,
+    execution_context: FfmpegExecutionContext | None,
+    subtitle_path: str,
+) -> None:
+    if execution_context is None or not os.path.exists(subtitle_path):
+        return
+    sent_msg = app.send_document(
+        chat_id=execution_context.user_id,
+        document=subtitle_path,
+        caption="<blockquote>💬 Subtitles SRT-file</blockquote>",
+        reply_parameters=execution_context.reply_parameters,
+        parse_mode=enums.ParseMode.HTML,
+    )
+    safe_forward_messages(get_log_channel("video"), execution_context.user_id, [sent_msg.id])
+    send_to_logger(execution_context.source_message, safe_get_messages(execution_context.user_id).SUBS_SENT_MSG)
+
+
+def _build_subtitle_artifact_plan(
+    *,
+    execution_context: FfmpegExecutionContext | None,
+    subtitle_path: str | None,
+) -> SubtitleArtifactPlan | None:
+    if execution_context is None or not subtitle_path or not os.path.exists(subtitle_path):
+        return None
+    return SubtitleArtifactPlan(
+        subtitle_path=subtitle_path,
+        should_send_to_user=True,
+    )
+
+
+def _emit_subtitle_artifact_plan(
+    *,
+    execution_context: FfmpegExecutionContext | None,
+    artifact_plan: SubtitleArtifactPlan | None,
+) -> None:
+    if artifact_plan is None or not artifact_plan.should_send_to_user:
+        return
+    _send_subtitles_document_artifact(
+        execution_context=execution_context,
+        subtitle_path=artifact_plan.subtitle_path,
+    )
 
 def get_ffmpeg_path():
     messages = safe_get_messages(None)
@@ -273,8 +356,10 @@ def get_duration_thumb_(dir, video_path, thumb_name):
     
     return duration, thumb_dir
 
-def get_duration_thumb(message, dir_path, video_path, thumb_name):
-    user_id = message.chat.id
+def get_duration_thumb(message, dir_path, video_path, thumb_name, execution_context: FfmpegExecutionContext | None = None):
+    if execution_context is None:
+        execution_context = _build_ffmpeg_execution_context(message)
+    user_id = execution_context.user_id if execution_context is not None else None
     messages = safe_get_messages(user_id)
     """
     Captures a thumbnail at 2 seconds into the video and retrieves video duration.
@@ -316,7 +401,12 @@ def get_duration_thumb(message, dir_path, video_path, thumb_name):
         # First check if video file exists
         if not os.path.exists(video_path):
             logger.error(safe_get_messages(user_id).FFMPEG_VIDEO_FILE_NOT_EXISTS_MSG.format(video_path=video_path))
-            send_to_all(message, safe_get_messages(user_id).VIDEO_FILE_NOT_FOUND_MSG.format(filename=os.path.basename(video_path)))
+            _emit_ffmpeg_processing_error(
+                execution_context,
+                safe_get_messages(user_id).VIDEO_FILE_NOT_FOUND_MSG.format(
+                    filename=os.path.basename(video_path)
+                ),
+            )
             return None
 
         # Get video dimensions
@@ -406,11 +496,17 @@ def get_duration_thumb(message, dir_path, video_path, thumb_name):
         return duration, thumb_dir
     except subprocess.CalledProcessError as e:
         logger.error(safe_get_messages(user_id).FFMPEG_COMMAND_EXECUTION_ERROR_MSG.format(error=e.stderr if hasattr(e, 'stderr') else e))
-        send_to_all(message, safe_get_messages(user_id).VIDEO_PROCESSING_ERROR_MSG.format(error=str(e)))
+        _emit_ffmpeg_processing_error(
+            execution_context,
+            safe_get_messages(user_id).VIDEO_PROCESSING_ERROR_MSG.format(error=str(e)),
+        )
         return None
     except Exception as e:
         logger.error(f"Unexpected error processing video: {e}")
-        send_to_all(message, safe_get_messages(user_id).VIDEO_PROCESSING_ERROR_MSG.format(error=str(e)))
+        _emit_ffmpeg_processing_error(
+            execution_context,
+            safe_get_messages(user_id).VIDEO_PROCESSING_ERROR_MSG.format(error=str(e)),
+        )
         return None
 
 def create_default_thumbnail(thumb_path, width=480, height=480):
@@ -572,13 +668,22 @@ def get_video_info_ffprobe(video_path):
 
 
 
-def embed_subs_to_video(video_path, user_id, tg_update_callback=None, app=None, message=None):
+def embed_subs_to_video(
+    video_path,
+    user_id,
+    tg_update_callback=None,
+    app=None,
+    message=None,
+    execution_context: FfmpegExecutionContext | None = None,
+):
     messages = safe_get_messages(user_id)
     """
     Burning (hardcode) subtitles in a video file, if there is any .SRT file and subs.txt
     tg_update_callback (Progress: Float, ETA: StR) - Function for updating the status in Telegram
     """
     try:
+        if execution_context is None:
+            execution_context = _build_ffmpeg_execution_context(message)
         if not video_path or not os.path.exists(video_path):
             logger.error(f"Video file not found: {video_path}")
             return False
@@ -866,20 +971,19 @@ def embed_subs_to_video(video_path, user_id, tg_update_callback=None, app=None, 
                 os.remove(output_path)
             return False
         
+        subtitle_artifact_plan = _build_subtitle_artifact_plan(
+            execution_context=execution_context,
+            subtitle_path=subs_path,
+        )
+
         # Send .SRT to the user before removing
         if os.path.exists(subs_path):
             try:
-                if app is not None and message is not None:
-                    sent_msg = app.send_document(
-                        chat_id=user_id,
-                        document=subs_path,
-                        caption="<blockquote>💬 Subtitles SRT-file</blockquote>",
-                        reply_parameters=enums.ReplyParameters(message_id=message.id) if hasattr(enums, 'ReplyParameters') else None,
-                        parse_mode=enums.ParseMode.HTML
+                if app is not None:
+                    _emit_subtitle_artifact_plan(
+                        execution_context=execution_context,
+                        artifact_plan=subtitle_artifact_plan,
                     )
-                    from HELPERS.logger import get_log_channel
-                    safe_forward_messages(get_log_channel("video"), user_id, [sent_msg.id])
-                    send_to_logger(message, safe_get_messages(user_id).SUBS_SENT_MSG) 
             except Exception as e:
                 logger.error(f"Error sending srt file: {e}")
             try:
