@@ -394,7 +394,7 @@ def handle_args_menu_selection_request(
 ) -> None:
     from COMMANDS.args_cmd import args_callback_logic
 
-    args_callback_logic(app, execution_context.callback_query, request)
+    args_callback_logic(app, execution_context, request)
 
 
 def handle_args_text_input_request(
@@ -404,7 +404,7 @@ def handle_args_text_input_request(
 ) -> None:
     from COMMANDS.args_cmd import handle_args_text_input
 
-    handle_args_text_input(app, execution_context.source_message, request)
+    handle_args_text_input(app, execution_context, request)
 
 
 def handle_ask_quality_selection_request(
@@ -498,9 +498,8 @@ def handle_format_menu_selection_request(
     request: FormatMenuSelectionRequested,
 ) -> None:
     from COMMANDS.format_cmd import format_menu_callback_logic
-    callback_query = execution_context.callback_query
 
-    format_menu_callback_logic(app, callback_query, request)
+    format_menu_callback_logic(app, execution_context, request)
 
 
 def handle_settings_menu_selection_request(

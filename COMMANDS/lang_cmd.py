@@ -5,6 +5,7 @@ Handles /lang command for user language selection
 
 import sys
 import os
+from dataclasses import dataclass
 
 # Add the parent directory to the path to import CONFIG
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,6 +25,21 @@ from HELPERS.request_execution import (
     build_message_execution_context,
     handle_language_command_request,
 )
+
+
+@dataclass(frozen=True)
+class LanguageCommandContext:
+    user_id: int
+    source_message: object
+    command_parts: list[str]
+
+
+def _build_language_command_context(message) -> LanguageCommandContext:
+    return LanguageCommandContext(
+        user_id=message.chat.id,
+        source_message=message,
+        command_parts=(message.text or "").split(),
+    )
 
 def lang_command_handler(update, context):
     """
@@ -145,15 +161,12 @@ def lang_command_logic(app, message, request=None):
     from HELPERS.safe_messeger import safe_send_message
     from CONFIG.messages import safe_get_messages
     from pyrogram import enums
-    
-    user_id = message.chat.id
-    
-    # Parse command arguments
-    parts = (message.text or "").split()
-    
-    # Check if language argument is provided
-    if len(parts) >= 2:
-        lang_arg = parts[1].lower()
+
+    context = _build_language_command_context(message)
+    user_id = context.user_id
+
+    if len(context.command_parts) >= 2:
+        lang_arg = context.command_parts[1].lower()
         
         # Supported language codes
         supported_langs = {
@@ -185,7 +198,7 @@ def lang_command_logic(app, message, request=None):
                     user_id,
                     confirmation_msg,
                     parse_mode=enums.ParseMode.HTML,
-                    message=message
+                    message=context.source_message
                 )
             else:
                 # Get current messages for error
@@ -193,7 +206,7 @@ def lang_command_logic(app, message, request=None):
                 error_msg = getattr(messages, 'LANG_ERROR_MSG', 
                     "❌ Error changing language"
                 )
-                safe_send_message(user_id, error_msg, message=message)
+                safe_send_message(user_id, error_msg, message=context.source_message)
             return
         else:
             # Invalid language code
@@ -201,7 +214,7 @@ def lang_command_logic(app, message, request=None):
             error_msg = getattr(messages, 'LANG_INVALID_ARGUMENT_MSG', 
                 "❌ Invalid language code. Supported: en, ru, ar, in"
             )
-            safe_send_message(user_id, error_msg, message=message)
+            safe_send_message(user_id, error_msg, message=context.source_message)
             return
     
     # No arguments - show language selection menu
@@ -243,11 +256,11 @@ def lang_command_logic(app, message, request=None):
     )
     
     safe_send_message(
-        message.chat.id,
+        context.user_id,
         lang_selection_msg,
         reply_markup=reply_markup,
         parse_mode=enums.ParseMode.HTML,
-        message=message
+        message=context.source_message
     )
 
 def lang_callback_handler(update, context):

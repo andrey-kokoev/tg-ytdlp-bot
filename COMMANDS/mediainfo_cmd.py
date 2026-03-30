@@ -1,9 +1,10 @@
-# /Mediainfo Command
 import os
 import subprocess
+from dataclasses import dataclass
+
 from pyrogram import filters
 from CONFIG.config import Config
-from CONFIG.messages import Messages, safe_get_messages
+from CONFIG.messages import safe_get_messages
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyParameters
 
 from HELPERS.app_instance import get_app
@@ -17,7 +18,7 @@ from HELPERS.ingress_requests import (
     build_mediainfo_option_selection_request,
 )
 from HELPERS.filesystem_hlp import create_directory
-from HELPERS.logger import send_to_logger, logger, send_to_all, send_error_to_user
+from HELPERS.logger import send_to_logger, logger, send_error_to_user
 from HELPERS.request_execution import (
     build_callback_execution_context,
     build_message_execution_context,
@@ -32,6 +33,61 @@ from HELPERS.limitter import is_user_in_channel
 # Get app instance for decorators
 app = get_app()
 
+
+@dataclass(frozen=True)
+class MediaInfoCommandContext:
+    user_id: int
+    source_message: object
+    command_parts: list[str]
+
+
+def _build_mediainfo_command_context(message) -> MediaInfoCommandContext:
+    return MediaInfoCommandContext(
+        user_id=message.chat.id,
+        source_message=message,
+        command_parts=(message.text or "").split(),
+    )
+
+
+def _mediainfo_file_path(user_id: int) -> str:
+    user_dir = os.path.join("users", str(user_id))
+    create_directory(user_dir)
+    return os.path.join(user_dir, "mediainfo.txt")
+
+
+def _write_mediainfo_setting(user_id: int, enabled: bool) -> str:
+    mediainfo_file = _mediainfo_file_path(user_id)
+    with open(mediainfo_file, "w", encoding="utf-8") as f:
+        f.write("ON" if enabled else "OFF")
+    return mediainfo_file
+
+
+def _build_mediainfo_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    messages = safe_get_messages(user_id)
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(messages.MEDIAINFO_ON_BUTTON_MSG, callback_data="mediainfo_option|on"),
+            InlineKeyboardButton(messages.MEDIAINFO_OFF_BUTTON_MSG, callback_data="mediainfo_option|off"),
+        ],
+        [
+            InlineKeyboardButton(
+                messages.MEDIAINFO_CLOSE_BUTTON_MSG,
+                callback_data="mediainfo_option|close",
+            )
+        ],
+    ])
+
+
+def _answer_mediainfo_callback(callback_query, text: str | None = None) -> None:
+    if text is None:
+        callback_query.answer()
+        return
+    callback_query.answer(text)
+
+
+def _edit_mediainfo_callback_message(callback_query, text: str) -> None:
+    safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id, text)
+
 @app.on_message(filters.command("mediainfo") & filters.private)
 # @reply_with_keyboard
 @background_handler(label="mediainfo_command")
@@ -42,47 +98,41 @@ def mediainfo_command(app, message):
 
 
 def mediainfo_command_logic(app, message, request=None):
-    messages = safe_get_messages(message.chat.id)
-    user_id = message.chat.id
-    logger.info(safe_get_messages(user_id).MEDIAINFO_USER_REQUESTED_MSG.format(user_id=user_id))
-    logger.info(safe_get_messages(user_id).MEDIAINFO_USER_IS_ADMIN_MSG.format(user_id=user_id, is_admin=int(user_id) in Config.ADMIN))
-    
-    is_in_channel = is_user_in_channel(app, message)
-    logger.info(safe_get_messages(user_id).MEDIAINFO_USER_IS_IN_CHANNEL_MSG.format(user_id=user_id, is_in_channel=is_in_channel))
-    
-    if int(user_id) not in Config.ADMIN and not is_in_channel:
-        logger.info(safe_get_messages(user_id).MEDIAINFO_ACCESS_DENIED_MSG.format(user_id=user_id))
+    context = _build_mediainfo_command_context(message)
+    messages = safe_get_messages(context.user_id)
+    logger.info(messages.MEDIAINFO_USER_REQUESTED_MSG.format(user_id=context.user_id))
+    logger.info(messages.MEDIAINFO_USER_IS_ADMIN_MSG.format(user_id=context.user_id, is_admin=int(context.user_id) in Config.ADMIN))
+
+    is_in_channel = is_user_in_channel(app, context.source_message)
+    logger.info(messages.MEDIAINFO_USER_IS_IN_CHANNEL_MSG.format(user_id=context.user_id, is_in_channel=is_in_channel))
+
+    if int(context.user_id) not in Config.ADMIN and not is_in_channel:
+        logger.info(messages.MEDIAINFO_ACCESS_DENIED_MSG.format(user_id=context.user_id))
         return
-    
-    logger.info(safe_get_messages(user_id).MEDIAINFO_ACCESS_GRANTED_MSG.format(user_id=user_id))
-    user_dir = os.path.join("users", str(user_id))
-    create_directory(user_dir)
-    # Fast toggle via args: /mediainfo on|off
+
+    logger.info(messages.MEDIAINFO_ACCESS_GRANTED_MSG.format(user_id=context.user_id))
     try:
-        parts = (message.text or "").split()
-        if len(parts) >= 2:
-            arg = parts[1].lower()
-            mediainfo_file = os.path.join(user_dir, "mediainfo.txt")
+        if len(context.command_parts) >= 2:
+            arg = context.command_parts[1].lower()
             if arg in ("on", "off"):
-                with open(mediainfo_file, "w", encoding="utf-8") as f:
-                    f.write("ON" if arg == "on" else "OFF")
-                safe_send_message(user_id, safe_get_messages(user_id).MEDIAINFO_ENABLED_MSG.format(status='enabled' if arg=='on' else 'disabled'), message=message)
-                send_to_logger(message, safe_get_messages(user_id).MEDIAINFO_SET_COMMAND_LOG_MSG.format(arg=arg))
+                _write_mediainfo_setting(context.user_id, arg == "on")
+                safe_send_message(
+                    context.user_id,
+                    messages.MEDIAINFO_ENABLED_MSG.format(status='enabled' if arg == 'on' else 'disabled'),
+                    message=context.source_message,
+                )
+                send_to_logger(context.source_message, messages.MEDIAINFO_SET_COMMAND_LOG_MSG.format(arg=arg))
                 return
     except Exception:
         pass
-    buttons = [
-        [InlineKeyboardButton(safe_get_messages(user_id).MEDIAINFO_ON_BUTTON_MSG, callback_data="mediainfo_option|on"), InlineKeyboardButton(safe_get_messages(user_id).MEDIAINFO_OFF_BUTTON_MSG, callback_data="mediainfo_option|off")],
-        [InlineKeyboardButton(safe_get_messages(user_id).MEDIAINFO_CLOSE_BUTTON_MSG, callback_data="mediainfo_option|close")],
-    ]
-    keyboard = InlineKeyboardMarkup(buttons)
+
     safe_send_message(
-        user_id,
-safe_get_messages(user_id).MEDIAINFO_MENU_TITLE_MSG,
-        reply_markup=keyboard,
-        message=message
+        context.user_id,
+        messages.MEDIAINFO_MENU_TITLE_MSG,
+        reply_markup=_build_mediainfo_menu_keyboard(context.user_id),
+        message=context.source_message,
     )
-    send_to_logger(message, safe_get_messages(user_id).MEDIAINFO_MENU_OPENED_LOG_MSG)
+    send_to_logger(context.source_message, messages.MEDIAINFO_MENU_OPENED_LOG_MSG)
 
 
 @app.on_callback_query(filters.regex(r"^mediainfo_option\|"))
@@ -104,11 +154,8 @@ def mediainfo_option_callback_logic(app, execution_context, request):
     callback_query = execution_context.callback_query
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
-    logger.info(safe_get_messages(user_id).MEDIAINFO_CALLBACK_MSG.format(callback_data=callback_query.data))
+    logger.info(messages.MEDIAINFO_CALLBACK_MSG.format(callback_data=callback_query.data))
     data = request.selection_key
-    user_dir = os.path.join("users", str(user_id))
-    create_directory(user_dir)
-    mediainfo_file = os.path.join(user_dir, "mediainfo.txt")
     if data == "close":
         close_request = build_close_message_request(
             build_telegram_callback_envelope(callback_query),
@@ -123,31 +170,27 @@ def mediainfo_option_callback_logic(app, execution_context, request):
         )
         return
     if data == "on":
-        with open(mediainfo_file, "w", encoding="utf-8") as f:
-            f.write("ON")
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id, safe_get_messages(user_id).MEDIAINFO_ENABLED_CONFIRM_MSG)
-        send_to_logger(callback_query.message, safe_get_messages(user_id).MEDIAINFO_ENABLED_LOG_MSG)
+        _write_mediainfo_setting(user_id, True)
+        _edit_mediainfo_callback_message(callback_query, messages.MEDIAINFO_ENABLED_CONFIRM_MSG)
+        send_to_logger(callback_query.message, messages.MEDIAINFO_ENABLED_LOG_MSG)
         try:
-            callback_query.answer(safe_get_messages(user_id).MEDIAINFO_ENABLED_CALLBACK_MSG)
+            _answer_mediainfo_callback(callback_query, messages.MEDIAINFO_ENABLED_CALLBACK_MSG)
         except Exception:
             pass
         return
     if data == "off":
-        with open(mediainfo_file, "w", encoding="utf-8") as f:
-            f.write("OFF")
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id, safe_get_messages(user_id).MEDIAINFO_DISABLED_MSG)
-        send_to_logger(callback_query.message, safe_get_messages(user_id).MEDIAINFO_DISABLED_LOG_MSG)
+        _write_mediainfo_setting(user_id, False)
+        _edit_mediainfo_callback_message(callback_query, messages.MEDIAINFO_DISABLED_MSG)
+        send_to_logger(callback_query.message, messages.MEDIAINFO_DISABLED_LOG_MSG)
         try:
-            callback_query.answer(safe_get_messages(user_id).MEDIAINFO_DISABLED_CALLBACK_MSG)
+            _answer_mediainfo_callback(callback_query, messages.MEDIAINFO_DISABLED_CALLBACK_MSG)
         except Exception:
             pass
         return
 
 
 def is_mediainfo_enabled(user_id):
-    messages = safe_get_messages(user_id)
-    user_dir = os.path.join("users", str(user_id))
-    mediainfo_file = os.path.join(user_dir, "mediainfo.txt")
+    mediainfo_file = _mediainfo_file_path(user_id)
     if not os.path.exists(mediainfo_file):
         return False
     try:

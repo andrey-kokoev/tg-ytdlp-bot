@@ -227,10 +227,10 @@ def test_handle_args_command_request_routes_request_to_args_runtime(monkeypatch)
 def test_handle_args_menu_selection_request_routes_request_to_args_callback_runtime(monkeypatch):
     captured = {}
 
-    def fake_args_callback_logic(app, callback_query, request=None):
+    def fake_args_callback_logic(app, execution_context, request=None):
         captured["args_callback_call"] = {
             "app": app,
-            "callback_query": callback_query,
+            "execution_context": execution_context,
             "request": request,
         }
 
@@ -260,7 +260,7 @@ def test_handle_args_menu_selection_request_routes_request_to_args_callback_runt
 
     assert captured["args_callback_call"] == {
         "app": app,
-        "callback_query": callback_query,
+        "execution_context": execution_context,
         "request": request,
     }
 
@@ -268,10 +268,10 @@ def test_handle_args_menu_selection_request_routes_request_to_args_callback_runt
 def test_handle_args_text_input_request_routes_request_to_args_text_runtime(monkeypatch):
     captured = {}
 
-    def fake_handle_args_text_input(app, message, request=None):
+    def fake_handle_args_text_input(app, execution_context, request=None):
         captured["args_text_call"] = {
             "app": app,
-            "message": message,
+            "execution_context": execution_context,
             "request": request,
         }
 
@@ -296,7 +296,7 @@ def test_handle_args_text_input_request_routes_request_to_args_text_runtime(monk
 
     assert captured["args_text_call"] == {
         "app": app,
-        "message": message,
+        "execution_context": execution_context,
         "request": request,
     }
 
@@ -693,10 +693,10 @@ def test_handle_subtitle_settings_selection_request_routes_request_to_subtitle_r
 def test_handle_format_menu_selection_request_routes_request_to_format_runtime(monkeypatch):
     captured = {}
 
-    def fake_format_menu_callback_logic(app, callback_query, request):
+    def fake_format_menu_callback_logic(app, execution_context, request):
         captured["format_menu_call"] = {
             "app": app,
-            "callback_query": callback_query,
+            "execution_context": execution_context,
             "request": request,
         }
 
@@ -723,7 +723,7 @@ def test_handle_format_menu_selection_request_routes_request_to_format_runtime(m
 
     assert captured["format_menu_call"] == {
         "app": app,
-        "callback_query": callback_query,
+        "execution_context": execution_context,
         "request": request,
     }
 

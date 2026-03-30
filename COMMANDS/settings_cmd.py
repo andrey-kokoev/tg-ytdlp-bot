@@ -144,6 +144,62 @@ def _edit_settings_callback_message(execution_context, text: str, *, reply_marku
     )
 
 
+def _store_settings_flood_wait(user_id: int, wait_seconds: int) -> None:
+    user_dir = os.path.join("users", str(user_id))
+    os.makedirs(user_dir, exist_ok=True)
+    with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
+        f.write(str(wait_seconds))
+
+
+def _run_settings_callback_action(callback_query: CallbackQuery, user_id: int, action) -> bool:
+    try:
+        action()
+        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
+        return True
+    except FloodWait as e:
+        _store_settings_flood_wait(user_id, e.value)
+        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
+        return False
+
+
+def _send_settings_hint(
+    callback_query: CallbackQuery,
+    user_id: int,
+    text: str,
+    *,
+    reply_markup,
+    answer_text: str | None = None,
+) -> None:
+    safe_send_message(
+        user_id,
+        text,
+        reply_parameters=ReplyParameters(message_id=callback_query.message.id),
+        reply_markup=reply_markup,
+        _callback_query=callback_query,
+        _fallback_notice=safe_get_messages(user_id).FLOOD_LIMIT_TRY_LATER_MSG,
+        parse_mode=enums.ParseMode.HTML,
+    )
+    _answer_settings_callback(
+        callback_query,
+        answer_text or safe_get_messages(user_id).SETTINGS_HINT_SENT_MSG,
+    )
+
+
+def _run_settings_callback_wait_sensitive_action(callback_query: CallbackQuery, user_id: int, action) -> bool:
+    try:
+        action()
+        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
+        return True
+    except FloodWait as e:
+        _store_settings_flood_wait(user_id, e.value)
+        _answer_settings_callback(
+            callback_query,
+            safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG,
+            show_alert=False,
+        )
+        return False
+
+
 def settings_menu_callback_logic(app, execution_context, request):
     callback_query = execution_context.callback_query
     if callback_query is None:
@@ -366,304 +422,142 @@ def settings_cmd_callback_logic(app, execution_context, request):
             ],
             [InlineKeyboardButton(safe_get_messages(user_id).SUBS_BACK_BUTTON_MSG, callback_data="settings__menu__back")]
         ])
-        try:
-            callback_query.edit_message_text(
-                safe_get_messages(user_id).SETTINGS_CLEAN_OPTIONS_MSG,
-                reply_markup=keyboard,
-                parse_mode=enums.ParseMode.HTML
-            )
-        except Exception:
-            pass
-        try:
-            callback_query.answer()
-        except Exception:
-            pass
+        _edit_settings_callback_message(
+            execution_context,
+            safe_get_messages(user_id).SETTINGS_CLEAN_OPTIONS_MSG,
+            reply_markup=keyboard,
+        )
+        _answer_settings_callback(callback_query)
         return
     if data == "download_cookie":
-        try:
-            url_distractor(app, _bridged_command_message("/cookie"))
-        except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            return
-        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
+        _run_settings_callback_action(
+            callback_query,
+            user_id,
+            lambda: url_distractor(app, _bridged_command_message("/cookie")),
+        )
         return
     if data == "cookies_from_browser":
-        try:
-            cookies_from_browser(app, _bridged_command_message("/cookies_from_browser"))
-        except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            return
-        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
+        _run_settings_callback_action(
+            callback_query,
+            user_id,
+            lambda: cookies_from_browser(app, _bridged_command_message("/cookies_from_browser")),
+        )
         return
     if data == "check_cookie":
-        try:
-            url_distractor(app, _bridged_command_message("/check_cookie"))
-        except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            return
-        _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
+        _run_settings_callback_action(
+            callback_query,
+            user_id,
+            lambda: url_distractor(app, _bridged_command_message("/check_cookie")),
+        )
         return
     if data == "save_as_cookie":
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_SAVE_AS_COOKIE_HINT_CLOSE_BUTTON_MSG, callback_data="save_as_cookie_hint|close")]
         ])
-        safe_send_message(user_id, safe_get_messages(user_id).SAVE_AS_COOKIE_HINT, reply_parameters=ReplyParameters(message_id=callback_query.message.id),
-                          parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_HINT_SENT_MSG)
-        except Exception:
-            pass
-
+        _send_settings_hint(callback_query, user_id, safe_get_messages(user_id).SAVE_AS_COOKIE_HINT, reply_markup=keyboard)
         return
     if data == "format":
         # Add the command attribute for set_format to work correctly
         try:
             set_format(app, _bridged_command_message("/format", command=["format"]))
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
-            return
-
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
-
+            _store_settings_flood_wait(user_id, e.value)
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
         return
         
     # /Subs Command
     if data == "subs":
         try:
             subs_command(app, _bridged_command_message("/subs"))
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
-            return
-
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
-
+            _store_settings_flood_wait(user_id, e.value)
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
         return
 
     if data == "mediainfo":
         try:
             mediainfo_command(app, _bridged_command_message("/mediainfo"))
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
-            return
-
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
-
+            _store_settings_flood_wait(user_id, e.value)
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
         return
     if data == "split":
         try:
             split_command(app, _bridged_command_message("/split"))
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
-            return
-        callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
+            _store_settings_flood_wait(user_id, e.value)
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
         return
     if data == "audio":
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(safe_get_messages(user_id).OTHER_AUDIO_HINT_CLOSE_BUTTON_MSG, callback_data="audio_hint|close")]
         ])
-        safe_send_message(user_id,
-                          safe_get_messages(user_id).AUDIO_HELP_MSG,
-                          reply_parameters=ReplyParameters(message_id=callback_query.message.id),
-
-                          reply_markup=keyboard,
-                          _callback_query=callback_query,
-                          _fallback_notice=safe_get_messages(user_id).FLOOD_LIMIT_TRY_LATER_MSG)
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_HINT_SENT_MSG)
-        except Exception:
-            pass
-
+        _send_settings_hint(callback_query, user_id, safe_get_messages(user_id).AUDIO_HELP_MSG, reply_markup=keyboard)
         return
     if data == "tags":
         try:
             tags_command(app, _bridged_command_message("/tags"))
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
-            return
-
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
+            _store_settings_flood_wait(user_id, e.value)
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
         return
     if data == "help":
         try:
             res = command2(app, _bridged_command_message("/help"))
-
         except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
+            _store_settings_flood_wait(user_id, e.value)
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
             return
         # If safe_send_message returned None due to FloodWait, notify via callback
         if res is None:
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
         else:
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-            except Exception:
-                pass
-
+            _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         return
     if data == "usage":
-        try:
-            url_distractor(app, _bridged_command_message("/usage"))
-        except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
-            return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
-
+        _run_settings_callback_action(
+            callback_query,
+            user_id,
+            lambda: url_distractor(app, _bridged_command_message("/usage")),
+        )
         return
     if data == "playlist":
-        try:
-            playlist_command(app, _bridged_command_message("/playlist"))
-        except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
-            return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
-
+        _run_settings_callback_action(
+            callback_query,
+            user_id,
+            lambda: playlist_command(app, _bridged_command_message("/playlist")),
+        )
         return
     if data == "img":
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(safe_get_messages(user_id).COMMAND_IMAGE_HELP_CLOSE_BUTTON_MSG, callback_data="img_hint|close")]
         ])
-        safe_send_message(
-            user_id,
-            safe_get_messages(user_id).IMG_HELP_MSG,
-            reply_parameters=ReplyParameters(message_id=callback_query.message.id),
-            reply_markup=keyboard,
-            _callback_query=callback_query,
-            _fallback_notice=safe_get_messages(user_id).FLOOD_LIMIT_TRY_LATER_MSG,
-            parse_mode=enums.ParseMode.HTML,
-        )
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_HINT_SENT_MSG)
-        except Exception:
-            pass
+        _send_settings_hint(callback_query, user_id, safe_get_messages(user_id).IMG_HELP_MSG, reply_markup=keyboard)
         return
     if data == "link":
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="link_hint|close")]
         ])
-        safe_send_message(user_id,
-                          safe_get_messages(user_id).LINK_HINT_MSG,
-                          reply_parameters=ReplyParameters(message_id=callback_query.message.id),
-                          reply_markup=keyboard,
-                          _callback_query=callback_query,
-                          _fallback_notice=safe_get_messages(user_id).FLOOD_LIMIT_TRY_LATER_MSG)
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_HINT_SENT_MSG)
-        except Exception:
-            pass
+        _send_settings_hint(callback_query, user_id, safe_get_messages(user_id).LINK_HINT_MSG, reply_markup=keyboard)
         return
     if data == "proxy":
-        try:
-            url_distractor(app, _bridged_command_message("/proxy"))
-        except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
-            return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
+        _run_settings_callback_action(
+            callback_query,
+            user_id,
+            lambda: url_distractor(app, _bridged_command_message("/proxy")),
+        )
         return
     if data == "keyboard":
-        try:
-            url_distractor(app, _bridged_command_message("/keyboard"))
-        except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
-            return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
+        _run_settings_callback_action(
+            callback_query,
+            user_id,
+            lambda: url_distractor(app, _bridged_command_message("/keyboard")),
+        )
         return
     if data == "search_menu":
         # Get bot name from config
@@ -688,81 +582,38 @@ def settings_cmd_callback_logic(app, execution_context, request):
         # Send message with search instructions (same as search.py)
         text = safe_get_messages(user_id).SEARCH_MSG
         
-        safe_send_message(
+        _send_settings_hint(
+            callback_query,
             user_id,
             text,
-            parse_mode=enums.ParseMode.HTML,
             reply_markup=keyboard,
-            reply_parameters=ReplyParameters(message_id=callback_query.message.id),
-            _callback_query=callback_query,
-            _fallback_notice=safe_get_messages(user_id).FLOOD_LIMIT_TRY_LATER_MSG
+            answer_text=safe_get_messages(user_id).SETTINGS_SEARCH_HELPER_OPENED_MSG,
         )
-        
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_SEARCH_HELPER_OPENED_MSG)
-        except Exception:
-            pass
         return
     if data == "add_bot_to_group":
-        try:
-            url_distractor(app, _bridged_command_message("/add_bot_to_group"))
-        except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
-            return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
+        _run_settings_callback_action(
+            callback_query,
+            user_id,
+            lambda: url_distractor(app, _bridged_command_message("/add_bot_to_group")),
+        )
         return
     if data == "args":
-        try:
-            from COMMANDS.args_cmd import args_command
-            args_command(app, _bridged_command_message("/args"))
-        except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
-            return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
+        from COMMANDS.args_cmd import args_command
+        _run_settings_callback_action(
+            callback_query,
+            user_id,
+            lambda: args_command(app, _bridged_command_message("/args")),
+        )
         return
     if data == "nsfw":
-        try:
-            from COMMANDS.nsfw_cmd import nsfw_command
-            nsfw_command(app, _bridged_command_message("/nsfw"))
-        except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
-            with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
-                f.write(str(e.value))
-            try:
-                callback_query.answer(safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
-            except Exception:
-                pass
-            return
-        try:
-            callback_query.answer(safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
-        except Exception:
-            pass
+        from COMMANDS.nsfw_cmd import nsfw_command
+        _run_settings_callback_action(
+            callback_query,
+            user_id,
+            lambda: nsfw_command(app, _bridged_command_message("/nsfw")),
+        )
         return
-    try:
-        callback_query.answer(safe_get_messages(user_id).SETTINGS_UNKNOWN_COMMAND_MSG, show_alert=True)
-    except Exception:
-        pass
+    _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_UNKNOWN_COMMAND_MSG, show_alert=True)
 
 @app.on_callback_query(filters.regex(r"^(img_hint|link_hint|search_hint|search_msg)\|"))
 def hint_callback(app, callback_query: CallbackQuery):
@@ -783,7 +634,4 @@ def hint_callback(app, callback_query: CallbackQuery):
         )
         return
     
-    try:
-        callback_query.answer()
-    except Exception:
-        pass
+    _answer_settings_callback(callback_query)
