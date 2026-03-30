@@ -81,6 +81,9 @@ _yt_round_robin_index = 0
 # Format: {user_id: {'attempts': [timestamp1, timestamp2, ...], 'last_reset': timestamp}}
 _youtube_cookie_retry_tracking = {}
 
+# Active retry guards for recursive cookie retry paths
+_active_retry_keys = set()
+
 
 @dataclass(frozen=True)
 class CookieTransportContext:
@@ -105,6 +108,7 @@ class CookieStateStore:
     non_youtube_cache: dict
     active_tasks: dict
     youtube_retry_tracking: dict
+    active_retry_keys: set
 
 
 def _get_cookie_state_store() -> CookieStateStore:
@@ -114,6 +118,7 @@ def _get_cookie_state_store() -> CookieStateStore:
         non_youtube_cache=_non_youtube_cookie_cache,
         active_tasks=_active_cookie_tasks,
         youtube_retry_tracking=_youtube_cookie_retry_tracking,
+        active_retry_keys=_active_retry_keys,
     )
 
 
@@ -142,6 +147,18 @@ def _get_or_create_checked_source_state(user_id: int) -> dict:
     if user_id not in state_store.checked_sources:
         state_store.checked_sources[user_id] = {'checked_sources': set(), 'last_reset': time.time()}
     return state_store.checked_sources[user_id]
+
+
+def _is_active_cookie_retry(retry_key: str) -> bool:
+    return retry_key in _get_cookie_state_store().active_retry_keys
+
+
+def _activate_cookie_retry(retry_key: str) -> None:
+    _get_cookie_state_store().active_retry_keys.add(retry_key)
+
+
+def _deactivate_cookie_retry(retry_key: str) -> None:
+    _get_cookie_state_store().active_retry_keys.discard(retry_key)
 
 def generate_task_id(user_id: int, url: str, service: str = None) -> str:
     """
@@ -2100,14 +2117,11 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
     
     # Guard against recursion: ensure retry is not already in progress
     retry_key = f"{user_id}_{url}_retry"
-    if retry_key in globals().get('_active_retries', set()):
+    if _is_active_cookie_retry(retry_key):
         logger.warning(LoggerMsg.COOKIES_YOUTUBE_RETRY_ALREADY_IN_PROGRESS_LOG_MSG.format(user_id=user_id))
         return None
     
-    # Add key to active retries
-    if '_active_retries' not in globals():
-        globals()['_active_retries'] = set()
-    globals()['_active_retries'].add(retry_key)
+    _activate_cookie_retry(retry_key)
     
     try:
         logger.info(LoggerMsg.COOKIES_YOUTUBE_RETRY_DIFFERENT_COOKIES_LOG_MSG.format(user_id=user_id))
@@ -2191,12 +2205,7 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
                     logger.info(LoggerMsg.COOKIES_YOUTUBE_RETRY_SOURCE_WORKING_LOG_MSG.format(source_index=idx + 1, user_id=user_id))
                     
                     # Update cache
-                    current_time = time.time()
-                    _youtube_cookie_cache[user_id] = {
-                        'result': True,
-                        'timestamp': current_time,
-                        'cookie_path': cookie_file_path
-                    }
+                    _set_youtube_cookie_cache_entry(user_id, True, cookie_file_path)
                     
                     # Retry download
                     try:
@@ -2228,22 +2237,14 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
         
         # If all sources failed
         logger.warning(LoggerMsg.COOKIES_YOUTUBE_RETRY_ALL_SOURCES_FAILED_LOG_MSG.format(user_id=user_id))
-        if os.path.exists(cookie_file_path):
-            os.remove(cookie_file_path)
+        _remove_cookie_file_if_present(cookie_context)
         
         # Update cache
-        current_time = time.time()
-        _youtube_cookie_cache[user_id] = {
-            'result': False,
-            'timestamp': current_time,
-            'cookie_path': cookie_file_path
-        }
+        _set_youtube_cookie_cache_entry(user_id, False, cookie_file_path)
         
         return None
     finally:
-        # Remove key from active retries
-        if '_active_retries' in globals():
-            globals()['_active_retries'].discard(retry_key)
+        _deactivate_cookie_retry(retry_key)
 
 def clear_youtube_cookie_cache(user_id: int = None):
     """
