@@ -364,6 +364,13 @@ class AlwaysAskSpecialActionPlan:
 
 
 @dataclass(frozen=True)
+class AlwaysAskClosePlan:
+    user_id: int
+    format_cache_pattern: str
+    answer_text: str
+
+
+@dataclass(frozen=True)
 class AlwaysAskGalleryFallbackPrompt:
     message_text: str
     callback_data: str
@@ -634,6 +641,52 @@ def _determine_askq_special_action_plan(
             return AlwaysAskSpecialActionPlan("error", messages.AA_ERROR_URL_NOT_FOUND_MSG, True)
         return AlwaysAskSpecialActionPlan("quick_embed")
     return None
+
+
+def _build_askq_close_plan(user_id: int) -> AlwaysAskClosePlan:
+    user_dir = os.path.join("users", str(user_id))
+    create_directory(user_dir)
+    user_download_dir = get_user_download_dir(user_id)
+    if user_download_dir and os.path.exists(user_download_dir):
+        format_cache_pattern = os.path.join(user_download_dir, "formats_cache_*.json")
+    else:
+        format_cache_pattern = os.path.join(user_dir, "formats_cache_*.json")
+    return AlwaysAskClosePlan(
+        user_id=user_id,
+        format_cache_pattern=format_cache_pattern,
+        answer_text=safe_get_messages(user_id).ALWAYS_ASK_MENU_CLOSED_MSG,
+    )
+
+
+def _execute_askq_close_plan(app, callback_query, close_plan: AlwaysAskClosePlan) -> None:
+    try:
+        import glob
+        old_cache_files = glob.glob(close_plan.format_cache_pattern)
+        for cache_file in old_cache_files:
+            try:
+                os.remove(cache_file)
+                logger.info(f"{LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_LOG_MSG}: {cache_file}")
+            except Exception as e:
+                logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_REMOVE_OLD_CACHE_FILE_LOG_MSG} {cache_file}: {e}")
+        if old_cache_files:
+            logger.info(
+                f"{LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_FILES_BEFORE_CLOSING_LOG_MSG}: {len(old_cache_files)}"
+            )
+    except Exception as e:
+        logger.warning(f"{LoggerMsg.ALWAYS_ASK_ERROR_CLEANING_UP_OLD_FORMAT_CACHE_FILES_BEFORE_CLOSING_LOG_MSG}: {e}")
+
+    callback_message = getattr(callback_query, "message", None)
+    try:
+        if callback_message and getattr(callback_message, "chat", None) and getattr(callback_message, "id", None):
+            safe_delete_messages(chat_id=callback_message.chat.id, message_ids=[callback_message.id])
+    except Exception:
+        if callback_message and getattr(callback_message, "chat", None) and getattr(callback_message, "id", None):
+            app.edit_message_reply_markup(
+                chat_id=callback_message.chat.id,
+                message_id=callback_message.id,
+                reply_markup=None,
+            )
+    safe_callback_answer(callback_query, close_plan.answer_text)
 
 # Proxy functionality is now handled by COMMANDS.proxy_cmd
 logger.info(LoggerMsg.ALWAYS_ASK_IMPORTED_LOG_MSG.format(app_available=app is not None))
@@ -1676,40 +1729,8 @@ def askq_callback(app, callback_query):
     # Get processing message from cache (created in ask_quality_menu)
     proc_msg = get_user_proc_msg(user_id)
     if data == "close":
-        # Clean up old format cache files before closing menu
-        try:
-            user_dir = os.path.join("users", str(user_id))
-            create_directory(user_dir)
-            
-            # Get download directory if available
-            user_download_dir = get_user_download_dir(user_id)
-            
-            # Remove all old format cache files
-            import glob
-            # Use download directory if available, otherwise fallback to user directory
-            if user_download_dir and os.path.exists(user_download_dir):
-                format_cache_pattern = os.path.join(user_download_dir, "formats_cache_*.json")
-            else:
-                format_cache_pattern = os.path.join(user_dir, "formats_cache_*.json")
-            old_cache_files = glob.glob(format_cache_pattern)
-            
-            for cache_file in old_cache_files:
-                try:
-                    os.remove(cache_file)
-                    logger.info(f"{LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_LOG_MSG}: {cache_file}")
-                except Exception as e:
-                    logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_REMOVE_OLD_CACHE_FILE_LOG_MSG} {cache_file}: {e}")
-            if old_cache_files:
-                logger.info(f"{LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_FILES_BEFORE_CLOSING_LOG_MSG}: {len(old_cache_files)}")
-        except Exception as e:
-            logger.warning(f"{LoggerMsg.ALWAYS_ASK_ERROR_CLEANING_UP_OLD_FORMAT_CACHE_FILES_BEFORE_CLOSING_LOG_MSG}: {e}")
-        
-        try:
-            _delete_callback_message()
-        except Exception:
-            if callback_message and getattr(callback_message, "chat", None) and getattr(callback_message, "id", None):
-                app.edit_message_reply_markup(chat_id=callback_message.chat.id, message_id=callback_message.id, reply_markup=None)
-        callback_query.answer(safe_get_messages(user_id).ALWAYS_ASK_MENU_CLOSED_MSG)
+        close_plan = _build_askq_close_plan(user_id)
+        _execute_askq_close_plan(app, callback_query, close_plan)
         return
     special_action_plan = _determine_askq_special_action_plan(
         user_id,
