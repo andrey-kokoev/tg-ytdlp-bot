@@ -81,6 +81,41 @@ from HELPERS.request_execution import (
 app = get_app()
 
 
+EMOJI_COMMAND_MAP = {
+    "🧹": Config.CLEAN_COMMAND,
+    "🍪": Config.DOWNLOAD_COOKIE_COMMAND,
+    "⚙️": Config.SETTINGS_COMMAND,
+    "🔍": Config.SEARCH_COMMAND,
+    "🌐": Config.COOKIES_FROM_BROWSER_COMMAND,
+    "🔗": Config.LINK_COMMAND,
+    "📼": Config.FORMAT_COMMAND,
+    "📊": Config.MEDIINFO_COMMAND,
+    "✂️": Config.SPLIT_COMMAND,
+    "🎧": Config.AUDIO_COMMAND,
+    "💬": Config.SUBS_COMMAND,
+    "#️⃣": Config.TAGS_COMMAND,
+    "🆘": "/help",
+    "📃": Config.USAGE_COMMAND,
+    "⏯️": Config.PLAYLIST_COMMAND,
+    "🎹": Config.KEYBOARD_COMMAND,
+    "🌎": Config.PROXY_COMMAND,
+    "✅": Config.CHECK_COOKIE_COMMAND,
+    "🖼": Config.IMG_COMMAND,
+    "🧰": Config.ARGS_COMMAND,
+    "🔞": Config.NSFW_COMMAND,
+    "🧾": Config.LIST_COMMAND,
+}
+
+
+class UrlRouterContext:
+    def __init__(self, message, text: str, user_id: int, is_admin: bool, is_command: bool):
+        self.message = message
+        self.text = text
+        self.user_id = user_id
+        self.is_admin = is_admin
+        self.is_command = is_command
+
+
 def _ensure_command_tokens(message, text: str) -> None:
     if hasattr(message, "command") and message.command is not None:
         return
@@ -600,6 +635,71 @@ def _finalize_unmatched_message(
 
     clear_subs_check_cache()
 
+
+def _build_url_router_context(message) -> UrlRouterContext:
+    user_id = message.chat.id
+    raw_text = message.text or ""
+    text = raw_text.strip()
+    is_admin = int(user_id) in Config.ADMIN
+    is_command = text.startswith('/') or text in EMOJI_COMMAND_MAP
+    return UrlRouterContext(
+        message=message,
+        text=text,
+        user_id=user_id,
+        is_admin=is_admin,
+        is_command=is_command,
+    )
+
+
+def _route_url_text_message(app, route_context: UrlRouterContext, args_import_handler) -> bool:
+    message = route_context.message
+    text = route_context.text
+    user_id = route_context.user_id
+
+    if _maybe_handle_args_import(app, message, text, user_id, args_import_handler):
+        return True
+
+    try:
+        bot_mention = f"@{getattr(Config, 'BOT_NAME', '').strip()}"
+        if bot_mention and bot_mention in text:
+            text = text.replace(bot_mention, "").strip()
+            route_context.text = text
+    except Exception:
+        pass
+
+    if text in EMOJI_COMMAND_MAP:
+        mapped = EMOJI_COMMAND_MAP[text]
+        from HELPERS.message_bridge import bridge_message_from_existing
+        fake_msg = bridge_message_from_existing(message, mapped)
+        fake_msg._is_emoji_command = True
+        _dispatch_emoji_command(app, fake_msg, mapped=mapped, user_id=user_id)
+        return True
+
+    if not route_context.is_admin and _is_admin_only_command(text):
+        send_to_user(message, safe_get_messages(user_id).ACCESS_DENIED_ADMIN)
+        return True
+
+    if _dispatch_basic_command(app, message, text):
+        return True
+
+    if not route_context.is_admin and not is_user_in_channel(app, message):
+        return True
+
+    if _dispatch_direct_command(app, message, text):
+        return True
+
+    if _maybe_handle_vid_or_url_message(app, message, text, user_id, route_context.is_admin):
+        return True
+
+    if route_context.is_admin and _dispatch_admin_command(app, message, text):
+        return True
+
+    if _maybe_handle_reply_message(app, message):
+        return True
+
+    _finalize_unmatched_message(app, message, text, user_id, args_import_handler)
+    return True
+
 @app.on_message(filters.text & filters.private)
 @background_handler(label="url_distractor")
 def url_distractor(app, message):
@@ -607,25 +707,18 @@ def url_distractor(app, message):
     if getattr(from_user, "is_bot", False) or getattr(message, "outgoing", False):
         return
 
-    user_id = message.chat.id
-    is_admin = int(user_id) in Config.ADMIN
+    route_context = _build_url_router_context(message)
+    user_id = route_context.user_id
     logger.info(f"🔍 [DEBUG] url_distractor: message.text at function start='{message.text}'")
-    text = message.text.strip()
-    logger.info(f"🔍 [DEBUG] url_distractor: text after strip='{text}'")
+    logger.info(f"🔍 [DEBUG] url_distractor: text after strip='{route_context.text}'")
     
     # Check command rate limit (for all commands, not just URLs)
     from HELPERS.command_limiter import check_command_limit
     from CONFIG.messages import safe_get_messages
     from HELPERS.safe_messeger import safe_send_message
     
-    # Check if this is a command (starts with / or is an emoji command)
-    is_command = text.startswith('/') or text in [
-        "🧹", "🍪", "⚙️", "🔍", "🌐", "🔗", "📼", "📊", "✂️", "🎧", "💬", 
-        "#️⃣", "🆘", "📃", "⏯️", "🎹", "🌎", "✅", "🖼", "🧰", "🔞", "🧾"
-    ]
-    
-    if is_command:
-        allowed, cmd_limit_msg = check_command_limit(user_id, is_admin)
+    if route_context.is_command:
+        allowed, cmd_limit_msg = check_command_limit(user_id, route_context.is_admin)
         if not allowed:
             messages = safe_get_messages(user_id)
             safe_send_message(
@@ -641,7 +734,7 @@ def url_distractor(app, message):
     from COMMANDS.cookies_cmd import download_cookie
     
     # Debug logging (logger already imported globally)
-    logger.info(LoggerMsg.URL_EXTRACTOR_DISTRACTOR_CALLED_LOG_MSG.format(text=text[:100]))
+    logger.info(LoggerMsg.URL_EXTRACTOR_DISTRACTOR_CALLED_LOG_MSG.format(text=route_context.text[:100]))
     
     # Prevent recursion for emoji commands
     if hasattr(message, '_is_emoji_command') and message._is_emoji_command:
@@ -652,88 +745,9 @@ def url_distractor(app, message):
     if user_id in user_input_states:
         handle_args_text_input(app, message)
         return
-    
-    # Check for args import (flexible recognition for forwarded messages)
-    # Check for headers in all supported languages
-    messages = safe_get_messages(user_id)
-    
-    # Debug logging for full message text
-    logger.info(f"Full message text length: {len(text) if text else 0}")
-    logger.info(f"Message text preview: {text[:200] if text else 'None'}...")
-    if _maybe_handle_args_import(app, message, text, user_id, args_import_handler):
-        return
-    # Normalize commands like /cmd@bot to /cmd for group mentions
-    try:
-        bot_mention = f"@{getattr(Config, 'BOT_NAME', '').strip()}"
-        if bot_mention and bot_mention in text:
-            text = text.replace(bot_mention, "").strip()
-    except Exception:
-        pass
-
-    # Emoji keyboard mapping to commands (from FULL layout)
-    emoji_to_command = {
-        "🧹": Config.CLEAN_COMMAND,
-        "🍪": Config.DOWNLOAD_COOKIE_COMMAND,
-        "⚙️": Config.SETTINGS_COMMAND,
-        "🔍": Config.SEARCH_COMMAND,
-        "🌐": Config.COOKIES_FROM_BROWSER_COMMAND,
-        "🔗": Config.LINK_COMMAND,
-        "📼": Config.FORMAT_COMMAND,
-        "📊": Config.MEDIINFO_COMMAND,
-        "✂️": Config.SPLIT_COMMAND,
-        "🎧": Config.AUDIO_COMMAND,
-        "💬": Config.SUBS_COMMAND,
-        "#️⃣": Config.TAGS_COMMAND,
-        "🆘": "/help",
-        "📃": Config.USAGE_COMMAND,
-        "⏯️": Config.PLAYLIST_COMMAND,
-        "🎹": Config.KEYBOARD_COMMAND,
-        "🌎": Config.PROXY_COMMAND,
-        "✅": Config.CHECK_COOKIE_COMMAND,
-        "🖼": Config.IMG_COMMAND,
-        "🧰": Config.ARGS_COMMAND,
-        "🔞": Config.NSFW_COMMAND,
-        "🧾": Config.LIST_COMMAND,
-    }
-
-    if text in emoji_to_command:
-        mapped = emoji_to_command[text]
-        # Emulate a user command for the mapped emoji
-        from HELPERS.message_bridge import bridge_message_from_existing
-        fake_msg = bridge_message_from_existing(message, mapped)
-        fake_msg._is_emoji_command = True  # Mark as emoji command to prevent recursion
-        return _dispatch_emoji_command(app, fake_msg, mapped=mapped, user_id=user_id)
-
-    # ----- Admin-only denial for non-admins -----
-    if not is_admin:
-        if _is_admin_only_command(text):
-            send_to_user(message, safe_get_messages(user_id).ACCESS_DENIED_ADMIN)
-            return
-
-    # ----- Basic Commands -----
-    if _dispatch_basic_command(app, message, text):
-        return
-
-    # For non-admin users, if they haven't Joined the Channel, Exit ImmediaTely.
-    # This check applies to all user commands below, but not to basic commands above.
-    if not is_admin and not is_user_in_channel(app, message):
-        return
-
-    # ----- User Commands -----
-    if _dispatch_direct_command(app, message, text):
-        return
-
-    if _maybe_handle_vid_or_url_message(app, message, text, user_id, is_admin):
-        return
-
-    # ----- Admin Commands -----
-    if is_admin and _dispatch_admin_command(app, message, text):
-        return
-
-    if _maybe_handle_reply_message(app, message):
-        return
-
-    _finalize_unmatched_message(app, message, text, user_id, args_import_handler)
+    logger.info(f"Full message text length: {len(route_context.text) if route_context.text else 0}")
+    logger.info(f"Message text preview: {route_context.text[:200] if route_context.text else 'None'}...")
+    _route_url_text_message(app, route_context, args_import_handler)
 
 @app.on_callback_query(filters.regex("^keyboard\\|"))
 def keyboard_callback_handler_wrapper(app, callback_query):
