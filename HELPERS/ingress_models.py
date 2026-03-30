@@ -330,6 +330,65 @@ class ArgsCommandRequested:
 
 
 @dataclass(frozen=True)
+class ArgsMenuSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    action_key: str
+
+
+@dataclass(frozen=True)
+class ArgsTextInputRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CleanOptionSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    action_key: str
+
+
+@dataclass(frozen=True)
+class BrowserCookieSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    action_key: str
+
+
+@dataclass(frozen=True)
+class GalleryFallbackSelectionRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int | None
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+    action_key: str
+
+
+@dataclass(frozen=True)
 class SubtitleSettingsCommandRequested:
     request_kind: str
     user_id: int
@@ -443,6 +502,39 @@ class ReloadCacheCommandRequested:
 
 @dataclass(frozen=True)
 class AutoCacheCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class UpdatePornCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ReloadPornCommandRequested:
+    request_kind: str
+    user_id: int
+    chat_id: int
+    source_message_id: int | None
+    source_transport: str
+    raw_input: str | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CheckPornCommandRequested:
     request_kind: str
     user_id: int
     chat_id: int

@@ -450,6 +450,156 @@ def _maybe_handle_args_import(
     args_import_handler(app, message)
     return True
 
+
+def _maybe_handle_vid_or_url_message(app, message, text: str, user_id: int, is_admin: bool) -> bool:
+    from HELPERS.safe_messeger import fake_message, safe_send_message
+
+    range_processed = False
+    if text.strip().lower().startswith("/vid"):
+        new_text = _rewrite_vid_command_text(text)
+        if new_text is not None:
+            try:
+                message.text = new_text
+                range_processed = True
+                logger.info(f"🔍 [DEBUG] /vid command transformed in url_extractor: '{text}' -> '{new_text}'")
+                logger.info(f"🔍 [DEBUG] message.text after transformation: '{message.text}'")
+            except Exception as e:
+                logger.error(f"🔍 [DEBUG] Error while updating message.text: {e}")
+        else:
+            parts = text.strip().split(maxsplit=1)
+            if len(parts) == 1:
+                try:
+                    _render_vid_help(message, user_id)
+                except Exception:
+                    pass
+                return True
+            if not range_processed:
+                try:
+                    message.text = parts[1]
+                except Exception:
+                    pass
+
+    final_text = message.text if hasattr(message, "text") and message.text else text
+    if ("https://" not in final_text) and ("http://" not in final_text):
+        return False
+
+    if is_user_blocked(message):
+        return True
+
+    from HELPERS.rate_limiter import check_rate_limit
+
+    allowed, rate_limit_msg = check_rate_limit(user_id, is_admin)
+    if not allowed:
+        messages = safe_get_messages(user_id)
+        safe_send_message(
+            user_id,
+            rate_limit_msg or messages.RATE_LIMIT_EXCEEDED_MSG if hasattr(messages, "RATE_LIMIT_EXCEEDED_MSG") else "Rate limit exceeded. Please wait.",
+            message=message,
+        )
+        return True
+
+    from COMMANDS.subtitles_cmd import clear_subs_check_cache
+
+    clear_subs_check_cache()
+    try:
+        try:
+            from .engine_router import route_if_gallerydl_only  # type: ignore
+        except Exception:
+            from URL_PARSERS.engine_router import route_if_gallerydl_only  # type: ignore
+        if route_if_gallerydl_only(app, message):
+            return True
+    except Exception as route_e:
+        logger.error(LoggerMsg.URL_EXTRACTOR_ENGINE_ROUTER_ERROR_LOG_MSG.format(error=route_e))
+
+    try:
+        logger.info(f"🔍 [DEBUG] url_extractor: before calling video_url_extractor, message.text='{message.text}'")
+        envelope = build_telegram_message_envelope(message, raw_text=final_text, event_kind="text_message")
+        url, video_start_with, video_end_with, playlist_name, tags, tags_text, tag_error = extract_url_range_tags(final_text)
+        if tag_error:
+            wrong, example = tag_error
+            error_msg = safe_get_messages(user_id).TAG_FORBIDDEN_CHARS_MSG.format(tag=wrong, example=example)
+            safe_send_message(user_id, error_msg, message=message)
+            from HELPERS.logger import log_error_to_channel
+            log_error_to_channel(message, error_msg)
+            return True
+        if not url:
+            raise ValueError("URL message reached download path without extractable URL")
+        request = build_url_download_request(
+            envelope,
+            url=url,
+            tags=list(tags),
+            tags_text=tags_text,
+            playlist_name=playlist_name,
+            video_start_with=video_start_with,
+            video_end_with=video_end_with,
+        )
+        handle_url_download_request(app, build_message_execution_context(message), request)
+    except Exception as e:
+        logger.error(LoggerMsg.URL_EXTRACTOR_VIDEO_EXTRACTOR_FAILED_LOG_MSG.format(e=e))
+        try:
+            url, video_start_with, video_end_with, playlist_name, tags, tags_text, tag_error = extract_url_range_tags(message.text)
+
+            if url:
+                if video_start_with and video_end_with and (video_start_with != 1 or video_end_with != 1):
+                    fallback_text = f"/img {video_start_with}-{video_end_with} {url}"
+                else:
+                    fallback_text = f"/img {url}"
+
+                if tags_text:
+                    fallback_text += f" {tags_text}"
+
+                original_chat_id = message.chat.id if hasattr(message, "chat") else message.chat.id
+                message_thread_id = getattr(message, "message_thread_id", None) if hasattr(message, "message_thread_id") else None
+                fake_msg = fake_message(
+                    fallback_text,
+                    message.chat.id,
+                    original_chat_id=original_chat_id,
+                    message_thread_id=message_thread_id,
+                    original_message=message,
+                )
+
+                image_command(app, fake_msg)
+                logger.info(get_logger_msg().URL_EXTRACTOR_GALLERY_DL_FALLBACK_LOG_MSG.format(fallback_text=fallback_text))
+            else:
+                logger.error("No URL found for gallery-dl fallback")
+
+        except Exception as e2:
+            logger.error(LoggerMsg.URL_EXTRACTOR_GALLERY_DL_FALLBACK_FAILED_LOG_MSG.format(e2=e2))
+    return True
+
+
+def _maybe_handle_reply_message(app, message) -> bool:
+    if not message.reply_to_message:
+        return False
+
+    if not is_user_blocked(message):
+        if message.reply_to_message and message.reply_to_message.video:
+            caption_editor(app, message)
+    return True
+
+
+def _finalize_unmatched_message(
+    app,
+    message,
+    text: str,
+    user_id: int,
+    args_import_handler,
+) -> None:
+    if _maybe_handle_args_import(
+        app,
+        message,
+        text,
+        user_id,
+        args_import_handler,
+        final_check=True,
+    ):
+        return
+
+    logger.info(LoggerMsg.URL_EXTRACTOR_NO_MATCHING_COMMAND_LOG_MSG.format(user_id=user_id))
+    from COMMANDS.subtitles_cmd import clear_subs_check_cache
+
+    clear_subs_check_cache()
+
 @app.on_message(filters.text & filters.private)
 @background_handler(label="url_distractor")
 def url_distractor(app, message):
@@ -573,156 +723,17 @@ def url_distractor(app, message):
     if _dispatch_direct_command(app, message, text):
         return
 
-    # /vid help & range transformation when handled by the text pipeline
-    range_processed = False
-    if text.strip().lower().startswith("/vid"):
-        new_text = _rewrite_vid_command_text(text)
-        if new_text is not None:
-            try:
-                message.text = new_text
-                range_processed = True
-                logger.info(f"🔍 [DEBUG] /vid command transformed in url_extractor: '{text}' -> '{new_text}'")
-                logger.info(f"🔍 [DEBUG] message.text after transformation: '{message.text}'")
-                # After transformation, don't handle /vid further here.
-                # Just continue with URL processing.
-            except Exception as e:
-                logger.error(f"🔍 [DEBUG] Error while updating message.text: {e}")
-                pass
-            # fallthrough to standard URL flow below
-        else:
-            # If no range was parsed, check whether help is needed
-            parts = text.strip().split(maxsplit=1)
-            if len(parts) == 1:
-                try:
-                    _render_vid_help(message, user_id)
-                except Exception:
-                    pass
-                return
-            else:
-                # Strip command and reuse the URL handler path when no range was provided
-                # Do NOT overwrite message.text if the range was already processed
-                if not range_processed:
-                    try:
-                        message.text = parts[1]
-                    except Exception:
-                        pass
-
-    # If the message contains a URL, process without explicit commands:
-    # 1) Try yt-dlp flow (video_url_extractor)
-    # 2) On failure, fallback to gallery-dl (/img handler)
-    # Use updated message.text if it was changed
-    final_text = message.text if hasattr(message, 'text') and message.text else text
-    if ("https://" in final_text) or ("http://" in final_text):
-        if not is_user_blocked(message):
-            # Check rate limit before processing URL
-            from HELPERS.rate_limiter import check_rate_limit
-            allowed, rate_limit_msg = check_rate_limit(user_id, is_admin)
-            if not allowed:
-                messages = safe_get_messages(user_id)
-                safe_send_message(
-                    user_id,
-                    rate_limit_msg or messages.RATE_LIMIT_EXCEEDED_MSG if hasattr(messages, 'RATE_LIMIT_EXCEEDED_MSG') else "Rate limit exceeded. Please wait.",
-                    message=message
-                )
-                return
-            
-            from COMMANDS.subtitles_cmd import clear_subs_check_cache
-            clear_subs_check_cache()
-            # Centralized router to gallery-dl for certain links
-            try:
-                try:
-                    from .engine_router import route_if_gallerydl_only  # type: ignore
-                except Exception:
-                    from URL_PARSERS.engine_router import route_if_gallerydl_only  # type: ignore
-                if route_if_gallerydl_only(app, message):
-                    return
-            except Exception as route_e:
-                logger.error(LoggerMsg.URL_EXTRACTOR_ENGINE_ROUTER_ERROR_LOG_MSG.format(error=route_e))
-            try:
-                logger.info(f"🔍 [DEBUG] url_extractor: before calling video_url_extractor, message.text='{message.text}'")
-                envelope = build_telegram_message_envelope(message, raw_text=final_text, event_kind="text_message")
-                url, video_start_with, video_end_with, playlist_name, tags, tags_text, tag_error = extract_url_range_tags(final_text)
-                if tag_error:
-                    wrong, example = tag_error
-                    error_msg = safe_get_messages(user_id).TAG_FORBIDDEN_CHARS_MSG.format(tag=wrong, example=example)
-                    safe_send_message(user_id, error_msg, message=message)
-                    from HELPERS.logger import log_error_to_channel
-                    log_error_to_channel(message, error_msg)
-                    return
-                if not url:
-                    raise ValueError("URL message reached download path without extractable URL")
-                request = build_url_download_request(
-                    envelope,
-                    url=url,
-                    tags=list(tags),
-                    tags_text=tags_text,
-                    playlist_name=playlist_name,
-                    video_start_with=video_start_with,
-                    video_end_with=video_end_with,
-                )
-                handle_url_download_request(app, build_message_execution_context(message), request)
-            except Exception as e:
-                logger.error(LoggerMsg.URL_EXTRACTOR_VIDEO_EXTRACTOR_FAILED_LOG_MSG.format(e=e))
-                try:
-                    # Create proper /img command from URL
-                    from HELPERS.safe_messeger import fake_message
-                    
-                    # Extract URL and range from original message
-                    url, video_start_with, video_end_with, playlist_name, tags, tags_text, tag_error = extract_url_range_tags(message.text)
-                    
-                    if url:
-                        # Create fallback command with range if available
-                        if video_start_with and video_end_with and (video_start_with != 1 or video_end_with != 1):
-                            fallback_text = f"/img {video_start_with}-{video_end_with} {url}"
-                        else:
-                            fallback_text = f"/img {url}"
-                        
-                        # Add tags if available
-                        if tags_text:
-                            fallback_text += f" {tags_text}"
-                        
-                        # Create fake message for gallery-dl command
-                        # For groups, preserve original chat_id and message_thread_id
-                        original_chat_id = message.chat.id if hasattr(message, 'chat') else message.chat.id
-                        message_thread_id = getattr(message, 'message_thread_id', None) if hasattr(message, 'message_thread_id') else None
-                        fake_msg = fake_message(fallback_text, message.chat.id, original_chat_id=original_chat_id, message_thread_id=message_thread_id, original_message=message)
-                        
-                        # Execute gallery-dl command
-                        image_command(app, fake_msg)
-                        logger.info(get_logger_msg().URL_EXTRACTOR_GALLERY_DL_FALLBACK_LOG_MSG.format(fallback_text=fallback_text))
-                    else:
-                        logger.error("No URL found for gallery-dl fallback")
-                        
-                except Exception as e2:
-                    logger.error(LoggerMsg.URL_EXTRACTOR_GALLERY_DL_FALLBACK_FAILED_LOG_MSG.format(e2=e2))
+    if _maybe_handle_vid_or_url_message(app, message, text, user_id, is_admin):
         return
 
     # ----- Admin Commands -----
     if is_admin and _dispatch_admin_command(app, message, text):
         return
 
-    # Reframed processing for all users (admins and ordinary users)
-    if message.reply_to_message:
-        # If the reply contains video, allow caption editing for non-blocked users.
-        if not is_user_blocked(message):
-            if message.reply_to_message and message.reply_to_message.video:
-                caption_editor(app, message)
+    if _maybe_handle_reply_message(app, message):
         return
 
-    # Final check for args import (in case it wasn't caught earlier)
-    if _maybe_handle_args_import(
-        app,
-        message,
-        text,
-        user_id,
-        args_import_handler,
-        final_check=True,
-    ):
-        return
-
-    logger.info(LoggerMsg.URL_EXTRACTOR_NO_MATCHING_COMMAND_LOG_MSG.format(user_id=user_id))
-    from COMMANDS.subtitles_cmd import clear_subs_check_cache
-    clear_subs_check_cache()
+    _finalize_unmatched_message(app, message, text, user_id, args_import_handler)
 
 @app.on_callback_query(filters.regex("^keyboard\\|"))
 def keyboard_callback_handler_wrapper(app, callback_query):

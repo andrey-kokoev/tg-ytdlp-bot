@@ -16,11 +16,22 @@ from HELPERS.app_instance import get_app
 from HELPERS.logger import logger, send_to_user, send_error_to_user
 from HELPERS.limitter import check_user, is_user_in_channel
 from HELPERS.safe_messeger import safe_send_message
-from HELPERS.ingress_models import build_telegram_command_envelope
-from HELPERS.ingress_requests import build_args_command_request
+from HELPERS.ingress_models import (
+    build_telegram_callback_envelope,
+    build_telegram_command_envelope,
+    build_telegram_message_envelope,
+)
+from HELPERS.ingress_requests import (
+    build_args_command_request,
+    build_args_menu_selection_request,
+    build_args_text_input_request,
+)
 from HELPERS.request_execution import (
+    build_callback_execution_context,
     build_message_execution_context,
     handle_args_command_request,
+    handle_args_menu_selection_request,
+    handle_args_text_input_request,
 )
 from HELPERS.decorators import background_handler
 from CONFIG.config import Config
@@ -1173,10 +1184,23 @@ def args_command_logic(app, message, request=None):
 
 @app.on_callback_query(filters.regex("^args_"))
 def args_callback_handler(app, callback_query):
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_args_menu_selection_request(
+        callback_envelope,
+        action_key=callback_query.data,
+    )
+    handle_args_menu_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
+
+
+def args_callback_logic(app, callback_query, request):
     messages = get_messages_instance(callback_query.message.chat.id)
     """Handle args menu callbacks"""
     user_id = callback_query.from_user.id
-    data = callback_query.data
+    data = request.action_key
     
     try:
         if data == "args_close":
@@ -1467,7 +1491,7 @@ def args_callback_handler(app, callback_query):
         except Exception:
             pass
 
-def handle_args_text_input(app, message):
+def handle_args_text_input(app, message, request=None):
     messages = get_messages_instance(message.chat.id)
     """Handle text input for args parameters"""
     user_id = message.chat.id  # where to reply
@@ -1635,7 +1659,9 @@ def _has_args_state(flt, client, message) -> bool:
 def args_text_handler(app, message):
     """Handle text input for args configuration in same chat/topic using stored state"""
     try:
-        handle_args_text_input(app, message)
+        envelope = build_telegram_message_envelope(message, event_kind="args_text_input")
+        request = build_args_text_input_request(envelope)
+        handle_args_text_input_request(app, build_message_execution_context(message), request)
     except Exception as e:
         logger.error(LoggerMsg.ARGS_CRITICAL_ERROR_LOG_MSG.format(error=e))
 

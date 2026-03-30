@@ -5,21 +5,27 @@ from HELPERS.ingress_requests import (
     build_add_bot_to_group_selection_request,
     build_add_bot_to_group_request,
     build_args_command_request,
+    build_args_menu_selection_request,
+    build_args_text_input_request,
     build_audio_download_request,
     build_auto_cache_command_request,
     build_ask_filter_selection_request,
     build_ask_quality_selection_request,
     build_ban_time_command_request,
+    build_browser_cookie_selection_request,
     build_browser_cookies_request,
     build_block_user_command_request,
     build_broadcast_command_request,
+    build_check_porn_command_request,
     build_check_cookie_request,
     build_clean_command_request,
+    build_clean_option_selection_request,
     build_concat_request,
     build_cookie_menu_request,
     build_cookie_menu_selection_request,
     build_cookie_upload_request,
     build_format_command_request,
+    build_gallery_fallback_selection_request,
     build_keyboard_command_request,
     build_keyboard_option_selection_request,
     build_format_menu_selection_request,
@@ -36,6 +42,7 @@ from HELPERS.ingress_requests import (
     build_playlist_help_request,
     build_proxy_command_request,
     build_reload_cache_command_request,
+    build_reload_porn_command_request,
     build_rename_request,
     build_runtime_command_request,
     build_save_cookie_text_request,
@@ -51,6 +58,7 @@ from HELPERS.ingress_requests import (
     build_subtitle_settings_selection_request,
     build_uncache_command_request,
     build_unblock_user_command_request,
+    build_update_porn_command_request,
     build_user_details_command_request,
     build_user_logs_command_request,
     build_usage_command_request,
@@ -175,6 +183,39 @@ def test_build_args_command_request_from_envelope():
     assert request.source_message_id == 66
     assert request.raw_input == "/args"
     assert request.provenance["command_tokens"] == ["args"]
+
+
+def test_build_args_menu_selection_request_from_callback_envelope():
+    callback_query = SimpleNamespace(
+        data="args_view_current",
+        from_user=SimpleNamespace(id=91363026),
+        message=SimpleNamespace(id=66, chat=SimpleNamespace(id=91363026)),
+    )
+    envelope = build_telegram_callback_envelope(callback_query)
+    request = build_args_menu_selection_request(envelope, action_key="args_view_current")
+    assert request.request_kind == "ArgsMenuSelectionRequested"
+    assert request.user_id == 91363026
+    assert request.source_message_id == 66
+    assert request.raw_input == "args_view_current"
+    assert request.action_key == "args_view_current"
+
+
+def test_build_args_text_input_request_from_message_envelope():
+    message = SimpleNamespace(
+        text="custom value",
+        caption=None,
+        id=67,
+        chat=SimpleNamespace(id=91363026),
+        reply_to_message=None,
+        command=[],
+    )
+    envelope = build_telegram_message_envelope(message, event_kind="args_text_input")
+    request = build_args_text_input_request(envelope)
+    assert request.request_kind == "ArgsTextInputRequested"
+    assert request.user_id == 91363026
+    assert request.source_message_id == 67
+    assert request.raw_input == "custom value"
+    assert request.provenance["event_kind"] == "args_text_input"
 
 
 def test_build_concat_request_from_envelope():
@@ -610,6 +651,60 @@ def test_build_reload_cache_command_request_from_envelope():
     assert request.provenance["command_tokens"] == ["reload_cache"]
 
 
+def test_build_update_porn_command_request_from_envelope():
+    message = SimpleNamespace(
+        text="/update_porn",
+        caption=None,
+        id=1301,
+        chat=SimpleNamespace(id=91363026),
+        reply_to_message=None,
+        command=["update_porn"],
+    )
+    envelope = build_telegram_command_envelope(message)
+    request = build_update_porn_command_request(envelope)
+    assert request.request_kind == "UpdatePornCommandRequested"
+    assert request.user_id == 91363026
+    assert request.source_message_id == 1301
+    assert request.raw_input == "/update_porn"
+    assert request.provenance["command_tokens"] == ["update_porn"]
+
+
+def test_build_reload_porn_command_request_from_envelope():
+    message = SimpleNamespace(
+        text="/reload_porn",
+        caption=None,
+        id=1302,
+        chat=SimpleNamespace(id=91363026),
+        reply_to_message=None,
+        command=["reload_porn"],
+    )
+    envelope = build_telegram_command_envelope(message)
+    request = build_reload_porn_command_request(envelope)
+    assert request.request_kind == "ReloadPornCommandRequested"
+    assert request.user_id == 91363026
+    assert request.source_message_id == 1302
+    assert request.raw_input == "/reload_porn"
+    assert request.provenance["command_tokens"] == ["reload_porn"]
+
+
+def test_build_check_porn_command_request_from_envelope():
+    message = SimpleNamespace(
+        text="/check_porn https://example.com",
+        caption=None,
+        id=1303,
+        chat=SimpleNamespace(id=91363026),
+        reply_to_message=None,
+        command=["check_porn", "https://example.com"],
+    )
+    envelope = build_telegram_command_envelope(message)
+    request = build_check_porn_command_request(envelope)
+    assert request.request_kind == "CheckPornCommandRequested"
+    assert request.user_id == 91363026
+    assert request.source_message_id == 1303
+    assert request.raw_input == "/check_porn https://example.com"
+    assert request.provenance["command_tokens"] == ["check_porn", "https://example.com"]
+
+
 def test_build_auto_cache_command_request_from_envelope():
     message = SimpleNamespace(
         text="/auto_cache on",
@@ -770,6 +865,51 @@ def test_build_clean_command_request_from_envelope():
     assert request.source_message_id == 1206
     assert request.raw_input == "/clean all"
     assert request.provenance["command_tokens"] == ["clean", "all"]
+
+
+def test_build_clean_option_selection_request_from_callback_envelope():
+    callback_query = SimpleNamespace(
+        data="clean_option|logs",
+        from_user=SimpleNamespace(id=91363026),
+        message=SimpleNamespace(id=77, chat=SimpleNamespace(id=91363026)),
+    )
+    envelope = build_telegram_callback_envelope(callback_query)
+    request = build_clean_option_selection_request(envelope, action_key="logs")
+    assert request.request_kind == "CleanOptionSelectionRequested"
+    assert request.user_id == 91363026
+    assert request.source_message_id == 77
+    assert request.raw_input == "clean_option|logs"
+    assert request.action_key == "logs"
+
+
+def test_build_browser_cookie_selection_request_from_callback_envelope():
+    callback_query = SimpleNamespace(
+        data="browser_choice|firefox",
+        from_user=SimpleNamespace(id=91363026),
+        message=SimpleNamespace(id=78, chat=SimpleNamespace(id=91363026)),
+    )
+    envelope = build_telegram_callback_envelope(callback_query)
+    request = build_browser_cookie_selection_request(envelope, action_key="firefox")
+    assert request.request_kind == "BrowserCookieSelectionRequested"
+    assert request.user_id == 91363026
+    assert request.source_message_id == 78
+    assert request.raw_input == "browser_choice|firefox"
+    assert request.action_key == "firefox"
+
+
+def test_build_gallery_fallback_selection_request_from_callback_envelope():
+    callback_query = SimpleNamespace(
+        data="fallback_gallery_dl|abc123",
+        from_user=SimpleNamespace(id=91363026),
+        message=SimpleNamespace(id=79, chat=SimpleNamespace(id=91363026)),
+    )
+    envelope = build_telegram_callback_envelope(callback_query)
+    request = build_gallery_fallback_selection_request(envelope, action_key="fallback_gallery_dl|abc123")
+    assert request.request_kind == "GalleryFallbackSelectionRequested"
+    assert request.user_id == 91363026
+    assert request.source_message_id == 79
+    assert request.raw_input == "fallback_gallery_dl|abc123"
+    assert request.action_key == "fallback_gallery_dl|abc123"
 
 
 def test_build_language_selection_request_from_callback_envelope():

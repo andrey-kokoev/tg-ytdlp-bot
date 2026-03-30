@@ -14,11 +14,13 @@ from HELPERS.ingress_models import build_telegram_callback_envelope
 from HELPERS.ingress_requests import (
     build_ask_filter_selection_request,
     build_ask_quality_selection_request,
+    build_gallery_fallback_selection_request,
 )
 from HELPERS.request_execution import (
     build_callback_execution_context,
     handle_ask_filter_selection_request,
     handle_ask_quality_selection_request,
+    handle_gallery_fallback_selection_request,
 )
 
 def safe_callback_answer(callback_query, text, show_alert=False):
@@ -2985,15 +2987,28 @@ def askq_callback(app, callback_query):
 
 @app.on_callback_query(filters.regex(r"^fallback_gallery_dl\|"))
 def fallback_gallery_dl_callback(app, callback_query):
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_gallery_fallback_selection_request(
+        callback_envelope,
+        action_key=callback_query.data,
+    )
+    handle_gallery_fallback_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
+
+
+def fallback_gallery_dl_callback_logic(app, callback_query, request):
     """Handle fallback to gallery-dl when yt-dlp fails"""
     from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     try:
         user_id = callback_query.from_user.id
-        data_parts = callback_query.data.split("|")
+        data_parts = request.action_key.split("|")
         url_hash = data_parts[1]  # Extract URL or URL hash from callback data
         
         # Get original URL data from callback
-        url_data = get_original_data_from_callback("fallback_gallery_dl", callback_query.data)
+        url_data = get_original_data_from_callback("fallback_gallery_dl", request.action_key)
         url_parts = url_data.split("|")
         url = url_parts[0]
         

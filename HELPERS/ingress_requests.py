@@ -4,17 +4,23 @@ from HELPERS.ingress_models import (
     AddBotToGroupSelectionRequested,
     AddBotToGroupRequested,
     ArgsCommandRequested,
+    ArgsTextInputRequested,
+    ArgsMenuSelectionRequested,
     AudioDownloadRequested,
     AutoCacheCommandRequested,
     AskFilterSelectionRequested,
     AskQualitySelectionRequested,
     BanTimeCommandRequested,
+    BrowserCookieSelectionRequested,
     BrowserCookiesRequested,
     BlockUserCommandRequested,
     BroadcastCommandRequested,
     CallbackIngressEnvelope,
+    GalleryFallbackSelectionRequested,
+    CheckPornCommandRequested,
     CheckCookieRequested,
     CleanCommandRequested,
+    CleanOptionSelectionRequested,
     ConcatRequested,
     CloseMessageRequested,
     CookieMenuRequested,
@@ -41,6 +47,7 @@ from HELPERS.ingress_models import (
     ProxyCommandRequested,
     ProxyOptionSelectionRequested,
     ReloadCacheCommandRequested,
+    ReloadPornCommandRequested,
     RenameRequested,
     RuntimeCommandRequested,
     SaveCookieTextRequested,
@@ -57,6 +64,7 @@ from HELPERS.ingress_models import (
     SubtitleSettingsSelectionRequested,
     UncacheCommandRequested,
     UnblockUserCommandRequested,
+    UpdatePornCommandRequested,
     UserDetailsCommandRequested,
     UserLogsCommandRequested,
     UsageCommandRequested,
@@ -226,6 +234,88 @@ def build_args_command_request(
             "event_kind": envelope.event_kind,
             "command_tokens": list((envelope.raw_payload or {}).get("command_tokens") or []),
         },
+    )
+
+
+def build_args_menu_selection_request(
+    envelope: CallbackIngressEnvelope,
+    *,
+    action_key: str,
+) -> ArgsMenuSelectionRequested:
+    return ArgsMenuSelectionRequested(
+        request_kind="ArgsMenuSelectionRequested",
+        user_id=envelope.user_id,
+        chat_id=envelope.chat_id,
+        source_message_id=envelope.source_message_id,
+        source_transport=envelope.transport,
+        raw_input=envelope.raw_data,
+        provenance={"event_kind": envelope.event_kind},
+        action_key=action_key,
+    )
+
+
+def build_args_text_input_request(
+    envelope: IngressEnvelope,
+) -> ArgsTextInputRequested:
+    return ArgsTextInputRequested(
+        request_kind="ArgsTextInputRequested",
+        user_id=envelope.user_id,
+        chat_id=envelope.chat_id,
+        source_message_id=envelope.source_message_id,
+        source_transport=envelope.transport,
+        raw_input=envelope.raw_text,
+        provenance={"event_kind": envelope.event_kind},
+    )
+
+
+def build_clean_option_selection_request(
+    envelope: CallbackIngressEnvelope,
+    *,
+    action_key: str,
+) -> CleanOptionSelectionRequested:
+    return CleanOptionSelectionRequested(
+        request_kind="CleanOptionSelectionRequested",
+        user_id=envelope.user_id,
+        chat_id=envelope.chat_id,
+        source_message_id=envelope.source_message_id,
+        source_transport=envelope.transport,
+        raw_input=envelope.raw_data,
+        provenance={"event_kind": envelope.event_kind},
+        action_key=action_key,
+    )
+
+
+def build_browser_cookie_selection_request(
+    envelope: CallbackIngressEnvelope,
+    *,
+    action_key: str,
+) -> BrowserCookieSelectionRequested:
+    return BrowserCookieSelectionRequested(
+        request_kind="BrowserCookieSelectionRequested",
+        user_id=envelope.user_id,
+        chat_id=envelope.chat_id,
+        source_message_id=envelope.source_message_id,
+        source_transport=envelope.transport,
+        raw_input=envelope.raw_data,
+        provenance={"event_kind": envelope.event_kind},
+        action_key=action_key,
+    )
+
+
+def build_gallery_fallback_selection_request(
+    envelope: CallbackIngressEnvelope,
+    *,
+    action_key: str,
+) -> GalleryFallbackSelectionRequested:
+    return GalleryFallbackSelectionRequested(
+        request_kind="GalleryFallbackSelectionRequested",
+        user_id=envelope.user_id,
+        chat_id=envelope.chat_id,
+        source_message_id=envelope.source_message_id,
+        source_transport=envelope.transport,
+        raw_input=envelope.raw_data,
+        provenance={"event_kind": envelope.event_kind},
+        action_key=action_key,
     )
 
 
@@ -406,6 +496,57 @@ def build_reload_cache_command_request(
 ) -> ReloadCacheCommandRequested:
     return ReloadCacheCommandRequested(
         request_kind="ReloadCacheCommandRequested",
+        user_id=envelope.user_id,
+        chat_id=envelope.chat_id,
+        source_message_id=envelope.source_message_id,
+        source_transport=envelope.transport,
+        raw_input=envelope.raw_text,
+        provenance={
+            "event_kind": envelope.event_kind,
+            "command_tokens": list((envelope.raw_payload or {}).get("command_tokens") or []),
+        },
+    )
+
+
+def build_update_porn_command_request(
+    envelope: IngressEnvelope,
+) -> UpdatePornCommandRequested:
+    return UpdatePornCommandRequested(
+        request_kind="UpdatePornCommandRequested",
+        user_id=envelope.user_id,
+        chat_id=envelope.chat_id,
+        source_message_id=envelope.source_message_id,
+        source_transport=envelope.transport,
+        raw_input=envelope.raw_text,
+        provenance={
+            "event_kind": envelope.event_kind,
+            "command_tokens": list((envelope.raw_payload or {}).get("command_tokens") or []),
+        },
+    )
+
+
+def build_reload_porn_command_request(
+    envelope: IngressEnvelope,
+) -> ReloadPornCommandRequested:
+    return ReloadPornCommandRequested(
+        request_kind="ReloadPornCommandRequested",
+        user_id=envelope.user_id,
+        chat_id=envelope.chat_id,
+        source_message_id=envelope.source_message_id,
+        source_transport=envelope.transport,
+        raw_input=envelope.raw_text,
+        provenance={
+            "event_kind": envelope.event_kind,
+            "command_tokens": list((envelope.raw_payload or {}).get("command_tokens") or []),
+        },
+    )
+
+
+def build_check_porn_command_request(
+    envelope: IngressEnvelope,
+) -> CheckPornCommandRequested:
+    return CheckPornCommandRequested(
+        request_kind="CheckPornCommandRequested",
         user_id=envelope.user_id,
         chat_id=envelope.chat_id,
         source_message_id=envelope.source_message_id,

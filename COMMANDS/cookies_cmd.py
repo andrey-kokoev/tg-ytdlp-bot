@@ -19,6 +19,7 @@ from HELPERS.ingress_models import (
     build_telegram_document_envelope,
 )
 from HELPERS.ingress_requests import (
+    build_browser_cookie_selection_request,
     build_browser_cookies_request,
     build_check_cookie_request,
     build_close_message_request,
@@ -29,8 +30,9 @@ from HELPERS.ingress_requests import (
 )
 from HELPERS.message_bridge import bridge_message_from_existing
 from HELPERS.request_execution import (
-    build_message_execution_context,
     build_callback_execution_context,
+    build_message_execution_context,
+    handle_browser_cookie_selection_request,
     handle_browser_cookies_request,
     handle_check_cookie_request,
     handle_close_message_request,
@@ -504,6 +506,19 @@ def cookies_from_browser_logic(app, message, request=None):
 @app.on_callback_query(filters.regex(r"^browser_choice\|"))
 # @reply_with_keyboard
 def browser_choice_callback(app, callback_query):
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_browser_cookie_selection_request(
+        callback_envelope,
+        action_key=callback_query.data.split("|")[1],
+    )
+    handle_browser_cookie_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
+
+
+def browser_choice_callback_logic(app, callback_query, request):
     """
     Handle browser selection for cookie extraction.
     
@@ -518,7 +533,7 @@ def browser_choice_callback(app, callback_query):
     """
     user_id = callback_query.from_user.id
     logger.info(safe_get_messages(user_id).COOKIES_BROWSER_CALLBACK_MSG.format(callback_data=callback_query.data))
-    data = callback_query.data.split("|")[1]  # E.G. "Chromium", "Firefox", or "Close"
+    data = request.action_key  # E.G. "Chromium", "Firefox", or "Close"
     # Path to the User's Directory, E.G. "./users/1234567"
     user_dir = os.path.join(".", "users", str(user_id))
     create_directory(user_dir)

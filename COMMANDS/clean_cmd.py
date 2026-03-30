@@ -9,10 +9,14 @@ from CONFIG.logger_msg import LoggerMsg, get_logger_msg
 from CONFIG.messages import Messages, safe_get_messages
 from CONFIG.config import Config
 from HELPERS.filesystem_hlp import remove_media
-from HELPERS.ingress_models import build_telegram_command_envelope
-from HELPERS.ingress_requests import build_clean_command_request
-from HELPERS.request_execution import build_message_execution_context, handle_clean_command_request
-# Lazy import to avoid circular dependency - import url_distractor inside functions
+from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_command_envelope
+from HELPERS.ingress_requests import build_clean_command_request, build_clean_option_selection_request
+from HELPERS.request_execution import (
+    build_callback_execution_context,
+    build_message_execution_context,
+    handle_clean_command_request,
+    handle_clean_option_selection_request,
+)
 
 # Get app instance for decorators
 app = get_app()
@@ -181,6 +185,19 @@ def clean_command_logic(app, message, request=None):
 @app.on_callback_query(filters.regex(r"^clean_option\|"))
 # @reply_with_keyboard
 def clean_option_callback(app, callback_query):
+    callback_envelope = build_telegram_callback_envelope(callback_query)
+    request = build_clean_option_selection_request(
+        callback_envelope,
+        action_key=callback_query.data.split("|")[1],
+    )
+    handle_clean_option_selection_request(
+        app,
+        build_callback_execution_context(callback_query),
+        request,
+    )
+
+
+def clean_option_callback_logic(app, callback_query, request):
     # Get user_id first
     user_id = getattr(callback_query, 'from_user', None)
     if user_id is None:
@@ -192,62 +209,60 @@ def clean_option_callback(app, callback_query):
         return
     
     messages = safe_get_messages(user_id)
-    # Lazy import to avoid circular dependency
-    from URL_PARSERS.url_extractor import url_distractor
     def _bridged_command_message(text: str):
         return bridge_message_from_existing(callback_query.message, text)
-    data = callback_query.data.split("|")[1]
+    data = request.action_key
 
     if data == "cookies":
-        url_distractor(app, _bridged_command_message("/clean cookie"))
+        clean_command(app, _bridged_command_message("/clean cookie"))
         callback_query.answer(messages.CLEAN_COOKIES_CLEANED_MSG)
         return
     elif data == "logs":
-        url_distractor(app, _bridged_command_message("/clean logs"))
+        clean_command(app, _bridged_command_message("/clean logs"))
         callback_query.answer(messages.CLEAN_LOGS_CLEANED_MSG)
         return
     elif data == "tags":
-        url_distractor(app, _bridged_command_message("/clean tags"))
+        clean_command(app, _bridged_command_message("/clean tags"))
         callback_query.answer(messages.CLEAN_TAGS_CLEANED_MSG)
         return
     elif data == "format":
-        url_distractor(app, _bridged_command_message("/clean format"))
+        clean_command(app, _bridged_command_message("/clean format"))
         callback_query.answer(messages.CLEAN_FORMAT_CLEANED_MSG)
         return
     elif data == "split":
-        url_distractor(app, _bridged_command_message("/clean split"))
+        clean_command(app, _bridged_command_message("/clean split"))
         callback_query.answer(messages.CLEAN_SPLIT_CLEANED_MSG)
         return
     elif data == "mediainfo":
-        url_distractor(app, _bridged_command_message("/clean mediainfo"))
+        clean_command(app, _bridged_command_message("/clean mediainfo"))
         callback_query.answer(messages.CLEAN_MEDIAINFO_CLEANED_MSG)
         return
     elif data == "subs":
-        url_distractor(app, _bridged_command_message("/clean subs"))
+        clean_command(app, _bridged_command_message("/clean subs"))
         callback_query.answer(messages.CLEAN_SUBS_CLEANED_MSG)
         return
     elif data == "keyboard":
-        url_distractor(app, _bridged_command_message("/clean keyboard"))
+        clean_command(app, _bridged_command_message("/clean keyboard"))
         callback_query.answer(messages.CLEAN_KEYBOARD_CLEANED_MSG)
         return
     elif data == "args":
-        url_distractor(app, _bridged_command_message("/clean args"))
+        clean_command(app, _bridged_command_message("/clean args"))
         callback_query.answer(messages.CLEAN_ARGS_CLEANED_MSG)
         return
     elif data == "nsfw":
-        url_distractor(app, _bridged_command_message("/clean nsfw"))
+        clean_command(app, _bridged_command_message("/clean nsfw"))
         callback_query.answer(messages.CLEAN_NSFW_CLEANED_MSG)
         return
     elif data == "proxy":
-        url_distractor(app, _bridged_command_message("/clean proxy"))
+        clean_command(app, _bridged_command_message("/clean proxy"))
         callback_query.answer(messages.CLEAN_PROXY_CLEANED_MSG)
         return
     elif data == "flood_wait":
-        url_distractor(app, _bridged_command_message("/clean flood_wait"))
+        clean_command(app, _bridged_command_message("/clean flood_wait"))
         callback_query.answer(messages.CLEAN_FLOOD_WAIT_CLEANED_MSG)
         return
     elif data == "all":
-        url_distractor(app, _bridged_command_message("/clean all"))
+        clean_command(app, _bridged_command_message("/clean all"))
         callback_query.answer(messages.CLEAN_ALL_CLEANED_MSG)
         return
     elif data == "back":

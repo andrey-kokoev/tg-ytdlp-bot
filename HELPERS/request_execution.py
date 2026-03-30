@@ -6,14 +6,19 @@ from HELPERS.ingress_models import (
     AddBotToGroupSelectionRequested,
     AddBotToGroupRequested,
     ArgsCommandRequested,
+    ArgsTextInputRequested,
+    ArgsMenuSelectionRequested,
     AudioDownloadRequested,
     AutoCacheCommandRequested,
     AskFilterSelectionRequested,
     BanTimeCommandRequested,
+    BrowserCookieSelectionRequested,
+    CleanOptionSelectionRequested,
     ImageRangeSelectionRequested,
     BrowserCookiesRequested,
     BlockUserCommandRequested,
     BroadcastCommandRequested,
+    CheckPornCommandRequested,
     CheckCookieRequested,
     CleanCommandRequested,
     CookieMenuRequested,
@@ -35,10 +40,12 @@ from HELPERS.ingress_models import (
     CookieMenuSelectionRequested,
     FormatCommandRequested,
     FormatMenuSelectionRequested,
+    GalleryFallbackSelectionRequested,
     HelpCommandRequested,
     ImageCommandRequested,
     ProxyOptionSelectionRequested,
     ReloadCacheCommandRequested,
+    ReloadPornCommandRequested,
     RenameRequested,
     RuntimeCommandRequested,
     SaveCookieTextRequested,
@@ -55,6 +62,7 @@ from HELPERS.ingress_models import (
     SubtitleSettingsSelectionRequested,
     UncacheCommandRequested,
     UnblockUserCommandRequested,
+    UpdatePornCommandRequested,
     UserDetailsCommandRequested,
     UserLogsCommandRequested,
     UsageCommandRequested,
@@ -224,9 +232,39 @@ def handle_reload_cache_command_request(
     execution_context: TelegramExecutionContext,
     request: ReloadCacheCommandRequested,
 ) -> None:
-    from COMMANDS.admin_cmd import reload_firebase_cache_command
+    from COMMANDS.admin_cmd import reload_firebase_cache_command_logic
 
-    reload_firebase_cache_command(app, execution_context.source_message)
+    reload_firebase_cache_command_logic(app, execution_context.source_message, request)
+
+
+def handle_update_porn_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: UpdatePornCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import update_porn_command_logic
+
+    update_porn_command_logic(app, execution_context.source_message, request)
+
+
+def handle_reload_porn_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: ReloadPornCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import reload_porn_command_logic
+
+    reload_porn_command_logic(app, execution_context.source_message, request)
+
+
+def handle_check_porn_command_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: CheckPornCommandRequested,
+) -> None:
+    from COMMANDS.admin_cmd import check_porn_command_logic
+
+    check_porn_command_logic(app, execution_context.source_message, request)
 
 
 def handle_auto_cache_command_request(
@@ -319,6 +357,16 @@ def handle_clean_command_request(
     clean_command_logic(app, execution_context.source_message, request)
 
 
+def handle_clean_option_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: CleanOptionSelectionRequested,
+) -> None:
+    from COMMANDS.clean_cmd import clean_option_callback_logic
+
+    clean_option_callback_logic(app, execution_context.callback_query, request)
+
+
 def handle_language_selection_request(
     app,
     execution_context: TelegramExecutionContext,
@@ -337,6 +385,26 @@ def handle_args_command_request(
     from COMMANDS.args_cmd import args_command_logic
 
     args_command_logic(app, execution_context.source_message, request)
+
+
+def handle_args_menu_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: ArgsMenuSelectionRequested,
+) -> None:
+    from COMMANDS.args_cmd import args_callback_logic
+
+    args_callback_logic(app, execution_context.callback_query, request)
+
+
+def handle_args_text_input_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: ArgsTextInputRequested,
+) -> None:
+    from COMMANDS.args_cmd import handle_args_text_input
+
+    handle_args_text_input(app, execution_context.source_message, request)
 
 
 def handle_ask_quality_selection_request(
@@ -488,6 +556,26 @@ def handle_browser_cookies_request(
     from COMMANDS.cookies_cmd import cookies_from_browser_logic
 
     cookies_from_browser_logic(app, execution_context.source_message, request)
+
+
+def handle_browser_cookie_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: BrowserCookieSelectionRequested,
+) -> None:
+    from COMMANDS.cookies_cmd import browser_choice_callback_logic
+
+    browser_choice_callback_logic(app, execution_context.callback_query, request)
+
+
+def handle_gallery_fallback_selection_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: GalleryFallbackSelectionRequested,
+) -> None:
+    from DOWN_AND_UP.always_ask_menu import fallback_gallery_dl_callback_logic
+
+    fallback_gallery_dl_callback_logic(app, execution_context.callback_query, request)
 
 
 def handle_cookie_menu_request(

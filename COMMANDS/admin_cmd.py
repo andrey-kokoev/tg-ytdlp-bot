@@ -29,6 +29,20 @@ from HELPERS.channel_guard import (
 # from DATABASE.cache_db import get_url_hash, db_child_by_path  # moved to lazy imports
 from HELPERS.logger import logger
 from HELPERS.decorators import background_handler
+from HELPERS.ingress_models import build_telegram_command_envelope
+from HELPERS.ingress_requests import (
+    build_check_porn_command_request,
+    build_reload_cache_command_request,
+    build_reload_porn_command_request,
+    build_update_porn_command_request,
+)
+from HELPERS.request_execution import (
+    build_message_execution_context,
+    handle_check_porn_command_request,
+    handle_reload_cache_command_request,
+    handle_reload_porn_command_request,
+    handle_update_porn_command_request,
+)
 
 # Global variable for bot start time
 starting_point = [time.time()]
@@ -39,6 +53,12 @@ app = get_app()
 @app.on_message(filters.command("reload_cache") & filters.private)
 @background_handler(label="reload_cache")
 def reload_firebase_cache_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_reload_cache_command_request(envelope)
+    handle_reload_cache_command_request(app, build_message_execution_context(message), request)
+
+
+def reload_firebase_cache_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     """The processor of command for rebooting the local cache Firebase"""
     if int(message.chat.id) not in Config.ADMIN:
@@ -836,6 +856,12 @@ def uncache_command(app, message):
 @app.on_message(filters.command("update_porn") & filters.private)
 @background_handler(label="update_porn")
 def update_porn_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_update_porn_command_request(envelope)
+    handle_update_porn_command_request(app, build_message_execution_context(message), request)
+
+
+def update_porn_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     """Admin command to run the porn list update script"""
     if int(message.chat.id) not in Config.ADMIN:
@@ -881,6 +907,12 @@ def update_porn_command(app, message):
 @app.on_message(filters.command("reload_porn") & filters.private)
 @background_handler(label="reload_porn")
 def reload_porn_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_reload_porn_command_request(envelope)
+    handle_reload_porn_command_request(app, build_message_execution_context(message), request)
+
+
+def reload_porn_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     """Admin command to reload porn domains and keywords cache without restarting the bot"""
     if int(message.chat.id) not in Config.ADMIN:
@@ -938,6 +970,12 @@ def reload_porn_command(app, message):
 @app.on_message(filters.command("check_porn") & filters.private)
 @background_handler(label="check_porn")
 def check_porn_command(app, message):
+    envelope = build_telegram_command_envelope(message)
+    request = build_check_porn_command_request(envelope)
+    handle_check_porn_command_request(app, build_message_execution_context(message), request)
+
+
+def check_porn_command_logic(app, message, request=None):
     messages = safe_get_messages(message.chat.id)
     """Admin command to check if a URL is NSFW and get detailed explanation"""
     user_id = message.chat.id

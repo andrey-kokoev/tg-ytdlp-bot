@@ -5,16 +5,22 @@ from HELPERS.ingress_models import (
     AddBotToGroupSelectionRequested,
     AddBotToGroupRequested,
     ArgsCommandRequested,
+    ArgsTextInputRequested,
+    ArgsMenuSelectionRequested,
     AudioDownloadRequested,
     AutoCacheCommandRequested,
     AskFilterSelectionRequested,
     BanTimeCommandRequested,
+    BrowserCookieSelectionRequested,
     BrowserCookiesRequested,
     BlockUserCommandRequested,
     BroadcastCommandRequested,
+    CheckPornCommandRequested,
     CheckCookieRequested,
     CleanCommandRequested,
+    CleanOptionSelectionRequested,
     CookieMenuRequested,
+    GalleryFallbackSelectionRequested,
     ImageRangeSelectionRequested,
     KeyboardCommandRequested,
     KeyboardOptionSelectionRequested,
@@ -38,6 +44,7 @@ from HELPERS.ingress_models import (
     ProxyCommandRequested,
     ProxyOptionSelectionRequested,
     ReloadCacheCommandRequested,
+    ReloadPornCommandRequested,
     RenameRequested,
     RuntimeCommandRequested,
     SaveCookieTextRequested,
@@ -54,6 +61,7 @@ from HELPERS.ingress_models import (
     SubtitleSettingsSelectionRequested,
     UncacheCommandRequested,
     UnblockUserCommandRequested,
+    UpdatePornCommandRequested,
     UserDetailsCommandRequested,
     UserLogsCommandRequested,
     UsageCommandRequested,
@@ -73,19 +81,25 @@ from HELPERS.request_execution import (
     handle_auto_cache_command_request,
     handle_audio_download_request,
     handle_args_command_request,
+    handle_args_menu_selection_request,
+    handle_args_text_input_request,
     handle_ask_filter_selection_request,
     handle_ask_quality_selection_request,
     handle_ban_time_command_request,
+    handle_browser_cookie_selection_request,
     handle_browser_cookies_request,
     handle_block_user_command_request,
     handle_broadcast_command_request,
+    handle_check_porn_command_request,
     handle_check_cookie_request,
     handle_clean_command_request,
+    handle_clean_option_selection_request,
     handle_close_message_request,
     handle_cookie_menu_request,
     handle_cookie_menu_selection_request,
     handle_format_command_request,
     handle_format_menu_selection_request,
+    handle_gallery_fallback_selection_request,
     handle_help_command_request,
     handle_image_command_request,
     handle_image_range_selection_request,
@@ -103,6 +117,7 @@ from HELPERS.request_execution import (
     handle_proxy_command_request,
     handle_proxy_option_selection_request,
     handle_reload_cache_command_request,
+    handle_reload_porn_command_request,
     handle_concat_request,
     handle_rename_request,
     handle_runtime_command_request,
@@ -121,6 +136,7 @@ from HELPERS.request_execution import (
     handle_subtitle_settings_selection_request,
     handle_uncache_command_request,
     handle_unblock_user_command_request,
+    handle_update_porn_command_request,
     handle_user_details_command_request,
     handle_user_logs_command_request,
     handle_usage_command_request,
@@ -202,6 +218,83 @@ def test_handle_args_command_request_routes_request_to_args_runtime(monkeypatch)
     handle_args_command_request(app, execution_context, request)
 
     assert captured["args_call"] == {
+        "app": app,
+        "message": message,
+        "request": request,
+    }
+
+
+def test_handle_args_menu_selection_request_routes_request_to_args_callback_runtime(monkeypatch):
+    captured = {}
+
+    def fake_args_callback_logic(app, callback_query, request=None):
+        captured["args_callback_call"] = {
+            "app": app,
+            "callback_query": callback_query,
+            "request": request,
+        }
+
+    fake_args_module = ModuleType("COMMANDS.args_cmd")
+    fake_args_module.args_callback_logic = fake_args_callback_logic
+    monkeypatch.setitem(sys.modules, "COMMANDS.args_cmd", fake_args_module)
+
+    request = ArgsMenuSelectionRequested(
+        request_kind="ArgsMenuSelectionRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=67,
+        source_transport="telegram_callback",
+        raw_input="args_view_current",
+        provenance={"event_kind": "callback_query"},
+        action_key="args_view_current",
+    )
+    app = object()
+    callback_query = SimpleNamespace(
+        data="args_view_current",
+        from_user=SimpleNamespace(id=91363026),
+        message=SimpleNamespace(id=67, chat=SimpleNamespace(id=91363026)),
+    )
+    execution_context = build_callback_execution_context(callback_query)
+
+    handle_args_menu_selection_request(app, execution_context, request)
+
+    assert captured["args_callback_call"] == {
+        "app": app,
+        "callback_query": callback_query,
+        "request": request,
+    }
+
+
+def test_handle_args_text_input_request_routes_request_to_args_text_runtime(monkeypatch):
+    captured = {}
+
+    def fake_handle_args_text_input(app, message, request=None):
+        captured["args_text_call"] = {
+            "app": app,
+            "message": message,
+            "request": request,
+        }
+
+    fake_args_module = ModuleType("COMMANDS.args_cmd")
+    fake_args_module.handle_args_text_input = fake_handle_args_text_input
+    monkeypatch.setitem(sys.modules, "COMMANDS.args_cmd", fake_args_module)
+
+    request = ArgsTextInputRequested(
+        request_kind="ArgsTextInputRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=68,
+        source_transport="telegram",
+        raw_input="custom value",
+        provenance={"event_kind": "args_text_input"},
+    )
+    app = object()
+    message = SimpleNamespace(id=68, chat=SimpleNamespace(id=91363026), text="custom value")
+    execution_context = build_message_execution_context(message)
+
+    handle_args_text_input_request(app, execution_context, request)
+
+    assert captured["args_text_call"] == {
         "app": app,
         "message": message,
         "request": request,
@@ -1362,14 +1455,15 @@ def test_handle_uncache_command_request_routes_request_to_admin_runtime(monkeypa
 def test_handle_reload_cache_command_request_routes_request_to_admin_runtime(monkeypatch):
     captured = {}
 
-    def fake_reload_firebase_cache_command(app, message):
+    def fake_reload_firebase_cache_command_logic(app, message, request=None):
         captured["reload_cache_call"] = {
             "app": app,
             "message": message,
+            "request": request,
         }
 
     fake_admin_module = ModuleType("COMMANDS.admin_cmd")
-    fake_admin_module.reload_firebase_cache_command = fake_reload_firebase_cache_command
+    fake_admin_module.reload_firebase_cache_command_logic = fake_reload_firebase_cache_command_logic
     monkeypatch.setitem(sys.modules, "COMMANDS.admin_cmd", fake_admin_module)
 
     request = ReloadCacheCommandRequested(
@@ -1390,6 +1484,7 @@ def test_handle_reload_cache_command_request_routes_request_to_admin_runtime(mon
     assert captured["reload_cache_call"] == {
         "app": app,
         "message": message,
+        "request": request,
     }
 
 
@@ -1692,6 +1787,88 @@ def test_handle_clean_command_request_routes_request_to_clean_runtime(monkeypatc
     assert captured["clean_call"] == {
         "app": app,
         "message": message,
+        "request": request,
+    }
+
+
+def test_handle_clean_option_selection_request_routes_request_to_clean_callback_runtime(monkeypatch):
+    captured = {}
+
+    def fake_clean_option_callback_logic(app, callback_query, request=None):
+        captured["clean_option_call"] = {
+            "app": app,
+            "callback_query": callback_query,
+            "request": request,
+        }
+
+    fake_clean_module = ModuleType("COMMANDS.clean_cmd")
+    fake_clean_module.clean_option_callback_logic = fake_clean_option_callback_logic
+    monkeypatch.setitem(sys.modules, "COMMANDS.clean_cmd", fake_clean_module)
+
+    request = CleanOptionSelectionRequested(
+        request_kind="CleanOptionSelectionRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=77,
+        source_transport="telegram_callback",
+        raw_input="clean_option|logs",
+        provenance={"event_kind": "callback_query"},
+        action_key="logs",
+    )
+    app = object()
+    callback_query = SimpleNamespace(
+        data="clean_option|logs",
+        from_user=SimpleNamespace(id=91363026),
+        message=SimpleNamespace(id=77, chat=SimpleNamespace(id=91363026)),
+    )
+    execution_context = build_callback_execution_context(callback_query)
+
+    handle_clean_option_selection_request(app, execution_context, request)
+
+    assert captured["clean_option_call"] == {
+        "app": app,
+        "callback_query": callback_query,
+        "request": request,
+    }
+
+
+def test_handle_browser_cookie_selection_request_routes_request_to_browser_callback_runtime(monkeypatch):
+    captured = {}
+
+    def fake_browser_choice_callback_logic(app, callback_query, request=None):
+        captured["browser_choice_call"] = {
+            "app": app,
+            "callback_query": callback_query,
+            "request": request,
+        }
+
+    fake_cookies_module = ModuleType("COMMANDS.cookies_cmd")
+    fake_cookies_module.browser_choice_callback_logic = fake_browser_choice_callback_logic
+    monkeypatch.setitem(sys.modules, "COMMANDS.cookies_cmd", fake_cookies_module)
+
+    request = BrowserCookieSelectionRequested(
+        request_kind="BrowserCookieSelectionRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=78,
+        source_transport="telegram_callback",
+        raw_input="browser_choice|firefox",
+        provenance={"event_kind": "callback_query"},
+        action_key="firefox",
+    )
+    app = object()
+    callback_query = SimpleNamespace(
+        data="browser_choice|firefox",
+        from_user=SimpleNamespace(id=91363026),
+        message=SimpleNamespace(id=78, chat=SimpleNamespace(id=91363026)),
+    )
+    execution_context = build_callback_execution_context(callback_query)
+
+    handle_browser_cookie_selection_request(app, execution_context, request)
+
+    assert captured["browser_choice_call"] == {
+        "app": app,
+        "callback_query": callback_query,
         "request": request,
     }
 
@@ -2999,4 +3176,141 @@ def test_handle_saved_format_url_runtime_routes_request_to_saved_format_runtime(
             "task_seed": captured["task_kwargs"],
             "branch_result": {"branch_family": "saved_format_download"},
         },
+    }
+
+
+def test_handle_update_porn_command_request_routes_request_to_update_porn_runtime(monkeypatch):
+    captured = {}
+
+    def fake_update_porn_command_logic(app, message, request=None):
+        captured["update_porn_call"] = {"app": app, "message": message, "request": request}
+
+    fake_admin_module = ModuleType("COMMANDS.admin_cmd")
+    fake_admin_module.update_porn_command_logic = fake_update_porn_command_logic
+    monkeypatch.setitem(sys.modules, "COMMANDS.admin_cmd", fake_admin_module)
+
+    request = UpdatePornCommandRequested(
+        request_kind="UpdatePornCommandRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=1301,
+        source_transport="telegram",
+        raw_input="/update_porn",
+        provenance={"event_kind": "command_message", "command_tokens": ["update_porn"]},
+    )
+    app = object()
+    message = SimpleNamespace(id=1301, chat=SimpleNamespace(id=91363026))
+    execution_context = build_message_execution_context(message)
+
+    handle_update_porn_command_request(app, execution_context, request)
+
+    assert captured["update_porn_call"] == {
+        "app": app,
+        "message": message,
+        "request": request,
+    }
+
+
+def test_handle_reload_porn_command_request_routes_request_to_reload_porn_runtime(monkeypatch):
+    captured = {}
+
+    def fake_reload_porn_command_logic(app, message, request=None):
+        captured["reload_porn_call"] = {"app": app, "message": message, "request": request}
+
+    fake_admin_module = ModuleType("COMMANDS.admin_cmd")
+    fake_admin_module.reload_porn_command_logic = fake_reload_porn_command_logic
+    monkeypatch.setitem(sys.modules, "COMMANDS.admin_cmd", fake_admin_module)
+
+    request = ReloadPornCommandRequested(
+        request_kind="ReloadPornCommandRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=1302,
+        source_transport="telegram",
+        raw_input="/reload_porn",
+        provenance={"event_kind": "command_message", "command_tokens": ["reload_porn"]},
+    )
+    app = object()
+    message = SimpleNamespace(id=1302, chat=SimpleNamespace(id=91363026))
+    execution_context = build_message_execution_context(message)
+
+    handle_reload_porn_command_request(app, execution_context, request)
+
+    assert captured["reload_porn_call"] == {
+        "app": app,
+        "message": message,
+        "request": request,
+    }
+
+
+def test_handle_check_porn_command_request_routes_request_to_check_porn_runtime(monkeypatch):
+    captured = {}
+
+    def fake_check_porn_command_logic(app, message, request=None):
+        captured["check_porn_call"] = {"app": app, "message": message, "request": request}
+
+    fake_admin_module = ModuleType("COMMANDS.admin_cmd")
+    fake_admin_module.check_porn_command_logic = fake_check_porn_command_logic
+    monkeypatch.setitem(sys.modules, "COMMANDS.admin_cmd", fake_admin_module)
+
+    request = CheckPornCommandRequested(
+        request_kind="CheckPornCommandRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=1303,
+        source_transport="telegram",
+        raw_input="/check_porn https://example.com",
+        provenance={"event_kind": "command_message", "command_tokens": ["check_porn", "https://example.com"]},
+    )
+    app = object()
+    message = SimpleNamespace(id=1303, chat=SimpleNamespace(id=91363026))
+    execution_context = build_message_execution_context(message)
+
+    handle_check_porn_command_request(app, execution_context, request)
+
+    assert captured["check_porn_call"] == {
+        "app": app,
+        "message": message,
+        "request": request,
+    }
+
+
+def test_handle_gallery_fallback_selection_request_routes_request_to_gallery_callback_runtime(monkeypatch):
+    captured = {}
+
+    def fake_fallback_gallery_dl_callback_logic(app, callback_query, request=None):
+        captured["gallery_fallback_call"] = {
+            "app": app,
+            "callback_query": callback_query,
+            "request": request,
+        }
+
+    fake_menu_module = ModuleType("DOWN_AND_UP.always_ask_menu")
+    fake_menu_module.fallback_gallery_dl_callback_logic = fake_fallback_gallery_dl_callback_logic
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.always_ask_menu", fake_menu_module)
+
+    request = GalleryFallbackSelectionRequested(
+        request_kind="GalleryFallbackSelectionRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=79,
+        source_transport="telegram_callback",
+        raw_input="fallback_gallery_dl|abc123",
+        provenance={"event_kind": "callback_query"},
+        action_key="fallback_gallery_dl|abc123",
+    )
+    app = object()
+    callback_query = SimpleNamespace(
+        data="fallback_gallery_dl|abc123",
+        from_user=SimpleNamespace(id=91363026),
+        message=SimpleNamespace(id=79, chat=SimpleNamespace(id=91363026)),
+    )
+    execution_context = build_callback_execution_context(callback_query)
+
+    handle_gallery_fallback_selection_request(app, execution_context, request)
+
+    assert captured["gallery_fallback_call"] == {
+        "app": app,
+        "callback_query": callback_query,
+        "request": request,
     }
