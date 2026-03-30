@@ -383,6 +383,15 @@ class CachedQualitiesMenuPlan:
     reply_markup: InlineKeyboardMarkup
 
 
+@dataclass(frozen=True)
+class QualityMenuRenderPlan:
+    text: str
+    reply_markup: InlineKeyboardMarkup
+    can_send_thumb_menu: bool
+    thumb_path: str | None
+    is_nsfw: bool
+
+
 def _emit_gallery_fallback_transition_start(callback_query, plan: GalleryFallbackTransitionPlan) -> None:
     safe_callback_answer(callback_query, "🔄 Switching to gallery-dl...")
     try:
@@ -4317,6 +4326,126 @@ def _emit_cached_qualities_menu(app, message, *, proc_msg, user_id: int, menu_pl
         return False
 
 
+def _build_quality_menu_render_plan(
+    *,
+    text: str,
+    keyboard_rows,
+    thumb_path: str | None,
+    is_playlist: bool,
+    is_nsfw: bool,
+) -> QualityMenuRenderPlan:
+    reply_markup = InlineKeyboardMarkup(keyboard_rows)
+    can_send_thumb_menu = bool(thumb_path and os.path.exists(thumb_path) and not is_playlist)
+    return QualityMenuRenderPlan(
+        text=text,
+        reply_markup=reply_markup,
+        can_send_thumb_menu=can_send_thumb_menu,
+        thumb_path=thumb_path,
+        is_nsfw=is_nsfw,
+    )
+
+
+def _emit_quality_menu_render_plan(app, message, *, cb, proc_msg, user_id: int, render_plan: QualityMenuRenderPlan) -> None:
+    if cb is not None and getattr(cb, "message", None):
+        try:
+            if cb.message.photo:
+                cb.edit_message_caption(
+                    caption=render_plan.text,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=render_plan.reply_markup,
+                )
+            else:
+                cb.edit_message_text(
+                    text=render_plan.text,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=render_plan.reply_markup,
+                )
+        except Exception as edit_error:
+            logger.warning(f"Failed to edit message for callback: {edit_error}")
+            try:
+                if render_plan.can_send_thumb_menu:
+                    app.send_photo(
+                        user_id,
+                        render_plan.thumb_path,
+                        caption=render_plan.text,
+                        parse_mode=enums.ParseMode.HTML,
+                        reply_markup=render_plan.reply_markup,
+                        reply_parameters=ReplyParameters(message_id=message.id),
+                        has_spoiler=should_apply_spoiler(
+                            user_id,
+                            render_plan.is_nsfw,
+                            getattr(message.chat, "type", None) == enums.ChatType.PRIVATE,
+                        ),
+                    )
+                else:
+                    app.send_message(
+                        user_id,
+                        render_plan.text,
+                        parse_mode=enums.ParseMode.HTML,
+                        reply_markup=render_plan.reply_markup,
+                        reply_parameters=ReplyParameters(message_id=message.id),
+                    )
+            except Exception as fallback_error:
+                logger.error(f"Failed to send fallback message: {fallback_error}")
+        if proc_msg:
+            try:
+                safe_delete_messages(chat_id=cb.message.chat.id, message_ids=[proc_msg.id])
+            except Exception:
+                pass
+        return
+
+    if proc_msg:
+        try:
+            safe_delete_messages(chat_id=user_id, message_ids=[proc_msg.id])
+        except Exception:
+            pass
+    try:
+        if render_plan.can_send_thumb_menu:
+            app.send_photo(
+                user_id,
+                render_plan.thumb_path,
+                caption=render_plan.text,
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=render_plan.reply_markup,
+                reply_parameters=ReplyParameters(message_id=message.id),
+                has_spoiler=should_apply_spoiler(
+                    user_id,
+                    render_plan.is_nsfw,
+                    getattr(message.chat, "type", None) == enums.ChatType.PRIVATE,
+                ),
+            )
+        else:
+            app.send_message(
+                user_id,
+                render_plan.text,
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=render_plan.reply_markup,
+                reply_parameters=ReplyParameters(message_id=message.id),
+            )
+    except Exception as keyboard_error:
+        logger.warning(f"Failed to send with keyboard, retrying without: {keyboard_error}")
+        if render_plan.can_send_thumb_menu:
+            app.send_photo(
+                user_id,
+                render_plan.thumb_path,
+                caption=render_plan.text,
+                parse_mode=enums.ParseMode.HTML,
+                reply_parameters=ReplyParameters(message_id=message.id),
+                has_spoiler=should_apply_spoiler(
+                    user_id,
+                    render_plan.is_nsfw,
+                    getattr(message.chat, "type", None) == enums.ChatType.PRIVATE,
+                ),
+            )
+        else:
+            app.send_message(
+                user_id,
+                render_plan.text,
+                parse_mode=enums.ParseMode.HTML,
+                reply_parameters=ReplyParameters(message_id=message.id),
+            )
+
+
 def _build_always_ask_gallery_fallback_prompt(
     message,
     *,
@@ -6271,79 +6400,21 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
         # Add new dynamic hint with reduced spacing
         cap += f"{dynamic_hint_text}\n"
         
-        keyboard = InlineKeyboardMarkup(keyboard_rows)
-        # Playlist menus are task-level controls; prefer text messages over first-item media previews.
-        can_send_thumb_menu = bool(thumb_path and os.path.exists(thumb_path) and not is_playlist)
-        # cap now contains dynamic hints based on actual buttons
-        # Replace current menu in-place if possible
-        if cb is not None and getattr(cb, 'message', None):
-            # Edit caption or text in place
-            try:
-                if cb.message.photo:
-                    cb.edit_message_caption(caption=cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-                else:
-                    cb.edit_message_text(text=cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-            except Exception as e:
-                logger.warning(f"Failed to edit message for callback: {e}")
-                # Fallback: send new message if edit fails
-                try:
-                    if can_send_thumb_menu:
-                        app.send_photo(
-                            user_id,
-                            thumb_path,
-                            caption=cap,
-                            parse_mode=enums.ParseMode.HTML,
-                            reply_markup=keyboard,
-                            reply_parameters=ReplyParameters(message_id=message.id),
-                            has_spoiler=should_apply_spoiler(user_id, is_nsfw, getattr(message.chat, "type", None) == enums.ChatType.PRIVATE)
-                        )
-                    else:
-                        app.send_message(user_id, cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard, reply_parameters=ReplyParameters(message_id=message.id))
-                except Exception as fallback_error:
-                    logger.error(f"Failed to send fallback message: {fallback_error}")
-            # Remove processing message quietly
-            if proc_msg:
-                try:
-                    safe_delete_messages(chat_id=cb.message.chat.id, message_ids=[proc_msg.id])
-                except Exception:
-                    pass
-                proc_msg = None
-        else:
-            # Fallback: send new message
-            if proc_msg:
-                try:
-                    safe_delete_messages(chat_id=user_id, message_ids=[proc_msg.id])
-                except Exception:
-                    pass
-                proc_msg = None
-            # Try to send with keyboard first
-            try:
-                if can_send_thumb_menu:
-                    app.send_photo(
-                        user_id,
-                        thumb_path,
-                        caption=cap,
-                        parse_mode=enums.ParseMode.HTML,
-                        reply_markup=keyboard,
-                        reply_parameters=ReplyParameters(message_id=message.id),
-                        has_spoiler=should_apply_spoiler(user_id, is_nsfw, getattr(message.chat, "type", None) == enums.ChatType.PRIVATE)
-                    )
-                else:
-                    app.send_message(user_id, cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard, reply_parameters=ReplyParameters(message_id=message.id))
-            except Exception as keyboard_error:
-                # If keyboard fails (e.g., BUTTON_TYPE_INVALID), try without keyboard
-                logger.warning(f"Failed to send with keyboard, retrying without: {keyboard_error}")
-                if can_send_thumb_menu:
-                    app.send_photo(
-                        user_id,
-                        thumb_path,
-                        caption=cap,
-                        parse_mode=enums.ParseMode.HTML,
-                        reply_parameters=ReplyParameters(message_id=message.id),
-                        has_spoiler=should_apply_spoiler(user_id, is_nsfw, getattr(message.chat, "type", None) == enums.ChatType.PRIVATE)
-                    )
-                else:
-                    app.send_message(user_id, cap, parse_mode=enums.ParseMode.HTML, reply_parameters=ReplyParameters(message_id=message.id))
+        render_plan = _build_quality_menu_render_plan(
+            text=cap,
+            keyboard_rows=keyboard_rows,
+            thumb_path=thumb_path,
+            is_playlist=is_playlist,
+            is_nsfw=is_nsfw,
+        )
+        _emit_quality_menu_render_plan(
+            app,
+            message,
+            cb=cb,
+            proc_msg=proc_msg,
+            user_id=user_id,
+            render_plan=render_plan,
+        )
         send_to_logger(message, safe_get_messages(user_id).ALWAYS_ASK_MENU_SENT_LOG_MSG.format(url=url))
     except FloodWait as e:
         wait_time = e.value
