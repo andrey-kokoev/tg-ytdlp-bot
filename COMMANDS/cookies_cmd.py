@@ -97,6 +97,52 @@ class CookieFileContext:
     cookie_filename: str
     cookie_file_path: str
 
+
+@dataclass(frozen=True)
+class CookieStateStore:
+    youtube_cache: dict
+    checked_sources: dict
+    non_youtube_cache: dict
+    active_tasks: dict
+    youtube_retry_tracking: dict
+
+
+def _get_cookie_state_store() -> CookieStateStore:
+    return CookieStateStore(
+        youtube_cache=_youtube_cookie_cache,
+        checked_sources=_checked_cookie_sources,
+        non_youtube_cache=_non_youtube_cookie_cache,
+        active_tasks=_active_cookie_tasks,
+        youtube_retry_tracking=_youtube_cookie_retry_tracking,
+    )
+
+
+def _set_youtube_cookie_cache_entry(user_id: int, result: bool, cookie_path: str = None, task_id: str = None) -> None:
+    _get_cookie_state_store().youtube_cache[user_id] = {
+        'result': result,
+        'timestamp': time.time(),
+        'cookie_path': cookie_path,
+        'task_id': task_id,
+        'active': False
+    }
+
+
+def _set_non_youtube_cookie_cache_entry(cache_key: str, result: bool, cookie_path: str = None, task_id: str = None) -> None:
+    _get_cookie_state_store().non_youtube_cache[cache_key] = {
+        'result': result,
+        'timestamp': time.time(),
+        'cookie_path': cookie_path,
+        'task_id': task_id,
+        'active': False
+    }
+
+
+def _get_or_create_checked_source_state(user_id: int) -> dict:
+    state_store = _get_cookie_state_store()
+    if user_id not in state_store.checked_sources:
+        state_store.checked_sources[user_id] = {'checked_sources': set(), 'last_reset': time.time()}
+    return state_store.checked_sources[user_id]
+
 def generate_task_id(user_id: int, url: str, service: str = None) -> str:
     """
     Generate a unique task ID for tracking state.
@@ -125,10 +171,8 @@ def start_cookie_task(user_id: int, url: str, service: str = None) -> str:
     Returns:
         str: Task ID
     """
-    global _active_cookie_tasks
-    
     task_id = generate_task_id(user_id, url, service)
-    _active_cookie_tasks[task_id] = {
+    _get_cookie_state_store().active_tasks[task_id] = {
         'user_id': user_id,
         'start_time': time.time(),
         'url': url,
@@ -147,38 +191,26 @@ def finish_cookie_task(task_id: str, success: bool, cookie_path: str = None):
         success (bool): Validation success
         cookie_path (str, optional): Cookie file path
     """
-    global _active_cookie_tasks, _youtube_cookie_cache, _non_youtube_cookie_cache
-    
-    if task_id not in _active_cookie_tasks:
+    state_store = _get_cookie_state_store()
+
+    if task_id not in state_store.active_tasks:
         logger.warning(f"Task {task_id} not found in active tasks")
         return
     
-    task_info = _active_cookie_tasks[task_id]
+    task_info = state_store.active_tasks[task_id]
     user_id = task_info['user_id']
     url = task_info['url']
     service = task_info['service']
     
     # Update cache depending on service type
     if service == 'youtube' or (service is None and is_youtube_url(url)):
-        _youtube_cookie_cache[user_id] = {
-            'result': success,
-            'timestamp': time.time(),
-            'cookie_path': cookie_path,
-            'task_id': task_id,
-            'active': False
-        }
+        _set_youtube_cookie_cache_entry(user_id, success, cookie_path, task_id=task_id)
     else:
         cache_key = get_cookie_cache_key(user_id, url, service)
-        _non_youtube_cookie_cache[cache_key] = {
-            'result': success,
-            'timestamp': time.time(),
-            'cookie_path': cookie_path,
-            'task_id': task_id,
-            'active': False
-        }
+        _set_non_youtube_cookie_cache_entry(cache_key, success, cookie_path, task_id=task_id)
     
     # Remove task from active set
-    del _active_cookie_tasks[task_id]
+    del state_store.active_tasks[task_id]
     
     logger.info(f"Finished cookie task {task_id} for user {user_id}, success: {success}")
 
@@ -194,9 +226,7 @@ def is_cookie_task_active(user_id: int, url: str, service: str = None) -> bool:
     Returns:
         bool: True if task is active
     """
-    global _active_cookie_tasks
-    
-    for task_id, task_info in _active_cookie_tasks.items():
+    for task_id, task_info in _get_cookie_state_store().active_tasks.items():
         if (task_info['user_id'] == user_id and 
             task_info['url'] == url and 
             task_info['service'] == service):
@@ -207,77 +237,68 @@ def cleanup_expired_tasks():
     """
     Clean up expired tasks and force-deactivate stale cache entries.
     """
-    global _active_cookie_tasks, _youtube_cookie_cache, _non_youtube_cookie_cache
-    
     from CONFIG.limits import LimitsConfig
     current_time = time.time()
     max_lifetime = LimitsConfig.COOKIE_CACHE_MAX_LIFETIME
+    state_store = _get_cookie_state_store()
     
     # Clean up expired active tasks
     expired_tasks = []
-    for task_id, task_info in _active_cookie_tasks.items():
+    for task_id, task_info in state_store.active_tasks.items():
         if current_time - task_info['start_time'] > max_lifetime:
             expired_tasks.append(task_id)
     
     for task_id in expired_tasks:
         logger.warning(f"Forcefully deactivating expired cookie task {task_id}")
-        del _active_cookie_tasks[task_id]
+        del state_store.active_tasks[task_id]
     
     # Clean up expired cache entries
     expired_youtube_cache = []
-    for user_id, cache_entry in _youtube_cookie_cache.items():
+    for user_id, cache_entry in state_store.youtube_cache.items():
         if current_time - cache_entry['timestamp'] > max_lifetime:
             expired_youtube_cache.append(user_id)
     
     for user_id in expired_youtube_cache:
         logger.warning(f"Forcefully deactivating expired YouTube cookie cache for user {user_id}")
-        del _youtube_cookie_cache[user_id]
+        del state_store.youtube_cache[user_id]
     
     expired_non_youtube_cache = []
-    for cache_key, cache_entry in _non_youtube_cookie_cache.items():
+    for cache_key, cache_entry in state_store.non_youtube_cache.items():
         if current_time - cache_entry['timestamp'] > max_lifetime:
             expired_non_youtube_cache.append(cache_key)
     
     for cache_key in expired_non_youtube_cache:
         logger.warning(f"Forcefully deactivating expired non-YouTube cookie cache {cache_key}")
-        del _non_youtube_cookie_cache[cache_key]
+        del state_store.non_youtube_cache[cache_key]
     
     # Clean up expired checked-source tracking (older than 1 hour)
-    global _checked_cookie_sources
     expired_checked_users = []
-    for user_id, checked_data in _checked_cookie_sources.items():
+    for user_id, checked_data in state_store.checked_sources.items():
         if current_time - checked_data.get('last_reset', 0) > 3600:  # 1 hour
             expired_checked_users.append(user_id)
     
     for user_id in expired_checked_users:
-        del _checked_cookie_sources[user_id]
+        del state_store.checked_sources[user_id]
         logger.info(f"Cleared expired checked cookie sources for user {user_id}")
 
 def get_checked_cookie_sources(user_id: int) -> set:
     """Get the set of already-checked cookie sources for the user."""
-    global _checked_cookie_sources
-    if user_id not in _checked_cookie_sources:
-        _checked_cookie_sources[user_id] = {'checked_sources': set(), 'last_reset': time.time()}
-    return _checked_cookie_sources[user_id]['checked_sources']
+    return _get_or_create_checked_source_state(user_id)['checked_sources']
 
 def mark_cookie_source_checked(user_id: int, source_index: int):
     """Mark a cookie source as checked for the user."""
-    global _checked_cookie_sources
-    if user_id not in _checked_cookie_sources:
-        _checked_cookie_sources[user_id] = {'checked_sources': set(), 'last_reset': time.time()}
-    _checked_cookie_sources[user_id]['checked_sources'].add(source_index)
+    _get_or_create_checked_source_state(user_id)['checked_sources'].add(source_index)
 
 def reset_checked_cookie_sources(user_id: int):
     """Reset checked cookie sources for the user."""
-    global _checked_cookie_sources
-    if user_id in _checked_cookie_sources:
-        _checked_cookie_sources[user_id] = {'checked_sources': set(), 'last_reset': time.time()}
+    checked_sources = _get_cookie_state_store().checked_sources
+    if user_id in checked_sources:
+        checked_sources[user_id] = {'checked_sources': set(), 'last_reset': time.time()}
         logger.info(f"Reset checked cookie sources for user {user_id}")
 
 def reset_all_checked_cookie_sources():
     """Reset checked cookie sources for all users."""
-    global _checked_cookie_sources
-    _checked_cookie_sources.clear()
+    _get_cookie_state_store().checked_sources.clear()
     logger.info("Reset checked cookie sources for all users")
 
 def check_youtube_cookie_retry_limit(user_id: int) -> bool:
@@ -290,15 +311,14 @@ def check_youtube_cookie_retry_limit(user_id: int) -> bool:
     Returns:
         bool: True if under the limit, False if exceeded
     """
-    global _youtube_cookie_retry_tracking
-    
     from CONFIG.limits import LimitsConfig
+    retry_tracking = _get_cookie_state_store().youtube_retry_tracking
     
     current_time = time.time()
     
     # Clean old entries
-    if user_id in _youtube_cookie_retry_tracking:
-        user_data = _youtube_cookie_retry_tracking[user_id]
+    if user_id in retry_tracking:
+        user_data = retry_tracking[user_id]
         # Drop attempts outside the configured time window
         user_data['attempts'] = [
             attempt_time for attempt_time in user_data['attempts']
@@ -307,12 +327,12 @@ def check_youtube_cookie_retry_limit(user_id: int) -> bool:
         
         # If no attempts remain, remove the user entry
         if not user_data['attempts']:
-            del _youtube_cookie_retry_tracking[user_id]
+            del retry_tracking[user_id]
             return True
     
     # Check limit
-    if user_id in _youtube_cookie_retry_tracking:
-        attempts_count = len(_youtube_cookie_retry_tracking[user_id]['attempts'])
+    if user_id in retry_tracking:
+        attempts_count = len(retry_tracking[user_id]['attempts'])
         if attempts_count >= LimitsConfig.YOUTUBE_COOKIE_RETRY_LIMIT_PER_HOUR:
             logger.warning(f"YouTube cookie retry limit exceeded for user {user_id}: {attempts_count}/{LimitsConfig.YOUTUBE_COOKIE_RETRY_LIMIT_PER_HOUR}")
             return False
@@ -326,17 +346,16 @@ def record_youtube_cookie_retry_attempt(user_id: int):
     Args:
         user_id (int): User ID
     """
-    global _youtube_cookie_retry_tracking
-    
     current_time = time.time()
+    retry_tracking = _get_cookie_state_store().youtube_retry_tracking
     
-    if user_id not in _youtube_cookie_retry_tracking:
-        _youtube_cookie_retry_tracking[user_id] = {
+    if user_id not in retry_tracking:
+        retry_tracking[user_id] = {
             'attempts': [],
             'last_reset': current_time
         }
     
-    _youtube_cookie_retry_tracking[user_id]['attempts'].append(current_time)
+    retry_tracking[user_id]['attempts'].append(current_time)
     logger.info(f"Recorded YouTube cookie retry attempt for user {user_id}")
 
 def get_youtube_cookie_retry_status(user_id: int) -> dict:
@@ -349,14 +368,13 @@ def get_youtube_cookie_retry_status(user_id: int) -> dict:
     Returns:
         dict: Attempt status
     """
-    global _youtube_cookie_retry_tracking
-    
     from CONFIG.limits import LimitsConfig
+    retry_tracking = _get_cookie_state_store().youtube_retry_tracking
     
     current_time = time.time()
     
-    if user_id in _youtube_cookie_retry_tracking:
-        user_data = _youtube_cookie_retry_tracking[user_id]
+    if user_id in retry_tracking:
+        user_data = retry_tracking[user_id]
         # Drop old attempts
         user_data['attempts'] = [
             attempt_time for attempt_time in user_data['attempts']
@@ -393,14 +411,13 @@ def reset_youtube_cookie_retry_tracking(user_id: int = None):
     Args:
         user_id (int, optional): User ID. If None, resets for all users.
     """
-    global _youtube_cookie_retry_tracking
-    
+    retry_tracking = _get_cookie_state_store().youtube_retry_tracking
     if user_id is None:
-        _youtube_cookie_retry_tracking.clear()
+        retry_tracking.clear()
         logger.info("Reset YouTube cookie retry tracking for all users")
     else:
-        if user_id in _youtube_cookie_retry_tracking:
-            del _youtube_cookie_retry_tracking[user_id]
+        if user_id in retry_tracking:
+            del retry_tracking[user_id]
             logger.info(f"Reset YouTube cookie retry tracking for user {user_id}")
         else:
             logger.info(f"No YouTube cookie retry tracking found for user {user_id}")
@@ -1791,9 +1808,8 @@ def ensure_working_youtube_cookies(user_id: int) -> bool:
     Returns:
         bool: True if working cookies exist, otherwise False
     """
-    global _youtube_cookie_cache
-    
     from CONFIG.limits import LimitsConfig
+    youtube_cache = _get_cookie_state_store().youtube_cache
     
     # Check the YouTube cookie rotation retry limit
     if not check_youtube_cookie_retry_limit(user_id):
@@ -1805,13 +1821,13 @@ def ensure_working_youtube_cookies(user_id: int) -> bool:
     
     # Check cache first
     current_time = time.time()
-    if user_id in _youtube_cookie_cache:
-        cache_entry = _youtube_cookie_cache[user_id]
+    if user_id in youtube_cache:
+        cache_entry = youtube_cache[user_id]
         
         # Check whether the cache entry exceeded max lifetime
         if current_time - cache_entry['timestamp'] > LimitsConfig.COOKIE_CACHE_MAX_LIFETIME:
             logger.warning(f"Forcefully deactivating expired YouTube cookie cache for user {user_id}")
-            del _youtube_cookie_cache[user_id]
+            del youtube_cache[user_id]
         elif current_time - cache_entry['timestamp'] < LimitsConfig.COOKIE_CACHE_DURATION:
             # Check whether a task is already active for this user
             if not cache_entry.get('active', False):
@@ -1821,7 +1837,7 @@ def ensure_working_youtube_cookies(user_id: int) -> bool:
                     return cache_entry['result']
                 else:
                     # Cookie file was deleted, remove from cache
-                    del _youtube_cookie_cache[user_id]
+                    del youtube_cache[user_id]
             else:
                 logger.info(f"Cookie validation task is already active for user {user_id}")
                 return False
@@ -1831,8 +1847,8 @@ def ensure_working_youtube_cookies(user_id: int) -> bool:
     
     try:
         logger.info(LoggerMsg.COOKIES_YOUTUBE_STARTING_ENSURE_LOG_MSG.format(user_id=user_id))
-    cookie_context = _ensure_cookie_user_dir(user_id)
-    cookie_file_path = cookie_context.cookie_file_path
+        cookie_context = _ensure_cookie_user_dir(user_id)
+        cookie_file_path = cookie_context.cookie_file_path
         
         # Check existing cookies
         if os.path.exists(cookie_file_path):
@@ -1864,8 +1880,7 @@ def ensure_working_youtube_cookies(user_id: int) -> bool:
             reset_checked_cookie_sources(user_id)
             logger.info(f"Reset checked cookie sources for user {user_id} to allow retry in future")
             # Remove non-working cookies
-            if os.path.exists(cookie_file_path):
-                os.remove(cookie_file_path)
+            _remove_cookie_file_if_present(cookie_context)
             # Finish the task unsuccessfully
             finish_cookie_task(task_id, False, cookie_file_path)
             return False
@@ -2237,31 +2252,26 @@ def clear_youtube_cookie_cache(user_id: int = None):
     Args:
         user_id (int, optional): User ID to clear for. If None, clears the whole cache.
     """
-    global _youtube_cookie_cache, _active_cookie_tasks
-    
+    state_store = _get_cookie_state_store()
     if user_id is None:
-        _youtube_cookie_cache.clear()
+        state_store.youtube_cache.clear()
         # Remove only YouTube tasks
-        youtube_tasks_to_remove = [task_id for task_id, task_info in _active_cookie_tasks.items() if task_info.get('service') == 'youtube']
+        youtube_tasks_to_remove = [task_id for task_id, task_info in state_store.active_tasks.items() if task_info.get('service') == 'youtube']
         for task_id in youtube_tasks_to_remove:
-            del _active_cookie_tasks[task_id]
+            del state_store.active_tasks[task_id]
         logger.info(LoggerMsg.COOKIES_CLEARED_CACHE_LOG_MSG)
     else:
-        if user_id in _youtube_cookie_cache:
-            del _youtube_cookie_cache[user_id]
+        if user_id in state_store.youtube_cache:
+            del state_store.youtube_cache[user_id]
             logger.info(LoggerMsg.COOKIES_YOUTUBE_CACHE_CLEARED_LOG_MSG.format(user_id=user_id))
         else:
             logger.info(LoggerMsg.COOKIES_YOUTUBE_CACHE_NO_ENTRY_LOG_MSG.format(user_id=user_id))
         
         # Remove active YouTube tasks for this user
-        youtube_tasks_to_remove = [task_id for task_id, task_info in _active_cookie_tasks.items() 
+        youtube_tasks_to_remove = [task_id for task_id, task_info in state_store.active_tasks.items()
                                   if task_info['user_id'] == user_id and task_info.get('service') == 'youtube']
         for task_id in youtube_tasks_to_remove:
-            del _active_cookie_tasks[task_id]
-
-# Cache for non-YouTube cookie validation results
-# Format: {cache_key: {'result': bool, 'timestamp': float, 'cookie_path': str, 'task_id': str, 'active': bool}}
-_non_youtube_cookie_cache = {}
+            del state_store.active_tasks[task_id]
 
 def get_service_cookie_url(service_name: str) -> str | None:
     """
@@ -2321,8 +2331,8 @@ def try_download_with_cookie_fallback(user_id: int, url: str, download_func, *ar
     
     logger.info(f"Trying cookie fallback for non-YouTube URL: {url}, service: {service_name}")
     
-        cookie_context = _ensure_cookie_user_dir(user_id)
-        user_cookie_path = cookie_context.cookie_file_path
+    cookie_context = _ensure_cookie_user_dir(user_id)
+    user_cookie_path = cookie_context.cookie_file_path
     
     # Cookie attempt list
     cookie_attempts = []
@@ -2459,16 +2469,8 @@ def set_cookie_cache_result(user_id: int, url: str, result: bool, cookie_path: s
         cookie_path (str, optional): Path to the cookie file
         service (str, optional): Service name
     """
-    global _non_youtube_cookie_cache
-    
     cache_key = get_cookie_cache_key(user_id, url, service)
-    _non_youtube_cookie_cache[cache_key] = {
-        'result': result,
-        'timestamp': time.time(),
-        'cookie_path': cookie_path,
-        'task_id': None,  # Set when the task finishes
-        'active': False
-    }
+    _set_non_youtube_cookie_cache_entry(cache_key, result, cookie_path, task_id=None)
     
     logger.info(f"Cached cookie result for {cache_key}: {result}")
 
@@ -2484,21 +2486,20 @@ def get_cookie_cache_result(user_id: int, url: str, service: str = None) -> dict
     Returns:
         dict | None: Cached result, or None
     """
-    global _non_youtube_cookie_cache
-    
     from CONFIG.limits import LimitsConfig
+    non_youtube_cache = _get_cookie_state_store().non_youtube_cache
     
     # Clean expired tasks before checking
     cleanup_expired_tasks()
     
     cache_key = get_cookie_cache_key(user_id, url, service)
-    if cache_key in _non_youtube_cookie_cache:
-        cache_entry = _non_youtube_cookie_cache[cache_key]
+    if cache_key in non_youtube_cache:
+        cache_entry = non_youtube_cache[cache_key]
         
         # Check whether the cache entry exceeded max lifetime
         if time.time() - cache_entry['timestamp'] > LimitsConfig.COOKIE_CACHE_MAX_LIFETIME:
             logger.warning(f"Forcefully deactivating expired non-YouTube cookie cache {cache_key}")
-            del _non_youtube_cookie_cache[cache_key]
+            del non_youtube_cache[cache_key]
         elif time.time() - cache_entry['timestamp'] < LimitsConfig.COOKIE_CACHE_DURATION:
             # Check whether a task is already active for this user
             if not cache_entry.get('active', False):
@@ -2508,7 +2509,7 @@ def get_cookie_cache_result(user_id: int, url: str, service: str = None) -> dict
                     return cache_entry
                 else:
                     # Cookie file was removed; drop the cache entry
-                    del _non_youtube_cookie_cache[cache_key]
+                    del non_youtube_cache[cache_key]
             else:
                 logger.info(f"Cookie validation task is already active for {cache_key}")
                 return None
@@ -2522,26 +2523,25 @@ def clear_cookie_cache(user_id: int = None):
     Args:
         user_id (int, optional): User ID to clear for. If None, clears all caches.
     """
-    global _non_youtube_cookie_cache, _youtube_cookie_cache, _active_cookie_tasks
-    
+    state_store = _get_cookie_state_store()
     if user_id is None:
-        _non_youtube_cookie_cache.clear()
-        _youtube_cookie_cache.clear()
-        _active_cookie_tasks.clear()
+        state_store.non_youtube_cache.clear()
+        state_store.youtube_cache.clear()
+        state_store.active_tasks.clear()
         logger.info("Cleared all cookie caches and active tasks")
     else:
         # Clear cache for a specific user
-        keys_to_remove = [key for key in _non_youtube_cookie_cache.keys() if key.startswith(f"{user_id}_")]
+        keys_to_remove = [key for key in state_store.non_youtube_cache.keys() if key.startswith(f"{user_id}_")]
         for key in keys_to_remove:
-            del _non_youtube_cookie_cache[key]
+            del state_store.non_youtube_cache[key]
         
-        if user_id in _youtube_cookie_cache:
-            del _youtube_cookie_cache[user_id]
+        if user_id in state_store.youtube_cache:
+            del state_store.youtube_cache[user_id]
         
         # Clear active tasks for the user
-        tasks_to_remove = [task_id for task_id, task_info in _active_cookie_tasks.items() if task_info['user_id'] == user_id]
+        tasks_to_remove = [task_id for task_id, task_info in state_store.active_tasks.items() if task_info['user_id'] == user_id]
         for task_id in tasks_to_remove:
-            del _active_cookie_tasks[task_id]
+            del state_store.active_tasks[task_id]
         
         logger.info(f"Cleared cookie cache and active tasks for user {user_id}")
 
