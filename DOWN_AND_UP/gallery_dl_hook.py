@@ -11,6 +11,7 @@ import time
 import shutil
 import gallery_dl
 import json
+from dataclasses import dataclass
 
 from CONFIG.config import Config
 from CONFIG.messages import Messages, safe_get_messages
@@ -21,6 +22,132 @@ from URL_PARSERS.youtube import is_youtube_url
 import subprocess
 import sys
 import tempfile
+
+
+@dataclass(frozen=True)
+class GalleryDlExtractionPolicy:
+    cookies_path: str | None
+    proxy_url: str | None
+
+
+def _should_skip_instagram_simulation() -> bool:
+    from CONFIG.domains import DomainsConfig
+
+    return 'instagram.com' in DomainsConfig.GALLERYDL_FALLBACK_DOMAINS
+
+
+def _run_gallery_count_command(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logger.warning(f"{' '.join(cmd[:4])} timed out after {timeout}s")
+        return None
+
+
+def _deep_merge_dicts(target, source):
+    for key, value in source.items():
+        if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+            _deep_merge_dicts(target[key], value)
+        else:
+            target[key] = value
+
+
+def _apply_instagram_gallery_headers(url: str, config: dict) -> None:
+    if "instagram.com" not in url.lower():
+        return
+    user_has_custom_ua = (
+        'extractor' in config and
+        'headers' in config['extractor'] and
+        'User-Agent' in config['extractor']['headers']
+    )
+    if user_has_custom_ua:
+        logger.info("[GALLERY_DL] Using user's custom User-Agent for Instagram")
+        return
+    if 'extractor' not in config:
+        config['extractor'] = {}
+    if 'headers' not in config['extractor']:
+        config['extractor']['headers'] = {}
+    config['extractor']['headers'].update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+    })
+    logger.info("[GALLERY_DL] Added Instagram-specific headers to prevent useragent mismatch")
+
+
+def _resolve_gallery_cookie_path(url: str, user_id: int, user_cookie_path: str) -> str | None:
+    if not is_youtube_url(url):
+        from COMMANDS.cookies_cmd import get_cookie_cache_result
+
+        cache_result = get_cookie_cache_result(user_id, url)
+        if cache_result and cache_result['result']:
+            logger.info(f"Using cached cookies for gallery-dl non-YouTube URL: {url}")
+            return cache_result['cookie_path']
+        if os.path.exists(user_cookie_path):
+            logger.info(safe_get_messages(user_id).GALLERY_DL_USING_USER_COOKIES_MSG.format(cookie_path=user_cookie_path))
+            return user_cookie_path
+    else:
+        if os.path.exists(user_cookie_path):
+            logger.info(safe_get_messages(user_id).GALLERY_DL_USING_USER_COOKIES_MSG.format(cookie_path=user_cookie_path))
+            logger.info(safe_get_messages(user_id).GALLERY_DL_USING_YOUTUBE_COOKIES_MSG.format(user_id=user_id))
+            return user_cookie_path
+
+    global_cookie_path = Config.COOKIE_FILE_PATH
+    if os.path.exists(global_cookie_path):
+        try:
+            user_dir = os.path.dirname(user_cookie_path)
+            create_directory(user_dir)
+            shutil.copy2(global_cookie_path, user_cookie_path)
+            logger.info(safe_get_messages(user_id).GALLERY_DL_COPIED_GLOBAL_COOKIE_MSG.format(user_id=user_id))
+            logger.info(safe_get_messages(user_id).GALLERY_DL_USING_COPIED_GLOBAL_COOKIES_MSG.format(cookie_path=user_cookie_path))
+            return user_cookie_path
+        except Exception as e:
+            logger.error(safe_get_messages(user_id).GALLERY_DL_FAILED_COPY_GLOBAL_COOKIE_MSG.format(user_id=user_id, error=e))
+    return None
+
+
+def _resolve_gallery_proxy_url(url: str, user_id: int, use_proxy: bool, config: dict) -> str | None:
+    if use_proxy:
+        try:
+            from COMMANDS.proxy_cmd import get_proxy_config
+            proxy_config = get_proxy_config()
+        except Exception as e:
+            proxy_config = None
+            logger.warning(safe_get_messages(user_id).GALLERY_DL_PROXY_REQUESTED_FAILED_MSG.format(error=e))
+
+        if proxy_config and 'type' in proxy_config and 'ip' in proxy_config and 'port' in proxy_config:
+            ptype = proxy_config['type']
+            auth = ""
+            if proxy_config.get('user') and proxy_config.get('password'):
+                auth = f"{proxy_config['user']}:{proxy_config['password']}@"
+            if ptype in ('http', 'https', 'socks4', 'socks5', 'socks5h'):
+                proxy_url = f"{ptype}://{auth}{proxy_config['ip']}:{proxy_config['port']}"
+            else:
+                proxy_url = f"http://{auth}{proxy_config['ip']}:{proxy_config['port']}"
+            logger.info(safe_get_messages(user_id).GALLERY_DL_FORCE_USING_PROXY_MSG.format(proxy_url=proxy_url))
+            return proxy_url
+        logger.warning(safe_get_messages(user_id).GALLERY_DL_PROXY_CONFIG_INCOMPLETE_MSG)
+        return None
+
+    try:
+        from HELPERS.proxy_helper import add_proxy_to_gallery_dl_config
+        new_config = add_proxy_to_gallery_dl_config(config, url, user_id)
+        if new_config is not None:
+            config.clear()
+            config.update(new_config)
+            return config.get('extractor', {}).get('proxy')
+    except Exception as e:
+        logger.warning(safe_get_messages(user_id).GALLERY_DL_PROXY_HELPER_FAILED_MSG.format(error=e))
+    return config.get('extractor', {}).get('proxy')
 
 
 # ---------- Low-level helpers ----------
@@ -153,138 +280,26 @@ def _prepare_user_cookies_and_proxy(url: str, user_id, use_proxy: bool, config: 
     # Apply user's compatible yt-dlp arguments to gallery-dl
     user_gallery_dl_args = get_user_gallery_dl_args(user_id)
     if user_gallery_dl_args:
-        # Deep merge user args into config
-        def deep_merge(target, source, user_id=None):
-            messages = safe_get_messages(user_id)
-            """Recursively merge source dict into target dict"""
-            for key, value in source.items():
-                if key in target and isinstance(target[key], dict) and isinstance(value, dict):
-                    deep_merge(target[key], value, user_id)
-                else:
-                    target[key] = value
-        
-        deep_merge(config, user_gallery_dl_args, user_id)
+        _deep_merge_dicts(config, user_gallery_dl_args)
 
     user_dir = os.path.join("users", str(user_id))
     user_cookie_path = os.path.join(user_dir, "cookie.txt")
 
-    # Add Instagram-specific headers to prevent "useragent mismatch" error
-    # Only if user hasn't set custom User-Agent
-    if "instagram.com" in url.lower():
-        # Check if user has set custom User-Agent
-        user_has_custom_ua = (
-            'extractor' in config and 
-            'headers' in config['extractor'] and 
-            'User-Agent' in config['extractor']['headers']
-        )
-        
-        if not user_has_custom_ua:
-            # Ensure extractor.headers exists
-            if 'extractor' not in config:
-                config['extractor'] = {}
-            if 'headers' not in config['extractor']:
-                config['extractor']['headers'] = {}
-            
-            # Add Instagram-specific headers
-            config['extractor']['headers'].update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "DNT": "1",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-User": "?1",
-                "Cache-Control": "max-age=0"
-            })
-            logger.info("[GALLERY_DL] Added Instagram-specific headers to prevent useragent mismatch")
-        else:
-            logger.info("[GALLERY_DL] Using user's custom User-Agent for Instagram")
+    _apply_instagram_gallery_headers(url, config)
 
-    # cookies - use new caching system for non-YouTube sites
-    if not is_youtube_url(url):
-        # For non-YouTube URLs, use new cookie fallback system
-        from COMMANDS.cookies_cmd import get_cookie_cache_result, try_non_youtube_cookie_fallback
-        cache_result = get_cookie_cache_result(user_id, url)
-        
-        if cache_result and cache_result['result']:
-            # Use cached successful cookies
-            config['extractor']['cookies'] = cache_result['cookie_path']
-            logger.info(f"Using cached cookies for gallery-dl non-YouTube URL: {url}")
-        elif os.path.exists(user_cookie_path):
-            config['extractor']['cookies'] = user_cookie_path
-            logger.info(safe_get_messages(user_id).GALLERY_DL_USING_USER_COOKIES_MSG.format(cookie_path=user_cookie_path))
-        else:
-            global_cookie_path = Config.COOKIE_FILE_PATH
-            if os.path.exists(global_cookie_path):
-                try:
-                    create_directory(user_dir)
-                    shutil.copy2(global_cookie_path, user_cookie_path)
-                    config['extractor']['cookies'] = user_cookie_path
-                    logger.info(safe_get_messages(user_id).GALLERY_DL_COPIED_GLOBAL_COOKIE_MSG.format(user_id=user_id))
-                    logger.info(safe_get_messages(user_id).GALLERY_DL_USING_COPIED_GLOBAL_COOKIES_MSG.format(cookie_path=user_cookie_path))
-                except Exception as e:
-                    logger.error(safe_get_messages(user_id).GALLERY_DL_FAILED_COPY_GLOBAL_COOKIE_MSG.format(user_id=user_id, error=e))
-    else:
-        # For YouTube URLs, use existing logic
-        if os.path.exists(user_cookie_path):
-            config['extractor']['cookies'] = user_cookie_path
-            logger.info(safe_get_messages(user_id).GALLERY_DL_USING_USER_COOKIES_MSG.format(cookie_path=user_cookie_path))
-            logger.info(safe_get_messages(user_id).GALLERY_DL_USING_YOUTUBE_COOKIES_MSG.format(user_id=user_id))
-        else:
-            global_cookie_path = Config.COOKIE_FILE_PATH
-            if os.path.exists(global_cookie_path):
-                try:
-                    create_directory(user_dir)
-                    shutil.copy2(global_cookie_path, user_cookie_path)
-                    config['extractor']['cookies'] = user_cookie_path
-                    logger.info(safe_get_messages(user_id).GALLERY_DL_COPIED_GLOBAL_COOKIE_MSG.format(user_id=user_id))
-                    logger.info(safe_get_messages(user_id).GALLERY_DL_USING_COPIED_GLOBAL_COOKIES_MSG.format(cookie_path=user_cookie_path))
-                except Exception as e:
-                    logger.error(safe_get_messages(user_id).GALLERY_DL_FAILED_COPY_GLOBAL_COOKIE_MSG.format(user_id=user_id, error=e))
+    cookie_path = _resolve_gallery_cookie_path(url, user_id, user_cookie_path)
+    if 'extractor' not in config:
+        config['extractor'] = {}
+    config['extractor']['cookies'] = cookie_path
 
     # no-cookies domains
     if is_no_cookie_domain(url):
         config['extractor']['cookies'] = None
         logger.info(safe_get_messages(user_id).GALLERY_DL_USING_NO_COOKIES_MSG.format(url=url))
 
-    # proxy
-    if use_proxy:
-        try:
-            from COMMANDS.proxy_cmd import get_proxy_config
-            proxy_config = get_proxy_config()
-        except Exception as e:
-            proxy_config = None
-            logger.warning(safe_get_messages(user_id).GALLERY_DL_PROXY_REQUESTED_FAILED_MSG.format(error=e))
-
-        if proxy_config and 'type' in proxy_config and 'ip' in proxy_config and 'port' in proxy_config:
-            ptype = proxy_config['type']
-            auth = ""
-            if proxy_config.get('user') and proxy_config.get('password'):
-                auth = f"{proxy_config['user']}:{proxy_config['password']}@"
-
-            if ptype in ('http', 'https', 'socks4', 'socks5', 'socks5h'):
-                proxy_url = f"{ptype}://{auth}{proxy_config['ip']}:{proxy_config['port']}"
-            else:
-                # default to http
-                proxy_url = f"http://{auth}{proxy_config['ip']}:{proxy_config['port']}"
-
-            config['extractor']['proxy'] = proxy_url
-            logger.info(safe_get_messages(user_id).GALLERY_DL_FORCE_USING_PROXY_MSG.format(proxy_url=proxy_url))
-        else:
-            logger.warning(safe_get_messages(user_id).GALLERY_DL_PROXY_CONFIG_INCOMPLETE_MSG)
-    else:
-        # Domain-based proxy logic from your helper
-        try:
-            from HELPERS.proxy_helper import add_proxy_to_gallery_dl_config
-            new_config = add_proxy_to_gallery_dl_config(config, url, user_id)
-            if new_config is not None:
-                config = new_config
-        except Exception as e:
-            logger.warning(safe_get_messages(user_id).GALLERY_DL_PROXY_HELPER_FAILED_MSG.format(error=e))
+    proxy_url = _resolve_gallery_proxy_url(url, user_id, use_proxy, config)
+    if proxy_url:
+        config['extractor']['proxy'] = proxy_url
 
     return config
 
@@ -620,9 +635,7 @@ def get_total_media_count(url: str, user_id=None, use_proxy: bool = False) -> in
             
             # For Instagram, use special method with Instagram-specific config
             if 'instagram.com' in url.lower():
-                # Check if Instagram should skip simulation (from GALLERYDL_FALLBACK_DOMAINS)
-                from CONFIG.domains import DomainsConfig
-                if 'instagram.com' in DomainsConfig.GALLERYDL_FALLBACK_DOMAINS:
+                if _should_skip_instagram_simulation():
                     logger.info("Instagram domain in GALLERYDL_FALLBACK_DOMAINS, skipping simulation")
                     return None  # Skip simulation for fallback domains
                 else:
@@ -634,9 +647,8 @@ def get_total_media_count(url: str, user_id=None, use_proxy: bool = False) -> in
             cmd = [sys.executable, "-m", "gallery_dl", "--config", cfg_path, "--simulate", url]
             cmd = _add_cookies_to_cmd(cmd, url, user_id)
             logger.info(f"Counting total media via: {' '.join(cmd)}")
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-            except subprocess.TimeoutExpired:
+            result = _run_gallery_count_command(cmd, timeout=15)
+            if result is None:
                 logger.warning("--simulate timed out after 15s, falling back to --get-urls")
                 return _get_total_media_count_fallback(url, user_id, use_proxy, cfg_path)
 
@@ -668,9 +680,7 @@ def _get_total_media_count_fallback(url: str, user_id, use_proxy: bool, cfg_path
     try:
         # Special handling for Instagram - use different approach
         if 'instagram.com' in url.lower():
-            # Check if Instagram should skip simulation (from GALLERYDL_FALLBACK_DOMAINS)
-            from CONFIG.domains import DomainsConfig
-            if 'instagram.com' in DomainsConfig.GALLERYDL_FALLBACK_DOMAINS:
+            if _should_skip_instagram_simulation():
                 logger.info("Instagram domain in GALLERYDL_FALLBACK_DOMAINS, skipping simulation in fallback")
                 return None  # Skip simulation for fallback domains
             else:
@@ -681,9 +691,8 @@ def _get_total_media_count_fallback(url: str, user_id, use_proxy: bool, cfg_path
         logger.info(f"Fallback counting via --get-urls: {' '.join(cmd)}")
         # VK albums can be large; increase timeout for VK
         timeout_sec = 30 if 'vk.com' in url.lower() else 15
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
+        result = _run_gallery_count_command(cmd, timeout=timeout_sec)
+        if result is None:
             logger.warning(f"--get-urls timed out after {timeout_sec}s")
             return None
         if result.returncode == 0:
