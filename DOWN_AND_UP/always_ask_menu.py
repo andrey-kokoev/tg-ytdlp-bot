@@ -339,6 +339,23 @@ class AlwaysAskSourceContext:
     url_text: str
 
 
+@dataclass(frozen=True)
+class AlwaysAskFilterTransition:
+    mode: str
+    answer_text: str | None = None
+    show_alert: bool = False
+
+
+@dataclass(frozen=True)
+class AlwaysAskQualitySelectionPlan:
+    mode: str
+    answer_text: str | None = None
+    quality_key: str | None = None
+    format_override: str | None = None
+    branch_family: str = "video"
+    download_subtitles_only: bool = False
+
+
 def _emit_gallery_fallback_transition_start(callback_query, plan: GalleryFallbackTransitionPlan) -> None:
     safe_callback_answer(callback_query, "🔄 Switching to gallery-dl...")
     try:
@@ -439,6 +456,94 @@ def _build_always_ask_source_context(execution_context) -> AlwaysAskSourceContex
         original_message=original_message,
         url=url,
         url_text=url_text,
+    )
+
+
+def _determine_ask_filter_transition(
+    user_id: int,
+    *,
+    kind: str,
+    value: str,
+    source_context: AlwaysAskSourceContext | None,
+) -> AlwaysAskFilterTransition:
+    messages = safe_get_messages(user_id)
+
+    if kind == "subs" and value == "open":
+        if source_context is None:
+            return AlwaysAskFilterTransition("error", messages.ERROR_ORIGINAL_NOT_FOUND_MSG, True)
+        return AlwaysAskFilterTransition("subs_open")
+
+    if kind == "subs_page":
+        if source_context is None:
+            return AlwaysAskFilterTransition("error", messages.ERROR_ORIGINAL_NOT_FOUND_MSG, True)
+        return AlwaysAskFilterTransition("subs_page", messages.PAGE_NUMBER_MSG.format(page=int(value) + 1))
+
+    if kind == "subs" and value == "back":
+        return AlwaysAskFilterTransition("reopen_quality_menu")
+
+    if kind == "subs" and value == "close":
+        return AlwaysAskFilterTransition("close_subs_menu", messages.SUBTITLE_MENU_CLOSED_MSG)
+
+    if kind == "subs_lang":
+        return AlwaysAskFilterTransition("set_subs_lang", messages.SUBTITLE_LANGUAGE_SET_MSG.format(value=value))
+
+    if kind == "dubs" and value == "open":
+        if source_context is None:
+            return AlwaysAskFilterTransition("error", messages.ERROR_ORIGINAL_NOT_FOUND_MSG, True)
+        return AlwaysAskFilterTransition("dubs_open")
+
+    if kind == "audio_lang":
+        return AlwaysAskFilterTransition("set_audio_lang", messages.AUDIO_SET_MSG.format(value=value))
+
+    if kind == "dubs" and value in ("back", "close"):
+        return AlwaysAskFilterTransition("reopen_quality_menu", messages.FILTERS_UPDATED_MSG)
+
+    if kind in ("codec", "ext", "toggle"):
+        return AlwaysAskFilterTransition("update_filters", messages.FILTERS_UPDATED_MSG)
+
+    return AlwaysAskFilterTransition("noop", messages.FILTERS_UPDATED_MSG)
+
+
+def _build_quality_range_context(original_message):
+    full_string = original_message.text or original_message.caption or ""
+    _, video_start_with, video_end_with, playlist_name, _, _, _ = extract_url_range_tags(full_string)
+    if video_start_with < 0 and video_end_with < 0:
+        video_count = abs(video_end_with) - abs(video_start_with) + 1
+    elif video_start_with > video_end_with:
+        video_count = abs(video_start_with - video_end_with) + 1
+    else:
+        video_count = video_end_with - video_start_with + 1
+    return full_string, video_start_with, video_end_with, playlist_name, video_count
+
+
+def _determine_ask_quality_selection_plan(user_id: int, *, data: str) -> AlwaysAskQualitySelectionPlan:
+    messages = safe_get_messages(user_id)
+    if data == "mp3":
+        return AlwaysAskQualitySelectionPlan(
+            mode="download",
+            answer_text="🎧 Downloading audio...",
+            quality_key="mp3",
+            format_override="ba",
+            branch_family="audio",
+        )
+    if data == "subs_only":
+        return AlwaysAskQualitySelectionPlan(
+            mode="subs_only",
+            answer_text="💬 Downloading subtitles only...",
+            download_subtitles_only=True,
+        )
+    if data == "best":
+        return AlwaysAskQualitySelectionPlan(
+            mode="best_video",
+            answer_text=messages.ALWAYS_ASK_DOWNLOADING_BEST_QUALITY_MSG,
+            quality_key="best",
+            branch_family="video",
+        )
+    return AlwaysAskQualitySelectionPlan(
+        mode="quality_video",
+        answer_text=f"{messages.ALWAYS_ASK_DOWNLOADING_QUALITY_MSG} {data}...",
+        quality_key=data,
+        branch_family="video",
     )
 
 # Proxy functionality is now handled by COMMANDS.proxy_cmd
@@ -986,11 +1091,17 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
     value = filter_request.filter_value
     logger.info(LoggerMsg.ALWAYS_ASK_PARSED_LOG_MSG.format(kind=kind, value=value))
     source_context = _build_always_ask_source_context(execution_context)
+    transition = _determine_ask_filter_transition(
+        user_id,
+        kind=kind,
+        value=value,
+        source_context=source_context,
+    )
 
     # --- SUBS handlers must run BEFORE generic filter rebuild ---
     if kind == "subs" and value == "open":
-        if source_context is None:
-            safe_callback_answer(callback_query, safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if transition.mode == "error":
+            safe_callback_answer(callback_query, transition.answer_text, show_alert=transition.show_alert)
             return
         try:
             from COMMANDS.subtitles_cmd import get_or_compute_subs_langs
@@ -1012,8 +1123,8 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
         return
     if kind == "subs_page":
         page = int(value)
-        if source_context is None:
-            safe_callback_answer(callback_query, safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if transition.mode == "error":
+            safe_callback_answer(callback_query, transition.answer_text, show_alert=transition.show_alert)
             return
         n_cached, a_cached = load_subs_langs_cache(user_id, source_context.url)
         if n_cached or a_cached:
@@ -1027,7 +1138,7 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
             callback_query.edit_message_reply_markup(reply_markup=kb)
         except Exception:
             pass
-        safe_callback_answer(callback_query, safe_get_messages(user_id).PAGE_NUMBER_MSG.format(page=page + 1))
+        safe_callback_answer(callback_query, transition.answer_text)
         return
     if kind == "subs" and value in ("back", "close"):
         if value == "back":
@@ -1045,7 +1156,7 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
             safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
         except Exception:
             app.edit_message_reply_markup(chat_id=callback_query.message.chat.id, message_id=callback_query.message.id, reply_markup=None)
-        safe_callback_answer(callback_query, safe_get_messages(user_id).SUBTITLE_MENU_CLOSED_MSG)
+        safe_callback_answer(callback_query, transition.answer_text)
         return
     if kind == "subs_lang":
         try:
@@ -1055,11 +1166,11 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
             pass
         if source_context is not None:
             ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
-        safe_callback_answer(callback_query, safe_get_messages(user_id).SUBTITLE_LANGUAGE_SET_MSG.format(value=value))
+        safe_callback_answer(callback_query, transition.answer_text)
         return
     if kind == "dubs" and value == "open":
-        if source_context is None:
-            safe_callback_answer(callback_query, safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if transition.mode == "error":
+            safe_callback_answer(callback_query, transition.answer_text, show_alert=transition.show_alert)
             return
         fstate = get_filters(user_id)
         langs = fstate.get("available_dubs", [])
@@ -1087,12 +1198,12 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
         set_filter(user_id, kind, value)
         if source_context is not None:
             ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
-        safe_callback_answer(callback_query, safe_get_messages(user_id).AUDIO_SET_MSG.format(value=value))
+        safe_callback_answer(callback_query, transition.answer_text)
         return
     if kind == "dubs" and value in ("back", "close"):
         if source_context is not None:
             ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
-        safe_callback_answer(callback_query, safe_get_messages(user_id).FILTERS_UPDATED_MSG)
+        safe_callback_answer(callback_query, transition.answer_text)
         return
     if kind in ("codec", "ext"):
         set_filter(user_id, kind, value)
@@ -1108,9 +1219,9 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
             set_filter(user_id, "ext", "mp4")
     if source_context is not None:
         ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
-        safe_callback_answer(callback_query, safe_get_messages(user_id).FILTERS_UPDATED_MSG)
+        safe_callback_answer(callback_query, transition.answer_text)
         return
-    safe_callback_answer(callback_query, safe_get_messages(user_id).FILTERS_UPDATED_MSG)
+    safe_callback_answer(callback_query, transition.answer_text)
 
 def get_available_formats_from_cache(user_id, url, download_dir=None):
     """Get available codecs and formats from ask_formats.json cache"""
@@ -6189,6 +6300,7 @@ def askq_callback_logic(
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     tags = tags_text.split() if tags_text else []
+    selection_plan = _determine_ask_quality_selection_plan(user_id, data=data)
     
     # Check if LINK mode is enabled
     if get_link_mode(user_id):
@@ -6248,21 +6360,14 @@ def askq_callback_logic(
         set_session_mkv_override(user_id, sel_ext == "mkv")
     except Exception:
         pass
-    if data == "mp3":
+    if selection_plan.answer_text:
         try:
-            callback_query.answer("🎧 Downloading audio...")
+            callback_query.answer(selection_plan.answer_text)
         except Exception:
             pass
+    if selection_plan.mode == "download" and selection_plan.branch_family == "audio":
         # Extract playlist parameters from the original message
-        full_string = original_message.text or original_message.caption or ""
-        _, video_start_with, video_end_with, playlist_name, _, _, tag_error = extract_url_range_tags(full_string)
-        # Correct video_count calculation for negative indices
-        if video_start_with < 0 and video_end_with < 0:
-            video_count = abs(video_end_with) - abs(video_start_with) + 1
-        elif video_start_with > video_end_with:
-            video_count = abs(video_start_with - video_end_with) + 1
-        else:
-            video_count = video_end_with - video_start_with + 1
+        _, video_start_with, video_end_with, playlist_name, video_count = _build_quality_range_context(original_message)
         branch_result = _select_callback_download_branch(
             user_id,
             callback_data=data,
@@ -6292,35 +6397,19 @@ def askq_callback_logic(
         )
         return
     
-    if data == "subs_only":
-        try:
-            callback_query.answer("💬 Downloading subtitles only...")
-        except Exception:
-            pass
+    if selection_plan.download_subtitles_only:
         # Extract playlist parameters from the original message
-        full_string = original_message.text or original_message.caption or ""
-        _, video_start_with, video_end_with, playlist_name, _, _, tag_error = extract_url_range_tags(full_string)
-        # Correct video_count calculation for negative indices
-        if video_start_with < 0 and video_end_with < 0:
-            video_count = abs(video_end_with) - abs(video_start_with) + 1
-        elif video_start_with > video_end_with:
-            video_count = abs(video_start_with - video_end_with) + 1
-        else:
-            video_count = video_end_with - video_start_with + 1
+        _, video_start_with, video_end_with, playlist_name, video_count = _build_quality_range_context(original_message)
         download_subtitles_only(app, original_message, url, tags, available_langs, playlist_name=playlist_name, video_count=video_count, video_start_with=video_start_with)
         return
     
     # Logic for forming the format with the real height
-    if data == "best":
-        try:
-            callback_query.answer(safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_BEST_QUALITY_MSG)
-        except Exception:
-            pass
+    if selection_plan.mode == "best_video":
         # Use format with AVC codec and MP4 container priority for {safe_get_messages(user_id).ALWAYS_ASK_BEST_BUTTON_MSG} quality
         # with fallback to bv+ba/best if no AVC+MP4 available
         audio_filter = f"[language^={sel_audio_lang}]" if sel_audio_lang else ""
         fmt = f"bv*[vcodec*={sel_codec}][ext={sel_ext}]+ba{audio_filter}/bv*[vcodec*={sel_codec}]+ba{audio_filter}/bv*[ext={sel_ext}]+ba{audio_filter}/bv+ba/best"
-        quality_key = "best"
+        quality_key = selection_plan.quality_key or "best"
     else:
         try:
             # Get information about the video to determine the sizes - try cached info first
@@ -6422,11 +6511,7 @@ def askq_callback_logic(
                     audio_filter = f"[language^={sel_audio_lang}]" if sel_audio_lang else ""
                     fmt = f"bv*[vcodec*={sel_codec}][height<={real_height}][height>{prev}]+ba{audio_filter}/bv*[vcodec*={sel_codec}][height<={real_height}]+ba{audio_filter}/bv*[vcodec*={sel_codec}]+ba/bv+ba/best"
             
-            quality_key = data
-            try:
-                callback_query.answer(f"{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_QUALITY_MSG} {data}...")
-            except Exception:
-                pass
+            quality_key = selection_plan.quality_key or data
         except ValueError:
             callback_query.answer("Unknown quality.")
             return
