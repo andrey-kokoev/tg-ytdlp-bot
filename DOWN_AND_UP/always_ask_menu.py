@@ -215,7 +215,7 @@ def _make_callback_runtime_task(
 from HELPERS.app_instance import get_app
 from HELPERS.decorators import get_main_reply_keyboard
 from HELPERS.logger import send_to_logger, logger, send_error_to_user, log_error_to_channel
-from HELPERS.safe_messeger import safe_send_message, safe_delete_messages
+from HELPERS.safe_messeger import safe_send_message, safe_delete_messages, safe_edit_message_text
 from CONFIG.logger_msg import LoggerMsg
 from HELPERS.filesystem_hlp import create_directory
 from HELPERS.qualifier import get_quality_by_min_side, get_real_height_for_quality
@@ -354,6 +354,27 @@ class AlwaysAskQualitySelectionPlan:
     format_override: str | None = None
     branch_family: str = "video"
     download_subtitles_only: bool = False
+
+
+@dataclass(frozen=True)
+class AlwaysAskGalleryFallbackPrompt:
+    message_text: str
+    callback_data: str
+
+
+@dataclass(frozen=True)
+class AlwaysAskMenuSourceDecision:
+    mode: str
+    info: dict | None = None
+    error_text: str | None = None
+    gallery_fallback_prompt: AlwaysAskGalleryFallbackPrompt | None = None
+
+
+@dataclass(frozen=True)
+class AlwaysAskMenuFailureDecision:
+    mode: str
+    fallback_text: str | None = None
+    runtime_task: RuntimeTask | None = None
 
 
 def _emit_gallery_fallback_transition_start(callback_query, plan: GalleryFallbackTransitionPlan) -> None:
@@ -4237,6 +4258,309 @@ def create_cached_qualities_menu(app, message, url, tags, proc_msg, user_id, ori
         logger.error(f"Error creating cached qualities menu: {e}")
         return False
 
+
+def _build_always_ask_gallery_fallback_prompt(
+    message,
+    *,
+    url: str,
+    user_id: int,
+    original_error: str,
+    original_text: str,
+) -> AlwaysAskGalleryFallbackPrompt:
+    _, video_start_with, video_end_with, _, _, _, _ = extract_url_range_tags(original_text or "")
+
+    from DOWN_AND_UP.gallery_dl_hook import get_total_media_count
+
+    detected_total = get_total_media_count(url, user_id, use_proxy=False)
+    if detected_total and detected_total > 0:
+        logger.info(
+            "Fallback detected %s media items for Always Ask gallery recommendation",
+            detected_total,
+        )
+
+    if video_start_with and video_end_with and (video_start_with != 1 or video_end_with != 1):
+        range_info = f" (range {video_start_with}-{video_end_with})"
+        range_examples = (
+            f"• For your range: <code>/img {video_start_with}-{video_end_with}</code>\n"
+        )
+    else:
+        range_info = ""
+        range_examples = ""
+
+    fallback_message = (
+        f"{safe_get_messages(user_id).ALWAYS_ASK_YTDLP_CANNOT_PROCESS_MSG}{range_info}</b>\n\n"
+        f"<b>Error:</b> <code>{original_error[:200]}{'...' if len(original_error) > 200 else ''}</code>\n\n"
+        f"{safe_get_messages(user_id).ALWAYS_ASK_SYSTEM_RECOMMENDS_GALLERY_DL_MSG}\n\n"
+        f"{safe_get_messages(user_id).ALWAYS_ASK_OPTIONS_MSG}\n"
+        f"{range_examples}"
+        f"{safe_get_messages(user_id).ALWAYS_ASK_FOR_IMAGE_GALLERIES_MSG}\n"
+        f"{safe_get_messages(user_id).ALWAYS_ASK_FOR_SINGLE_IMAGES_MSG}\n\n"
+        f"{safe_get_messages(user_id).ALWAYS_ASK_GALLERY_DL_WORKS_BETTER_MSG}"
+    )
+
+    chat_id = message.chat.id
+    original_start = video_start_with
+    original_end = video_end_with
+    if (video_start_with == 1 and video_end_with == 1) and hasattr(message, "text"):
+        range_match = re.search(r"(https?://[^\s\*#]+)\*(\d+)\*(\d+)", message.text)
+        if range_match:
+            original_start = int(range_match.group(2))
+            original_end = int(range_match.group(3))
+            logger.info(
+                "[FALLBACK DEBUG] Extracted range from original message: %s-%s",
+                original_start,
+                original_end,
+            )
+
+    if original_start and original_end and (original_start != 1 or original_end != 1):
+        url_data = f"{url}|{original_start}|{original_end}|{chat_id}"
+        logger.info(
+            "[FALLBACK DEBUG] Using extracted range for gallery prompt: %s-%s",
+            original_start,
+            original_end,
+        )
+    elif detected_total and detected_total > 0:
+        url_data = f"{url}|1|{detected_total}|{chat_id}"
+        logger.info("[FALLBACK DEBUG] Using detected_total for gallery prompt: 1-%s", detected_total)
+    else:
+        url_data = f"{url}|1|1|{chat_id}"
+        logger.info("[FALLBACK DEBUG] Using default range for gallery prompt: 1-1")
+
+    return AlwaysAskGalleryFallbackPrompt(
+        message_text=fallback_message,
+        callback_data=create_safe_callback_data("fallback_gallery_dl", url_data),
+    )
+
+
+def _determine_ask_quality_menu_source_decision(
+    message,
+    *,
+    url: str,
+    user_id: int,
+    original_text: str,
+    playlist_start_index: int,
+    is_playlist: bool,
+    playlist_range,
+) -> AlwaysAskMenuSourceDecision:
+    info = load_ask_info(user_id, url)
+    if info:
+        logger.info("✅ [DEBUG] Using cached ask info for quality menu")
+        return AlwaysAskMenuSourceDecision(mode="video_info", info=info)
+
+    logger.info("🔍 [DEBUG] Loading video info via get_video_formats")
+    logger.info(f"   url: {url}")
+    logger.info(f"   user_id: {user_id}")
+    logger.info(f"   playlist_start_index: {playlist_start_index}")
+    logger.info("   cookies_already_checked: True")
+
+    playlist_end_index = playlist_range[1] if is_playlist and playlist_range else None
+    from DOWN_AND_UP.yt_dlp_hook import get_video_formats
+
+    try:
+        info = get_video_formats(
+            url,
+            user_id,
+            playlist_start_index,
+            cookies_already_checked=True,
+            playlist_end_index=playlist_end_index,
+        )
+    except Exception as error:
+        logger.error(f"❌ [DEBUG] Error in get_video_formats: {error}")
+        logger.error(f"   Error type: {type(error)}")
+        logger.error(f"   Error string: {str(error)}")
+        raise
+    logger.info("✅ [DEBUG] get_video_formats completed successfully")
+    logger.info(f"   info type: {type(info)}")
+    if isinstance(info, dict):
+        logger.info(f"   info keys: {list(info.keys())}")
+        if "duration" in info:
+            logger.info(f"   duration: {info['duration']} (type: {type(info['duration'])})")
+        if "formats" in info:
+            logger.info(f"   formats count: {len(info.get('formats', []))}")
+
+    if isinstance(info, dict) and info.get("error") == "LIVE_STREAM_DETECTED":
+        from CONFIG.limits import LimitsConfig
+
+        if LimitsConfig.ENABLE_LIVE_STREAM_BLOCKING:
+            logger.warning("Live stream detected in ask_quality_menu for user %s: %s", user_id, url)
+            live_stream_message = (
+                "🚫 <b>Live Stream Detected</b>\n\n"
+                "Downloading of ongoing or infinite live streams is not allowed.\n\n"
+                "<blockquote>Please wait for the stream to end and try downloading again when:\n"
+                "• The stream duration is known\n"
+                "• The stream has finished\n"
+                "• You can see the final video length</blockquote>\n\n"
+                "Once the stream is completed, you'll be able to download it as a regular video."
+            )
+            return AlwaysAskMenuSourceDecision(mode="terminal_error", error_text=live_stream_message)
+
+    if isinstance(info, dict) and info.get("error") == "TIKTOK_PRIVATE_ACCOUNT":
+        logger.info("TikTok private account detected in ask_quality_menu for user %s: %s", user_id, url)
+        username_match = re.search(r"tiktok\.com/@([^/?]+)", url)
+        username = username_match.group(1) if username_match else "unknown"
+        return AlwaysAskMenuSourceDecision(
+            mode="terminal_error",
+            error_text=safe_get_messages(user_id).TIKTOK_PRIVATE_ACCOUNT_MSG.format(username=username),
+        )
+
+    if isinstance(info, dict) and info.get("error") == "FALLBACK_TO_GALLERY_DL":
+        logger.info("Fallback to gallery-dl recommended in ask_quality_menu for user %s: %s", user_id, url)
+        prompt = _build_always_ask_gallery_fallback_prompt(
+            message,
+            url=url,
+            user_id=user_id,
+            original_error=info.get("original_error", "Unknown error"),
+            original_text=original_text,
+        )
+        return AlwaysAskMenuSourceDecision(mode="gallery_fallback_prompt", gallery_fallback_prompt=prompt)
+
+    try:
+        save_ask_info(user_id, url, info)
+    except Exception:
+        pass
+
+    return AlwaysAskMenuSourceDecision(mode="video_info", info=info)
+
+
+def _determine_ask_quality_menu_failure_decision(
+    message,
+    *,
+    url: str,
+    tags,
+    proc_msg,
+    user_id: int,
+    error: Exception,
+) -> AlwaysAskMenuFailureDecision:
+    messages = safe_get_messages(user_id)
+    error_text = str(error)
+    gallery_like_errors = (
+        messages.ALWAYS_ASK_NO_VIDEOS_FOUND_IN_PLAYLIST_MSG,
+        messages.ALWAYS_ASK_UNSUPPORTED_URL_MSG,
+        messages.ALWAYS_ASK_NO_VIDEO_COULD_BE_FOUND_MSG,
+        messages.ALWAYS_ASK_NO_VIDEO_FOUND_MSG,
+        messages.ALWAYS_ASK_NO_MEDIA_FOUND_MSG,
+        messages.ALWAYS_ASK_THIS_TWEET_DOES_NOT_CONTAIN_MSG,
+    )
+    if not any(token in error_text for token in gallery_like_errors):
+        return AlwaysAskMenuFailureDecision(mode="cached_menu")
+
+    nsfw_enabled = bool(getattr(Config, "NSFW_CHECK_ENABLED", True))
+    is_nsfw = is_porn(url, "", "", None) if nsfw_enabled else False
+    user_forced_nsfw = any(t.lower() in ("#nsfw", "#porn") for t in (tags or [])) if nsfw_enabled else False
+    if user_forced_nsfw:
+        is_nsfw = True
+
+    original_text = message.text or message.caption or ""
+    logger.info("[ASKQ FALLBACK DEBUG] original_text: %s", original_text)
+    range_url_match = re.search(r"(https?://[^\s\*#]+)\*(\d+)\*(\d+)", original_text)
+    if range_url_match:
+        parsed_url = range_url_match.group(1)
+        start_range = int(range_url_match.group(2))
+        end_range = int(range_url_match.group(3))
+        logger.info(
+            "[ASKQ FALLBACK DEBUG] FOUND RANGE: %s with range %s-%s",
+            parsed_url,
+            start_range,
+            end_range,
+        )
+    else:
+        url_match = re.search(r"https?://[^\s\*#]+", original_text)
+        parsed_url = url_match.group(0) if url_match else original_text
+        start_range = 1
+        end_range = 1
+        logger.info("[ASKQ FALLBACK DEBUG] NO RANGE FOUND, using url: %s", parsed_url)
+
+    if start_range != 1 or end_range != 1:
+        fallback_text = f"/img {start_range}-{end_range} {parsed_url}"
+        logger.info(
+            "%s: *%s*%s -> %s-%s, fallback_text: %s",
+            LoggerMsg.ALWAYS_ASK_FALLBACK_CONVERTING_RANGE_LOG_MSG,
+            start_range,
+            end_range,
+            start_range,
+            end_range,
+            fallback_text,
+        )
+    else:
+        fallback_text = f"/img {parsed_url}"
+        logger.info("%s: %s", LoggerMsg.ALWAYS_ASK_FALLBACK_NO_RANGE_DETECTED_LOG_MSG, fallback_text)
+
+    if tags:
+        fallback_text += f" {' '.join(tags)}"
+    fallback_tags = list(tags) if tags else []
+    fallback_tags_text = " ".join(fallback_tags)
+    if is_nsfw and "#nsfw" not in fallback_text.lower():
+        fallback_text += " #nsfw"
+        if "#nsfw" not in fallback_tags:
+            fallback_tags.append("#nsfw")
+        fallback_tags_text = " ".join(fallback_tags)
+        logger.info("%s: %s", LoggerMsg.ALWAYS_ASK_FALLBACK_ADDED_NSFW_TAG_LOG_MSG, url)
+
+    fallback_branch = gallery_fallback_branch(
+        None,
+        origin="always_ask_menu",
+        reason="menu_quality_detection_fallback",
+    )
+    fallback_task = make_runtime_task(
+        user_id=user_id,
+        source_message_id=getattr(message, "id", None),
+        url=parsed_url,
+        tags_text=fallback_tags_text,
+        tags=fallback_tags or None,
+        video_count=max(1, end_range - start_range + 1),
+        video_start_with=start_range,
+        proc_msg_id=getattr(proc_msg, "id", None) if proc_msg else None,
+        branch_selection_result=fallback_branch,
+    )
+    return AlwaysAskMenuFailureDecision(
+        mode="gallery_fallback_dispatch",
+        fallback_text=fallback_text,
+        runtime_task=fallback_task,
+    )
+
+
+def _emit_ask_quality_menu_terminal_error(app, message, user_id: int, proc_msg, url: str) -> None:
+    error_text = (
+        f"{safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_MSG}\n"
+        f"<blockquote>{safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_SHORT_MSG}</blockquote>\n\n"
+        f"{safe_get_messages(user_id).ALWAYS_ASK_TRY_CLEAN_COMMAND_MSG}"
+    )
+    try:
+        if proc_msg:
+            result = app.edit_message_text(
+                chat_id=user_id,
+                message_id=proc_msg.id,
+                text=error_text,
+                parse_mode=enums.ParseMode.HTML,
+            )
+            if result is not None:
+                log_error_to_channel(
+                    message,
+                    safe_get_messages(user_id).ALWAYS_ASK_MENU_ERROR_LOG_MSG.format(
+                        url=url,
+                        error=safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_SHORT_MSG,
+                    ),
+                    url,
+                )
+                return
+    except Exception as edit_error:
+        logger.error(f"Error editing processing message: {edit_error}")
+
+    logger.error(
+        "Always Ask menu error for user %s: %s",
+        user_id,
+        safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_SHORT_MSG,
+    )
+    safe_send_message(user_id, error_text, parse_mode=enums.ParseMode.HTML, message=message)
+    log_error_to_channel(
+        message,
+        safe_get_messages(user_id).ALWAYS_ASK_MENU_ERROR_LOG_MSG.format(
+            url=url,
+            error=safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_SHORT_MSG,
+        ),
+        url,
+    )
+
 # @reply_with_keyboard
 def delete_processing_message(app, user_id, proc_msg):
     """Delete processing message if it exists"""
@@ -4417,164 +4741,37 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
             cached_qualities = get_cached_playlist_qualities(get_clean_playlist_url(url)) if not send_as_file else set()
         else:
             cached_qualities = get_cached_qualities(url) if not send_as_file else set()
-        # Try load cached info first to make UI instant
-        info = load_ask_info(user_id, url)
-        if not info:
-            logger.info("🔍 [DEBUG] Loading video info via get_video_formats")
-            logger.info(f"   url: {url}")
-            logger.info(f"   user_id: {user_id}")
-            logger.info(f"   playlist_start_index: {playlist_start_index}")
-            logger.info(f"   cookies_already_checked: True")
-            
-            # For playlists pass the range, otherwise only start_index
-            playlist_end_index = None
-            if is_playlist and playlist_range:
-                playlist_end_index = playlist_range[1]
-            
-            # Import get_video_formats locally (there are local imports elsewhere in the function)
-            from DOWN_AND_UP.yt_dlp_hook import get_video_formats
-            
-            try:
-                info = get_video_formats(url, user_id, playlist_start_index, cookies_already_checked=True, playlist_end_index=playlist_end_index)
-                logger.info("✅ [DEBUG] get_video_formats completed successfully")
-                logger.info(f"   info type: {type(info)}")
-                if isinstance(info, dict):
-                    logger.info(f"   info keys: {list(info.keys())}")
-                    if 'duration' in info:
-                        logger.info(f"   duration: {info['duration']} (type: {type(info['duration'])})")
-                    if 'formats' in info:
-                        logger.info(f"   formats count: {len(info.get('formats', []))}")
-            except Exception as e:
-                logger.error(f"❌ [DEBUG] Error in get_video_formats: {e}")
-                logger.error(f"   Error type: {type(e)}")
-                logger.error(f"   Error string: {str(e)}")
-                raise e
-            
-            # Check for live stream detection (only if detection is enabled)
-            if isinstance(info, dict) and info.get('error') == 'LIVE_STREAM_DETECTED':
-                from CONFIG.limits import LimitsConfig
-                if LimitsConfig.ENABLE_LIVE_STREAM_BLOCKING:
-                    logger.warning(f"Live stream detected in ask_quality_menu for user {user_id}: {url}")
-                    live_stream_message = (
-                        "🚫 <b>Live Stream Detected</b>\n\n"
-                        "Downloading of ongoing or infinite live streams is not allowed.\n\n"
-                        "<blockquote>Please wait for the stream to end and try downloading again when:\n"
-                        "• The stream duration is known\n"
-                        "• The stream has finished\n"
-                        "• You can see the final video length</blockquote>\n\n"
-                        "Once the stream is completed, you'll be able to download it as a regular video."
+        source_decision = _determine_ask_quality_menu_source_decision(
+            message,
+            url=url,
+            user_id=user_id,
+            original_text=original_text,
+            playlist_start_index=playlist_start_index,
+            is_playlist=is_playlist,
+            playlist_range=playlist_range,
+        )
+        if source_decision.mode == "terminal_error":
+            send_error_to_user(message, source_decision.error_text)
+            return
+        if source_decision.mode == "gallery_fallback_prompt":
+            prompt = source_decision.gallery_fallback_prompt
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        safe_get_messages(user_id).ALWAYS_ASK_TRY_GALLERY_DL_BUTTON_MSG,
+                        callback_data=prompt.callback_data,
                     )
-                    send_error_to_user(message, live_stream_message)
-                    return
-            
-            # Check for TikTok private account error
-            if isinstance(info, dict) and info.get('error') == 'TIKTOK_PRIVATE_ACCOUNT':
-                logger.info(f"TikTok private account detected in ask_quality_menu for user {user_id}: {url}")
-                
-                # Extract username from TikTok URL
-                import re
-                username_match = re.search(r'tiktok\.com/@([^/?]+)', url)
-                username = username_match.group(1) if username_match else "unknown"
-                
-                # Get localized message
-                messages = safe_get_messages(user_id)
-                tiktok_message = messages.TIKTOK_PRIVATE_ACCOUNT_MSG.format(username=username)
-                
-                send_error_to_user(message, tiktok_message)
-                return
-            
-            # Check for fallback to gallery-dl recommendation
-            if isinstance(info, dict) and info.get('error') == 'FALLBACK_TO_GALLERY_DL':
-                logger.info(f"Fallback to gallery-dl recommended in ask_quality_menu for user {user_id}: {url}")
-                original_error = info.get('original_error', 'Unknown error')
-                
-                # Global guard: ensure messages is initialized
-                if 'messages' not in locals() or messages is None:
-                    try:
-                        messages = safe_get_messages(user_id)
-                    except Exception:
-                        # Use the standard translation system
-                        messages = safe_get_messages(user_id)
-                
-                # Extract range info for better messaging
-                _, video_start_with, video_end_with, _, _, _, _ = extract_url_range_tags(message.text or "")
-                
-                # Get total media count for fallback
-                from DOWN_AND_UP.gallery_dl_hook import get_total_media_count
-                detected_total = get_total_media_count(url, user_id, use_proxy=False)
-                if detected_total and detected_total > 0:
-                    logger.info(f"Fallback detected {detected_total} media items for range selection")
-                
-                # Create fallback message with gallery-dl option
-                if video_start_with and video_end_with and (video_start_with != 1 or video_end_with != 1):
-                    range_info = f" (range {video_start_with}-{video_end_with})"
-                    range_examples = f"• For your range: <code>/img {video_start_with}-{video_end_with}</code>\n"
-                else:
-                    range_info = ""
-                    range_examples = ""
-                
-                fallback_message = (
-                    f"{safe_get_messages(user_id).ALWAYS_ASK_YTDLP_CANNOT_PROCESS_MSG}{range_info}</b>\n\n"
-                    f"<b>Error:</b> <code>{original_error[:200]}{'...' if len(original_error) > 200 else ''}</code>\n\n"
-                    f"{safe_get_messages(user_id).ALWAYS_ASK_SYSTEM_RECOMMENDS_GALLERY_DL_MSG}\n\n"
-                    f"{safe_get_messages(user_id).ALWAYS_ASK_OPTIONS_MSG}\n"
-                    f"{range_examples}"
-                    f"{safe_get_messages(user_id).ALWAYS_ASK_FOR_IMAGE_GALLERIES_MSG}\n"
-                    f"{safe_get_messages(user_id).ALWAYS_ASK_FOR_SINGLE_IMAGES_MSG}\n\n"
-                    f"{safe_get_messages(user_id).ALWAYS_ASK_GALLERY_DL_WORKS_BETTER_MSG}"
-                )
-                
-                # Create inline keyboard with gallery-dl option
-                from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-                # Include range info and chat_id in callback data - use safe callback data for long URLs
-                chat_id = message.chat.id
-                
-                # FIX: Extract range from the original message if it wasn't passed explicitly
-                original_start = video_start_with
-                original_end = video_end_with
-                
-                # If the range wasn't passed explicitly, try extracting it from the original message
-                if (video_start_with == 1 and video_end_with == 1) and hasattr(message, 'text'):
-                    import re
-                    # Look for a range in *start*end format in the original text
-                    range_match = re.search(r'(https?://[^\s\*#]+)\*(\d+)\*(\d+)', message.text)
-                    if range_match:
-                        original_start = int(range_match.group(2))
-                        original_end = int(range_match.group(3))
-                        logger.info(f"[FALLBACK DEBUG] Extracted range from original message: {original_start}-{original_end}")
-                
-                if original_start and original_end and (original_start != 1 or original_end != 1):
-                    url_data = f"{url}|{original_start}|{original_end}|{chat_id}"
-                    logger.info(f"[FALLBACK DEBUG] Using extracted range: {original_start}-{original_end}")
-                else:
-                    # Fallback: Use detected_total if available, otherwise default to 1-1
-                    if detected_total and detected_total > 0:
-                        url_data = f"{url}|1|{detected_total}|{chat_id}"
-                        logger.info(f"[FALLBACK DEBUG] Using detected_total: 1-{detected_total}")
-                    else:
-                        url_data = f"{url}|1|1|{chat_id}"
-                        logger.info(f"[FALLBACK DEBUG] Using default range: 1-1")
-                
-                callback_data = create_safe_callback_data("fallback_gallery_dl", url_data)
-                keyboard = [
-                    [InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_TRY_GALLERY_DL_BUTTON_MSG, callback_data=callback_data)]
                 ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                # Send message with inline keyboard
-                app.send_message(
-                    message.chat.id, 
-                    fallback_message, 
-                    reply_markup=reply_markup,
-                    reply_parameters=ReplyParameters(message_id=message.id)
-                )
-                return
-            
-            # Save minimal info to cache
-            try:
-                save_ask_info(user_id, url, info)
-            except Exception:
-                pass
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            app.send_message(
+                message.chat.id,
+                prompt.message_text,
+                reply_markup=reply_markup,
+                reply_parameters=ReplyParameters(message_id=message.id),
+            )
+            return
+        info = source_decision.info
         title = info.get('title', 'Video')
         video_id = info.get('id')
         tags_text = generate_final_tags(url, tags, info)
@@ -6122,166 +6319,76 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
         import traceback
         logger.error(f"Error retrieving video information for user {user_id}: {str(e)}")
         logger.error(f"Full traceback:\n{traceback.format_exc()}")
-        # Global guard: messages is initialized at the start of the function.
-        # If for some reason it's not initialized, fall back to safe_get_messages.
-        if 'messages' not in locals():
+        failure_decision = _determine_ask_quality_menu_failure_decision(
+            message,
+            url=url,
+            tags=tags,
+            proc_msg=proc_msg,
+            user_id=user_id,
+            error=e,
+        )
+        if failure_decision.mode == "gallery_fallback_dispatch":
             try:
-                messages = safe_get_messages(user_id)
+                safe_edit_message_text(
+                    user_id,
+                    proc_msg.id if proc_msg else None,
+                    safe_get_messages(user_id).AA_NO_VIDEO_FORMATS_FOUND_MSG,
+                )
             except Exception:
-                # Last resort: initialize via the standard translation system
-                messages = safe_get_messages(user_id)
-        
-        # Additional guard: ensure messages is initialized
-        try:
-            _ = safe_get_messages(user_id).ALWAYS_ASK_NO_VIDEOS_FOUND_IN_PLAYLIST_MSG
-        except (NameError, AttributeError):
-            # If messages is still not initialized, create an emergency version via safe_get_messages
-            messages = safe_get_messages(user_id)
-        # If this looks like a non-video URL, try gallery-dl fallback first
-        try:
-            emsg = str(e)
-            if (
-                safe_get_messages(user_id).ALWAYS_ASK_NO_VIDEOS_FOUND_IN_PLAYLIST_MSG in emsg
-                or safe_get_messages(user_id).ALWAYS_ASK_UNSUPPORTED_URL_MSG in emsg
-                or safe_get_messages(user_id).ALWAYS_ASK_NO_VIDEO_COULD_BE_FOUND_MSG in emsg
-                or safe_get_messages(user_id).ALWAYS_ASK_NO_VIDEO_FOUND_MSG in emsg
-                or safe_get_messages(user_id).ALWAYS_ASK_NO_MEDIA_FOUND_MSG in emsg
-                or safe_get_messages(user_id).ALWAYS_ASK_THIS_TWEET_DOES_NOT_CONTAIN_MSG in emsg
-            ):
-                try:
-                    from COMMANDS.image_cmd import image_command
-                    from HELPERS.safe_messeger import fake_message
-                except Exception as imp_e:
-                    logger.error(f"Failed to import gallery-dl fallback handlers (menu): {imp_e}")
-                else:
-                    try:
-                        safe_edit_message_text(user_id, proc_msg.id if proc_msg else None,
-                            safe_get_messages(user_id).AA_NO_VIDEO_FORMATS_FOUND_MSG)
-                    except Exception:
-                        pass
-                    try:
-                        # Check if content is NSFW for fallback
-                        from HELPERS.porn import is_porn
-                        nsfw_enabled = bool(getattr(Config, "NSFW_CHECK_ENABLED", True))
-                        is_nsfw = is_porn(url, "", "", None) if nsfw_enabled else False
-                        logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_IS_PORN_CHECK_LOG_MSG} {url}: {is_nsfw}")
-                        
-                        # Check for explicit NSFW tags
-                        user_forced_nsfw = any(t.lower() in ("#nsfw", "#porn") for t in (tags or [])) if nsfw_enabled else False
-                        if user_forced_nsfw:
-                            is_nsfw = True
-                            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_USER_FORCED_NSFW_TAG_DETECTED_LOG_MSG} {url}")
-                        
-                        # STRICT: use the original message text
-                        original_text = message.text or message.caption or ""
-                        logger.info(f"[ASKQ FALLBACK DEBUG] original_text: {original_text}")
-                        
-                        # Look for a URL with *start*end range
-                        import re
-                        range_url_match = re.search(r'(https?://[^\s\*#]+)\*(\d+)\*(\d+)', original_text)
-                        if range_url_match:
-                            parsed_url = range_url_match.group(1)
-                            start_range = int(range_url_match.group(2))
-                            end_range = int(range_url_match.group(3))
-                            logger.info(f"[ASKQ FALLBACK DEBUG] FOUND RANGE: {parsed_url} with range {start_range}-{end_range}")
-                        else:
-                            # Fallback to a regular URL
-                            m = re.search(r'https?://[^\s\*#]+', original_text)
-                            parsed_url = m.group(0) if m else original_text
-                            start_range = 1
-                            end_range = 1
-                            logger.info(f"[ASKQ FALLBACK DEBUG] NO RANGE FOUND, using url: {parsed_url}")
-                        
-                        # Build fallback command converting *1*10 to 1-10 format
-                        if start_range and end_range and (start_range != 1 or end_range != 1):
-                            # Convert *1*10 format to 1-10 format
-                            fallback_text = f"/img {start_range}-{end_range} {parsed_url}"
-                            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_CONVERTING_RANGE_LOG_MSG}: *{start_range}*{end_range} -> {start_range}-{end_range}, fallback_text: {fallback_text}")
-                        else:
-                            fallback_text = f"/img {parsed_url}"
-                            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_NO_RANGE_DETECTED_LOG_MSG}: {fallback_text}")
-                        
-                        if tags:
-                            tags_text = ' '.join(tags)
-                            fallback_text += f" {tags_text}"
-                        
-                        # Add NSFW tag if content is detected as NSFW
-                        if is_nsfw and "#nsfw" not in fallback_text.lower():
-                            fallback_text += " #nsfw"
-                            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_ADDED_NSFW_TAG_LOG_MSG}: {url}")
-                        
-                        # For groups, preserve original chat_id and message_thread_id
-                        original_chat_id = user_id
-                        message_thread_id = None  # This is for private chat fallback
-                        fallback_branch = gallery_fallback_branch(
-                            None,
-                            origin="always_ask_menu",
-                            reason="menu_quality_detection_fallback",
-                        )
-                        fallback_task = make_runtime_task(
-                            user_id=user_id,
-                            source_message_id=getattr(message, "id", None),
-                            url=parsed_url,
-                            tags_text=tags_text if tags else ("#nsfw" if is_nsfw else ""),
-                            tags=list(tags) if tags else (["#nsfw"] if is_nsfw else None),
-                            video_count=max(1, end_range - start_range + 1),
-                            video_start_with=start_range,
-                            proc_msg_id=getattr(proc_msg, "id", None) if proc_msg else None,
-                            branch_selection_result=fallback_branch,
-                        )
-                        fallback_result = _dispatch_gallery_fallback(
-                            app,
-                            user_id=user_id,
-                            fallback_text=fallback_text,
-                            original_chat_id=original_chat_id,
-                            message_thread_id=message_thread_id,
-                            original_message=None,
-                            runtime_task=fallback_task,
-                        )
-                        logger.info(
-                            "Always Ask menu fallback result for user %s: outcome=%s success=%s",
-                            user_id,
-                            fallback_result.outcome_kind if is_gallery_command_result(fallback_result) else None,
-                            did_gallery_command_succeed(fallback_result) if is_gallery_command_result(fallback_result) else None,
-                        )
-                        logger.info(f"Triggered gallery-dl fallback via /img from Always Ask menu, is_nsfw={is_nsfw}, range={start_range}-{end_range}")
-                        return
-                    except Exception as call_e:
-                        logger.error(f"Failed to trigger gallery-dl fallback from Always Ask menu: {call_e}")
-        except Exception:
-            pass
-        
-        # First, try to build a menu from cached qualities
+                pass
+            try:
+                fallback_result = _dispatch_gallery_fallback(
+                    app,
+                    user_id=user_id,
+                    fallback_text=failure_decision.fallback_text,
+                    original_chat_id=user_id,
+                    message_thread_id=None,
+                    original_message=None,
+                    runtime_task=failure_decision.runtime_task,
+                )
+                logger.info(
+                    "Always Ask menu fallback result for user %s: outcome=%s success=%s",
+                    user_id,
+                    fallback_result.outcome_kind if is_gallery_command_result(fallback_result) else None,
+                    did_gallery_command_succeed(fallback_result)
+                    if is_gallery_command_result(fallback_result)
+                    else None,
+                )
+                logger.info("Triggered gallery-dl fallback via /img from Always Ask menu")
+                return
+            except Exception as dispatch_error:
+                logger.error(
+                    "Failed to trigger gallery-dl fallback from Always Ask menu: %s",
+                    dispatch_error,
+                )
+
         try:
             logger.info(f"Attempting to create menu from cached qualities for user {user_id}")
-            if create_cached_qualities_menu(app, message, url, tags, proc_msg, user_id, original_text, is_playlist, playlist_range):
+            if create_cached_qualities_menu(
+                app,
+                message,
+                url,
+                tags,
+                proc_msg,
+                user_id,
+                original_text,
+                is_playlist,
+                playlist_range,
+            ):
                 logger.info(f"Successfully created cached qualities menu for user {user_id}")
-                send_to_logger(message, safe_get_messages(user_id).CACHED_QUALITIES_MENU_CREATED_LOG_MSG.format(user_id=user_id, error=str(e)))
+                send_to_logger(
+                    message,
+                    safe_get_messages(user_id).CACHED_QUALITIES_MENU_CREATED_LOG_MSG.format(
+                        user_id=user_id,
+                        error=str(e),
+                    ),
+                )
                 return
-            else:
-                logger.info(f"No cached qualities available for user {user_id}, showing error message")
+            logger.info(f"No cached qualities available for user {user_id}, showing error message")
         except Exception as cache_error:
             logger.error(f"Error creating cached qualities menu: {cache_error}")
-        
-        # If no cached qualities exist, show an error
-        error_text = f"{safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_MSG}\n<blockquote>{safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_SHORT_MSG}</blockquote>\n\n{safe_get_messages(user_id).ALWAYS_ASK_TRY_CLEAN_COMMAND_MSG}"
-        
-        # Try to edit the processing message to show error first
-        try:
-            if proc_msg:
-                result = app.edit_message_text(chat_id=user_id, message_id=proc_msg.id, text=error_text, parse_mode=enums.ParseMode.HTML)
-                if result is not None:
-                    # Successfully edited the processing message, now log to channel
-                    log_error_to_channel(message, safe_get_messages(user_id).ALWAYS_ASK_MENU_ERROR_LOG_MSG.format(url=url, error=safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_SHORT_MSG), url)
-                    return
-        except Exception as e2:
-            logger.error(f"Error editing processing message: {e2}")
-        
-        # If editing failed or no proc_msg, send new message to user
-        logger.error(f"Always Ask menu error for user {user_id}: {safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_SHORT_MSG}")
-        from HELPERS.safe_messeger import safe_send_message
-        safe_send_message(user_id, error_text, parse_mode=enums.ParseMode.HTML, message=message)
-        log_error_to_channel(message, safe_get_messages(user_id).ALWAYS_ASK_MENU_ERROR_LOG_MSG.format(url=url, error=safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_SHORT_MSG), url)
+
+        _emit_ask_quality_menu_terminal_error(app, message, user_id, proc_msg, url)
         return
 
 def askq_callback_logic(
