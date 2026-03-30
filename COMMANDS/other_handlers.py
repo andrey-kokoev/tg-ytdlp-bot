@@ -1,6 +1,7 @@
 # #############################################################################################################################
 
 import os
+import re
 from pyrogram import filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyParameters
 from HELPERS.safe_messeger import safe_send_message
@@ -17,7 +18,16 @@ from CONFIG.messages import Messages, safe_get_messages
 
 from URL_PARSERS.tags import extract_url_range_tags, save_user_tags
 
-from DOWN_AND_UP.branch_selection_result import audio_download_branch, log_branch_selection
+from DOWN_AND_UP.audio_concat import (
+    concat_audio_playlist_range,
+    parse_concat_name_override,
+    resend_last_audio_concat_with_new_name,
+)
+from DOWN_AND_UP.branch_selection_result import (
+    audio_concat_branch,
+    audio_download_branch,
+    log_branch_selection,
+)
 from DOWN_AND_UP.down_and_audio import down_and_audio
 from DOWN_AND_UP.runtime_task import make_runtime_task, with_branch_selection
 from COMMANDS.link_cmd import link_command
@@ -150,6 +160,136 @@ def audio_command_handler(app, message):
     )
 
 
+@app.on_message(filters.command(["aconcat", "audioconcat"]) & filters.private)
+@background_handler(label="audio_concat_command")
+def audio_concat_command_handler(app, message):
+    user_id = message.chat.id
+    if get_active_download(user_id):
+        safe_send_message(
+            user_id,
+            safe_get_messages(user_id).AUDIO_WAIT_MSG,
+            reply_parameters=ReplyParameters(message_id=message.id),
+        )
+        return
+    if int(user_id) not in Config.ADMIN and not is_user_in_channel(app, message):
+        return
+
+    text = (message.text or "").strip()
+    reverse_output = False
+    if not text:
+        text = "/aconcat"
+
+    parts = text.split(maxsplit=2)
+    if len(parts) >= 2 and parts[1].lower() in {"reverse", "rev"}:
+        reverse_output = True
+        text = f"{parts[0]} {parts[2]}" if len(parts) >= 3 else parts[0]
+
+    output_name_override, text = parse_concat_name_override(text)
+
+    try:
+        parts = text.split()
+        if len(parts) >= 3 and parts[0].lower() in {"/aconcat", "/audioconcat"}:
+            if re.match(r"^\d+-\d+$", parts[1]):
+                start_str, end_str = parts[1].split('-')
+                url_candidate = ' '.join(parts[2:]).strip()
+                text = f"/aconcat {url_candidate}*{int(start_str)}*{int(end_str)}"
+    except Exception:
+        pass
+
+    url, _, _, _, _, _, tag_error = extract_url_range_tags(text)
+    if tag_error:
+        wrong, example = tag_error
+        error_msg = safe_get_messages(user_id).OTHER_TAG_ERROR_MSG.format(wrong=wrong, example=example)
+        safe_send_message(user_id, error_msg, reply_parameters=ReplyParameters(message_id=message.id))
+        return
+
+    if not url:
+        safe_send_message(
+            user_id,
+            (
+                "Use /aconcat with a playlist URL and range.\n\n"
+                "Examples:\n"
+                "/aconcat https://www.youtube.com/playlist?list=...*2*5\n"
+                "/aconcat reverse https://www.youtube.com/playlist?list=...*2*5\n"
+                "/aconcat 2-5 https://www.youtube.com/playlist?list=..."
+            ),
+            parse_mode=enums.ParseMode.HTML,
+            reply_parameters=ReplyParameters(message_id=message.id),
+        )
+        return
+
+    _, video_start_with, video_end_with, playlist_name, tags, tags_text, _ = extract_url_range_tags(text)
+    if not check_playlist_range_limits(url, video_start_with, video_end_with, app, message):
+        return
+    if video_start_with < 0 or video_end_with < 0:
+        safe_send_message(
+            user_id,
+            "Negative playlist indices are not supported for /aconcat yet.",
+            reply_parameters=ReplyParameters(message_id=message.id),
+        )
+        return
+    if video_start_with == video_end_with:
+        safe_send_message(
+            user_id,
+            "Audio concat needs at least 2 playlist items.",
+            reply_parameters=ReplyParameters(message_id=message.id),
+        )
+        return
+
+    video_count = abs(video_end_with - video_start_with) + 1
+    branch_result = audio_concat_branch(
+        video_count=video_count,
+        selected_by="explicit_command",
+        origin="audio_concat_command_handler",
+        provenance={"command": "/aconcat", "reverse_output": reverse_output},
+    )
+    log_branch_selection(logger, branch_result, user_id=user_id)
+    task = with_branch_selection(
+        make_runtime_task(
+            user_id=user_id,
+            source_message_id=getattr(message, "id", None),
+            url=url,
+            tags_text=tags_text,
+            tags=list(tags),
+            playlist_name=playlist_name,
+            video_count=video_count,
+            video_start_with=video_start_with,
+        ),
+        branch_result,
+    )
+    concat_audio_playlist_range(
+        app,
+        message,
+        url=url,
+        video_start_with=video_start_with,
+        video_end_with=video_end_with,
+        reverse_output=reverse_output,
+        output_name_override=output_name_override,
+        task_context=task,
+    )
+
+
+@app.on_message(filters.command("arename") & filters.private)
+@background_handler(label="audio_concat_rename_command")
+def audio_concat_rename_command_handler(app, message):
+    user_id = message.chat.id
+    if int(user_id) not in Config.ADMIN and not is_user_in_channel(app, message):
+        return
+
+    text = (message.text or "").strip()
+    match = re.match(r'^/arename(?:@\w+)?\s+"([^"]+)"\s*$', text)
+    if not match:
+        safe_send_message(
+            user_id,
+            'Use: <code>/arename "New Name"</code>',
+            parse_mode=enums.ParseMode.HTML,
+            reply_parameters=ReplyParameters(message_id=message.id),
+        )
+        return
+
+    resend_last_audio_concat_with_new_name(app, message, new_name=match.group(1).strip())
+
+
 # /Link Command
 @app.on_message(filters.command("link") & filters.private)
 @background_handler(label="link_command")
@@ -224,4 +364,3 @@ def audio_hint_callback(app, callback_query):
         callback_query.answer(safe_get_messages(user_id).AUDIO_HELP_CLOSED_MSG)
         send_to_logger(callback_query.message, safe_get_messages(user_id).AUDIO_HINT_CLOSED_LOG_MSG)
         return
-

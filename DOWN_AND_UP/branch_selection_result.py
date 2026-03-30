@@ -72,6 +72,30 @@ def audio_download_branch(
     )
 
 
+def audio_concat_branch(
+    *,
+    video_count: int,
+    selected_by: str,
+    origin: str,
+    provenance: dict[str, Any] | None = None,
+) -> BranchSelectionResult:
+    details = {"origin": origin}
+    if provenance:
+        details.update(provenance)
+    return BranchSelectionResult(
+        branch_family="audio_concat_download",
+        selected_by=selected_by,
+        task_scope=task_scope_for_count(video_count),
+        delivery_intent="telegram_media",
+        media_intent="audio",
+        quality_intent="audio_concat",
+        execution_source="fresh_acquisition",
+        format_override="bestaudio_concat",
+        quality_key="audio_concat",
+        provenance=details,
+    )
+
+
 def video_download_branch(
     *,
     quality_intent: str,
