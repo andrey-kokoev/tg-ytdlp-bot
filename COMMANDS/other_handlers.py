@@ -27,9 +27,11 @@ from DOWN_AND_UP.branch_selection_result import (
     audio_concat_branch,
     audio_download_branch,
     log_branch_selection,
+    video_concat_branch,
 )
 from DOWN_AND_UP.down_and_audio import down_and_audio
 from DOWN_AND_UP.runtime_task import make_runtime_task, with_branch_selection
+from DOWN_AND_UP.video_concat import concat_video_playlist_range
 from COMMANDS.link_cmd import link_command
 from COMMANDS.proxy_cmd import proxy_command
 
@@ -160,7 +162,26 @@ def audio_command_handler(app, message):
     )
 
 
-@app.on_message(filters.command(["aconcat", "audioconcat"]) & filters.private)
+def _normalize_concat_command_text(text: str) -> tuple[str, bool, bool]:
+    normalized = (text or "").strip()
+    reverse_output = False
+    audio_only = False
+    if not normalized:
+        return "/concat", reverse_output, audio_only
+
+    parts = normalized.split(maxsplit=2)
+    if len(parts) >= 2 and parts[1].lower() in {"reverse", "rev", "--reverse"}:
+        reverse_output = True
+        normalized = f"{parts[0]} {parts[2]}" if len(parts) >= 3 else parts[0]
+
+    if "--audio-only" in normalized:
+        audio_only = True
+        normalized = re.sub(r"\s*--audio-only\b", "", normalized).strip()
+
+    return normalized, reverse_output, audio_only
+
+
+@app.on_message(filters.command(["aconcat", "audioconcat", "concat"]) & filters.private)
 @background_handler(label="audio_concat_command")
 def audio_concat_command_handler(app, message):
     user_id = message.chat.id
@@ -174,25 +195,21 @@ def audio_concat_command_handler(app, message):
     if int(user_id) not in Config.ADMIN and not is_user_in_channel(app, message):
         return
 
-    text = (message.text or "").strip()
-    reverse_output = False
+    text, reverse_output, audio_only = _normalize_concat_command_text(message.text or "")
     if not text:
-        text = "/aconcat"
+        text = "/concat"
 
-    parts = text.split(maxsplit=2)
-    if len(parts) >= 2 and parts[1].lower() in {"reverse", "rev"}:
-        reverse_output = True
-        text = f"{parts[0]} {parts[2]}" if len(parts) >= 3 else parts[0]
+    command_name = text.split(maxsplit=1)[0].lower()
 
     output_name_override, text = parse_concat_name_override(text)
 
     try:
         parts = text.split()
-        if len(parts) >= 3 and parts[0].lower() in {"/aconcat", "/audioconcat"}:
+        if len(parts) >= 3 and parts[0].lower() in {"/aconcat", "/audioconcat", "/concat"}:
             if re.match(r"^\d+-\d+$", parts[1]):
                 start_str, end_str = parts[1].split('-')
                 url_candidate = ' '.join(parts[2:]).strip()
-                text = f"/aconcat {url_candidate}*{int(start_str)}*{int(end_str)}"
+                text = f"{parts[0]} {url_candidate}*{int(start_str)}*{int(end_str)}"
     except Exception:
         pass
 
@@ -207,12 +224,14 @@ def audio_concat_command_handler(app, message):
         safe_send_message(
             user_id,
             (
-                "Use /aconcat with a playlist URL and range.\n\n"
-                "Examples:\n"
-                "/aconcat https://www.youtube.com/playlist?list=...*2*5\n"
-                "/aconcat reverse https://www.youtube.com/playlist?list=...*2*5\n"
-                "/aconcat 2-5 https://www.youtube.com/playlist?list=..."
-            ),
+                    "Use /concat with a playlist URL and range.\n\n"
+                    "Examples:\n"
+                    "/concat --audio-only https://www.youtube.com/playlist?list=...*2*5\n"
+                    "/concat reverse --audio-only https://www.youtube.com/playlist?list=...*2*5\n"
+                    "/concat --audio-only 2-5 https://www.youtube.com/playlist?list=...\n"
+                    "/concat https://www.youtube.com/playlist?list=...*2*5\n"
+                    "/concat reverse 2-5 https://www.youtube.com/playlist?list=..."
+                ),
             parse_mode=enums.ParseMode.HTML,
             reply_parameters=ReplyParameters(message_id=message.id),
         )
@@ -224,25 +243,39 @@ def audio_concat_command_handler(app, message):
     if video_start_with < 0 or video_end_with < 0:
         safe_send_message(
             user_id,
-            "Negative playlist indices are not supported for /aconcat yet.",
+            f"Negative playlist indices are not supported for {'/aconcat' if audio_only else '/concat'} yet.",
             reply_parameters=ReplyParameters(message_id=message.id),
         )
         return
     if video_start_with == video_end_with:
         safe_send_message(
             user_id,
-            "Audio concat needs at least 2 playlist items.",
+            f"{'Audio' if audio_only else 'Video'} concat needs at least 2 playlist items.",
             reply_parameters=ReplyParameters(message_id=message.id),
         )
         return
 
     video_count = abs(video_end_with - video_start_with) + 1
-    branch_result = audio_concat_branch(
-        video_count=video_count,
-        selected_by="explicit_command",
-        origin="audio_concat_command_handler",
-        provenance={"command": "/aconcat", "reverse_output": reverse_output},
-    )
+    if audio_only:
+        branch_result = audio_concat_branch(
+            video_count=video_count,
+            selected_by="explicit_command",
+            origin="audio_concat_command_handler",
+            provenance={"command": command_name, "reverse_output": reverse_output, "audio_only": True},
+        )
+    else:
+        branch_result = video_concat_branch(
+            video_count=video_count,
+            selected_by="explicit_command",
+            origin="audio_concat_command_handler",
+            provenance={
+                "command": command_name,
+                "reverse_output": reverse_output,
+                "audio_only": False,
+                "concat_policy": "direct_concat_only",
+                "chapter_policy": "none",
+            },
+        )
     log_branch_selection(logger, branch_result, user_id=user_id)
     task = with_branch_selection(
         make_runtime_task(
@@ -254,22 +287,37 @@ def audio_concat_command_handler(app, message):
             playlist_name=playlist_name,
             video_count=video_count,
             video_start_with=video_start_with,
+            concat_policy="direct_concat_only",
+            concat_ordering="reverse" if reverse_output else "original",
+            chapter_policy="none",
+            output_name_override=output_name_override,
         ),
         branch_result,
     )
-    concat_audio_playlist_range(
-        app,
-        message,
-        url=url,
-        video_start_with=video_start_with,
-        video_end_with=video_end_with,
-        reverse_output=reverse_output,
-        output_name_override=output_name_override,
-        task_context=task,
-    )
+    if audio_only:
+        concat_audio_playlist_range(
+            app,
+            message,
+            url=url,
+            video_start_with=video_start_with,
+            video_end_with=video_end_with,
+            reverse_output=reverse_output,
+            output_name_override=output_name_override,
+            task_context=task,
+        )
+    else:
+        concat_video_playlist_range(
+            app,
+            message,
+            url=url,
+            video_start_with=video_start_with,
+            video_end_with=video_end_with,
+            reverse_output=reverse_output,
+            output_name_override=output_name_override,
+            task_context=task,
+        )
 
-
-@app.on_message(filters.command("arename") & filters.private)
+@app.on_message(filters.command(["arename", "rename"]) & filters.private)
 @background_handler(label="audio_concat_rename_command")
 def audio_concat_rename_command_handler(app, message):
     user_id = message.chat.id
@@ -277,11 +325,11 @@ def audio_concat_rename_command_handler(app, message):
         return
 
     text = (message.text or "").strip()
-    match = re.match(r'^/arename(?:@\w+)?\s+"([^"]+)"\s*$', text)
+    match = re.match(r'^/(?:arename|rename)(?:@\w+)?\s+"([^"]+)"\s*$', text)
     if not match:
         safe_send_message(
             user_id,
-            'Use: <code>/arename "New Name"</code>',
+            'Use: <code>/rename "New Name"</code>',
             parse_mode=enums.ParseMode.HTML,
             reply_parameters=ReplyParameters(message_id=message.id),
         )

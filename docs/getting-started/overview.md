@@ -78,6 +78,17 @@ https://youtube.com/watch?v=dQw4w9WgXcQ
 - [Transition Contracts](../development/13-transition-contracts.md#transition-contracts) - Explicit read/write/decision boundaries for each task-state-machine transition
 - [First Implementation Seam](../development/14-first-implementation-seam.md#first-implementation-seam) - Why `BranchSelectionResult` is the best low-risk first implementation move
 - [Branch Selection Result Implementation Sketch](../development/15-branch-selection-result-implementation-sketch.md#branch-selection-result-implementation-sketch) - Smallest viable first patch for making branch selection explicit
+- [Video Concat Formulation](../development/16-video-concat-formulation.md#video-concat-formulation) - PDA-aligned branch/task/outcome formulation for future video concat
+- [Video Concat Admissibility Contract](../development/17-video-concat-admissibility-contract.md#video-concat-admissibility-contract) - Explicit admissibility boundary for selecting and executing video concat
+- [Video Concat First Implementation Seam](../development/18-video-concat-first-implementation-seam.md#video-concat-first-implementation-seam) - Smallest coherent implementation boundary for `video_concat_download`
+- [Video Concat Compatibility Model](../development/19-video-concat-compatibility-model.md#video-concat-compatibility-model) - Explicit direct-concat compatibility predicate and rejection boundary for v1 video concat
+- [Video Concat Compatibility Result Model](../development/20-video-concat-compatibility-result-model.md#video-concat-compatibility-result-model) - Explicit result object for concat admissibility and determinate rejection
+- [Video Concat Transition Contract](../development/21-video-concat-transition-contract.md#video-concat-transition-contract) - Explicit first state/transition contract from concat request through terminalization
+- [Video Concat Staging Manifest Model](../development/22-video-concat-staging-manifest-model.md#video-concat-staging-manifest-model) - Explicit staging carrier for selected indices, ordered artifacts, and missing items
+- [Video Concat Terminal Rendering Contract](../development/23-video-concat-terminal-rendering-contract.md#video-concat-terminal-rendering-contract) - Explicit user/log rendering rules for concat success, rejection, and failure
+- [Video Concat Chapter Policy Model](../development/24-video-concat-chapter-policy-model.md#video-concat-chapter-policy-model) - Explicit policy separation for playlist-item chapter metadata on composite video output
+- [Video Concat Object Chain Implementation Sketch](../development/25-video-concat-object-chain-implementation-sketch.md#video-concat-object-chain-implementation-sketch) - First coherent implementation sketch for branch, manifest, compatibility, concat execution, and terminal outcome
+- [Video Concat Policy Partition](../development/26-video-concat-policy-partition.md#video-concat-policy-partition) - Explicit separation of concat admissibility, delivery admissibility, and terminal rendering policy
 - [Troubleshooting](../advanced/troubleshooting.md#-troubleshooting) - Common issues and solutions
 - [Contributing](../development/04-contributing.md#-code-of-conduct) - How to contribute to the project
 - [Support](../misc/support.md#support) - Support information and acknowledgments

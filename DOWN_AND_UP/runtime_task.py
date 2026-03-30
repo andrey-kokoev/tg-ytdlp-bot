@@ -21,6 +21,13 @@ class RuntimeTask:
     playlist_error_summary: dict[str, Any] | None = None
     cached_video_info: dict[str, Any] | None = None
     proc_msg_id: int | None = None
+    concat_policy: str | None = None
+    concat_ordering: str | None = None
+    chapter_policy: str | None = None
+    output_name_override: str | None = None
+    video_concat_manifest: dict[str, Any] | None = None
+    video_concat_compatibility: dict[str, Any] | None = None
+    video_concat_execution: dict[str, Any] | None = None
 
 
 def make_runtime_task(
@@ -39,6 +46,13 @@ def make_runtime_task(
     playlist_error_summary: dict[str, Any] | None = None,
     cached_video_info: dict[str, Any] | None = None,
     proc_msg_id: int | None = None,
+    concat_policy: str | None = None,
+    concat_ordering: str | None = None,
+    chapter_policy: str | None = None,
+    output_name_override: str | None = None,
+    video_concat_manifest: dict[str, Any] | None = None,
+    video_concat_compatibility: dict[str, Any] | None = None,
+    video_concat_execution: dict[str, Any] | None = None,
 ) -> RuntimeTask:
     return RuntimeTask(
         user_id=user_id,
@@ -55,6 +69,13 @@ def make_runtime_task(
         playlist_error_summary=playlist_error_summary,
         cached_video_info=cached_video_info,
         proc_msg_id=proc_msg_id,
+        concat_policy=concat_policy,
+        concat_ordering=concat_ordering,
+        chapter_policy=chapter_policy,
+        output_name_override=output_name_override,
+        video_concat_manifest=video_concat_manifest,
+        video_concat_compatibility=video_concat_compatibility,
+        video_concat_execution=video_concat_execution,
     )
 
 
@@ -89,6 +110,10 @@ def ensure_runtime_task(
     force_no_title: bool = False,
     cached_video_info: dict[str, Any] | None = None,
     proc_msg_id: int | None = None,
+    concat_policy: str | None = None,
+    concat_ordering: str | None = None,
+    chapter_policy: str | None = None,
+    output_name_override: str | None = None,
 ) -> RuntimeTask:
     if task is not None:
         return task
@@ -104,4 +129,8 @@ def ensure_runtime_task(
         force_no_title=force_no_title,
         cached_video_info=cached_video_info,
         proc_msg_id=proc_msg_id,
+        concat_policy=concat_policy,
+        concat_ordering=concat_ordering,
+        chapter_policy=chapter_policy,
+        output_name_override=output_name_override,
     )
