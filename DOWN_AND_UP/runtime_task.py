@@ -18,6 +18,7 @@ class RuntimeTask:
     force_no_title: bool = False
     branch_selection_result: BranchSelectionResult | None = None
     terminal_outcome_result: TerminalOutcomeResult | None = None
+    playlist_error_summary: dict[str, Any] | None = None
     cached_video_info: dict[str, Any] | None = None
     proc_msg_id: int | None = None
 
@@ -35,6 +36,7 @@ def make_runtime_task(
     force_no_title: bool = False,
     branch_selection_result: BranchSelectionResult | None = None,
     terminal_outcome_result: TerminalOutcomeResult | None = None,
+    playlist_error_summary: dict[str, Any] | None = None,
     cached_video_info: dict[str, Any] | None = None,
     proc_msg_id: int | None = None,
 ) -> RuntimeTask:
@@ -50,6 +52,7 @@ def make_runtime_task(
         force_no_title=force_no_title,
         branch_selection_result=branch_selection_result,
         terminal_outcome_result=terminal_outcome_result,
+        playlist_error_summary=playlist_error_summary,
         cached_video_info=cached_video_info,
         proc_msg_id=proc_msg_id,
     )
@@ -68,6 +71,7 @@ def with_terminal_outcome(
     terminal_outcome_result: TerminalOutcomeResult,
 ) -> RuntimeTask:
     task.terminal_outcome_result = terminal_outcome_result
+    task.playlist_error_summary = terminal_outcome_result.playlist_error_summary
     return task
 
 

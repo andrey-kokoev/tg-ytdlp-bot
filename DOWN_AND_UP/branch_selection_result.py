@@ -160,6 +160,38 @@ def redirected_audio_branch(
     )
 
 
+def gallery_fallback_branch(
+    branch_result: BranchSelectionResult | None,
+    *,
+    origin: str,
+    reason: str,
+) -> BranchSelectionResult:
+    if branch_result is None:
+        return BranchSelectionResult(
+            branch_family="gallery_fallback_download",
+            selected_by="fallback_policy",
+            task_scope="single_item",
+            delivery_intent="telegram_media",
+            media_intent="mixed",
+            quality_intent="fallback_gallery_dl",
+            execution_source="gallery_dl_fallback",
+            provenance={"origin": origin, "fallback_reason": reason},
+        )
+
+    provenance = dict(branch_result.provenance)
+    provenance["fallback_from_branch_family"] = branch_result.branch_family
+    provenance["fallback_reason"] = reason
+    provenance["fallback_origin"] = origin
+
+    return replace(
+        branch_result,
+        branch_family="gallery_fallback_download",
+        delivery_intent="telegram_media",
+        execution_source="gallery_dl_fallback",
+        provenance=provenance,
+    )
+
+
 def resolve_direct_link_preference(
     branch_result: BranchSelectionResult | None,
     *,

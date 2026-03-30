@@ -1,9 +1,17 @@
 from types import SimpleNamespace
 
+from DOWN_AND_UP.gallery_command_result import (
+    did_gallery_command_fail,
+    GalleryCommandResult,
+    did_gallery_command_succeed,
+    is_gallery_command_result,
+    is_handled_gallery_command_result,
+)
 import DOWN_AND_UP.task_terminal_flow as task_terminal_flow
 from DOWN_AND_UP.branch_selection_result import (
     audio_download_branch,
     direct_link_branch,
+    gallery_fallback_branch,
     redirected_audio_branch,
     resolve_direct_link_preference,
     saved_format_branch,
@@ -18,9 +26,13 @@ from DOWN_AND_UP.runtime_task import (
 )
 from DOWN_AND_UP.task_terminal_flow import attach_and_render_terminal_outcome
 from DOWN_AND_UP.terminal_outcome_result import (
+    TerminalOutcomeResult,
+    downgrade_completed_outcome_to_partial,
     failed_terminal_outcome,
     format_audio_failure_status,
     format_audio_terminal_status,
+    format_playlist_error_reason_line,
+    format_playlist_error_summary_suffix,
     format_video_failure_status,
     format_video_terminal_status,
     upload_terminal_outcome,
@@ -98,6 +110,31 @@ def test_redirected_audio_branch_preserves_and_augments_provenance():
     assert redirected.provenance["source"] == "callback"
     assert redirected.provenance["redirected_to"] == "audio_download"
     assert redirected.provenance["redirect_reason"] == "video_resolved_to_audio_only"
+
+
+def test_gallery_fallback_branch_preserves_originating_branch_context():
+    original = video_download_branch(
+        quality_intent="480p",
+        quality_key="480p",
+        format_override="bestvideo[height<=480]+bestaudio/best",
+        selected_by="explicit_callback",
+        origin="test",
+        provenance={"source": "callback"},
+    )
+
+    fallback = gallery_fallback_branch(
+        original,
+        origin="down_and_up",
+        reason="yt_dlp_to_gallery_dl_fallback",
+    )
+
+    assert fallback.branch_family == "gallery_fallback_download"
+    assert fallback.execution_source == "gallery_dl_fallback"
+    assert fallback.delivery_intent == "telegram_media"
+    assert fallback.provenance["source"] == "callback"
+    assert fallback.provenance["fallback_from_branch_family"] == "video_download"
+    assert fallback.provenance["fallback_reason"] == "yt_dlp_to_gallery_dl_fallback"
+    assert fallback.provenance["fallback_origin"] == "down_and_up"
 
 
 def test_resolve_direct_link_preference_prefers_branch_result_over_ambient():
@@ -285,3 +322,80 @@ def test_attach_and_render_terminal_outcome_updates_task_and_respects_rendered_t
         rendered_text="explicit text",
     )
     assert explicit_render == "explicit text"
+
+
+def test_gallery_command_result_helpers_capture_handled_and_success_states():
+    completed = GalleryCommandResult(
+        outcome_kind="completed",
+        attempted_count=2,
+        delivered_count=2,
+    )
+    failed = GalleryCommandResult(
+        outcome_kind="failed",
+        attempted_count=1,
+        delivered_count=0,
+        error_text="boom",
+    )
+
+    assert is_gallery_command_result(completed) is True
+    assert is_handled_gallery_command_result(completed) is True
+    assert did_gallery_command_succeed(completed) is True
+    assert did_gallery_command_fail(completed) is False
+
+    assert is_gallery_command_result(failed) is True
+    assert is_handled_gallery_command_result(failed) is True
+    assert did_gallery_command_succeed(failed) is False
+    assert did_gallery_command_fail(failed) is True
+
+    assert is_gallery_command_result("IMG") is False
+    assert is_handled_gallery_command_result("IMG") is False
+
+
+def test_completed_outcome_can_be_downgraded_to_partial():
+    completed = upload_terminal_outcome(
+        media_kind="video",
+        attempted_count=2,
+        delivered_count=2,
+    )
+    summary = {"count": 1, "reasons": {"gallery_fallback_failed": 1}}
+    downgraded = downgrade_completed_outcome_to_partial(
+        completed,
+        playlist_error_summary=summary,
+    )
+
+    assert completed.outcome_kind == "completed"
+    assert downgraded.outcome_kind == "partial"
+    assert downgraded.delivered_count == 2
+    assert downgraded.attempted_count == 2
+    assert downgraded.playlist_error_summary == summary
+
+
+def test_playlist_error_summary_suffix_formats_reason_counts():
+    outcome = failed_terminal_outcome(
+        media_kind="audio",
+        failure_kind="download_failed",
+        error_text="boom",
+    )
+    assert format_playlist_error_summary_suffix(outcome) == ""
+
+    enriched = TerminalOutcomeResult(
+        outcome_kind="partial",
+        media_kind="audio",
+        attempted_count=2,
+        delivered_count=1,
+        playlist_error_summary={
+            "count": 2,
+            "reasons": {
+                "gallery_fallback_failed": 1,
+                "download_attempt_failed": 1,
+            },
+        },
+    )
+    assert (
+        format_playlist_error_summary_suffix(enriched)
+        == " [playlist_errors: download_attempt_failed=1, gallery_fallback_failed=1]"
+    )
+    assert (
+        format_playlist_error_reason_line(enriched)
+        == "Issues: download failed x1, fallback failed x1"
+    )

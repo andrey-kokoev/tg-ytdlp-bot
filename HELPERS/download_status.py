@@ -19,6 +19,7 @@ active_downloads_lock = threading.Lock()
 # Global dictionary to track playlist errors and lock for thread-safe access
 playlist_errors = {}
 playlist_errors_lock = threading.Lock()
+playlist_error_summaries = {}
 
 # Add a global dictionary to track download start times
 download_start_times = {}
@@ -86,6 +87,35 @@ def set_active_download(user_id, status):
     """
     with active_downloads_lock:
         active_downloads[user_id] = status
+
+
+def clear_playlist_error_state(error_key: str) -> None:
+    with playlist_errors_lock:
+        playlist_errors.pop(error_key, None)
+        playlist_error_summaries.pop(error_key, None)
+
+
+def mark_playlist_error(error_key: str, *, reason: str) -> None:
+    with playlist_errors_lock:
+        playlist_errors[error_key] = True
+        summary = playlist_error_summaries.setdefault(
+            error_key,
+            {"count": 0, "reasons": {}},
+        )
+        summary["count"] += 1
+        reasons = summary["reasons"]
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+
+def get_playlist_error_summary(error_key: str) -> dict | None:
+    with playlist_errors_lock:
+        summary = playlist_error_summaries.get(error_key)
+        if summary is None:
+            return None
+        return {
+            "count": summary["count"],
+            "reasons": dict(summary["reasons"]),
+        }
 
 # Helper function to start the hourglass animation
 def start_hourglass_animation(user_id, hourglass_msg_id, stop_anim):

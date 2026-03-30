@@ -35,6 +35,9 @@ from DATABASE.cache_db import save_to_image_cache, get_cached_image_posts, get_c
 import json
 from URL_PARSERS.tags import save_user_tags, extract_url_range_tags
 from URL_PARSERS.service_api_info import get_service_account_info, build_tags
+from DOWN_AND_UP.gallery_command_result import GalleryCommandResult
+from DOWN_AND_UP.runtime_task import with_terminal_outcome
+from DOWN_AND_UP.terminal_outcome_result import failed_terminal_outcome, upload_terminal_outcome
 
 # Unified helpers to create thumbnails/covers for videos
 def _get_file_mb(file_path):
@@ -767,6 +770,70 @@ def get_reply_message_id(message):
         return message._original_message.id
     else:
         return message.id
+
+
+def _attach_gallery_terminal_outcome(
+    message,
+    *,
+    attempted_count: int,
+    delivered_count: int,
+    cached_count: int = 0,
+):
+    task_context = getattr(message, "_runtime_task", None)
+    if task_context is None:
+        return
+    media_kind = (
+        "gallery_fallback"
+        if getattr(getattr(task_context, "branch_selection_result", None), "branch_family", None)
+        == "gallery_fallback_download"
+        else "gallery_media"
+    )
+    outcome = upload_terminal_outcome(
+        media_kind=media_kind,
+        attempted_count=max(attempted_count, delivered_count),
+        delivered_count=delivered_count,
+        cached_count=cached_count,
+    )
+    with_terminal_outcome(task_context, outcome)
+
+
+def _attach_gallery_failure_outcome(message, *, error_text: str):
+    task_context = getattr(message, "_runtime_task", None)
+    if task_context is None:
+        return
+    media_kind = (
+        "gallery_fallback"
+        if getattr(getattr(task_context, "branch_selection_result", None), "branch_family", None)
+        == "gallery_fallback_download"
+        else "gallery_media"
+    )
+    outcome = failed_terminal_outcome(
+        media_kind=media_kind,
+        failure_kind="gallery_fallback_failed",
+        error_text=error_text,
+    )
+    with_terminal_outcome(task_context, outcome)
+
+
+def _record_gallery_command_result(
+    message,
+    *,
+    outcome_kind: str,
+    attempted_count: int,
+    delivered_count: int,
+    error_text: str | None = None,
+) -> GalleryCommandResult:
+    result = GalleryCommandResult(
+        outcome_kind=outcome_kind,
+        attempted_count=attempted_count,
+        delivered_count=delivered_count,
+        error_text=error_text,
+    )
+    setattr(message, "_gallery_command_result", result)
+    task_context = getattr(message, "_runtime_task", None)
+    if task_context is not None:
+        setattr(task_context, "gallery_command_result", result)
+    return result
 
 @background_handler(label="image_command")
 def image_command(app, message):
@@ -3755,10 +3822,20 @@ def image_command(app, message):
                             f"{safe_get_messages(user_id).SENT_STATUS_MSG} <b>{total_sent}</b>",
                             parse_mode=enums.ParseMode.HTML,
                         )
+                        _attach_gallery_terminal_outcome(
+                            message,
+                            attempted_count=final_expected,
+                            delivered_count=total_sent,
+                        )
                         completion_sent = True
                 except Exception:
                     pass
-                return
+                return _record_gallery_command_result(
+                    message,
+                    outcome_kind="completed" if total_sent >= final_expected else "partial",
+                    attempted_count=final_expected,
+                    delivered_count=total_sent,
+                )
 
             if not is_admin and total_sent >= total_limit:
                 break
@@ -3794,11 +3871,21 @@ def image_command(app, message):
                     f"{safe_get_messages(user_id).SENT_STATUS_MSG} <b>{total_sent}</b>",
                     parse_mode=enums.ParseMode.HTML,
                 )
+                _attach_gallery_terminal_outcome(
+                    message,
+                    attempted_count=final_expected,
+                    delivered_count=total_sent,
+                )
                 completion_sent = True
         except Exception:
             pass
         if completion_sent:
-            return
+            return _record_gallery_command_result(
+                message,
+                outcome_kind="completed" if total_sent >= final_expected else "partial",
+                attempted_count=final_expected,
+                delivered_count=total_sent,
+            )
 
         # Send remaining files in buffer as final album
         if photos_videos_buffer:
@@ -3975,6 +4062,18 @@ def image_command(app, message):
         remove_protection_file(run_dir)
         
         send_to_logger(message, LoggerMsg.STREAMED_AND_SENT_MEDIA.format(total_sent=total_sent, url=url))
+        final_attempted = total_expected or total_downloaded or total_sent
+        _attach_gallery_terminal_outcome(
+            message,
+            attempted_count=final_attempted,
+            delivered_count=total_sent,
+        )
+        return _record_gallery_command_result(
+            message,
+            outcome_kind="completed" if total_sent >= final_attempted else "partial",
+            attempted_count=final_attempted,
+            delivered_count=total_sent,
+        )
             
     except Exception as e:
         logger.error(f"Error in image command: {e}")
@@ -4059,9 +4158,17 @@ def image_command(app, message):
             safe_get_messages(user_id).ERROR_OCCURRED_MSG.format(url=url, error=str(e)),
             parse_mode=enums.ParseMode.HTML
         )
+        _attach_gallery_failure_outcome(message, error_text=str(e))
         from HELPERS.logger import send_error_to_user
         send_error_to_user(message, safe_get_messages(user_id).ERROR_OCCURRED_MSG.format(url=url, error=str(e)))
         log_error_to_channel(message, LoggerMsg.IMAGE_COMMAND_ERROR.format(url=url, error=e), url)
+        return _record_gallery_command_result(
+            message,
+            outcome_kind="failed",
+            attempted_count=0,
+            delivered_count=0,
+            error_text=str(e),
+        )
 
 @app.on_callback_query(filters.regex(r"^img_help\|"))
 def img_help_callback(app, callback_query: CallbackQuery):

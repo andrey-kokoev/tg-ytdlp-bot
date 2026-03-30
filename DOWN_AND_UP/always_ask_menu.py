@@ -8,6 +8,8 @@ from pyrogram import filters, enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyParameters, WebAppInfo
 import requests
+from DOWN_AND_UP.branch_selection_result import BranchSelectionResult
+from DOWN_AND_UP.runtime_task import RuntimeTask, ensure_runtime_task, make_runtime_task, with_branch_selection
 
 def safe_callback_answer(callback_query, text, show_alert=False):
     """Safely answer callback query, handling QueryIdInvalid errors"""
@@ -235,6 +237,7 @@ from DOWN_AND_UP.branch_selection_result import (
     BranchSelectionResult,
     audio_download_branch,
     direct_link_branch,
+    gallery_fallback_branch,
     log_branch_selection,
     resolve_direct_link_preference,
     redirected_audio_branch,
@@ -273,10 +276,35 @@ def get_user_args(user_id: int):
         logger.error(LoggerMsg.ALWAYS_ASK_ERROR_READING_USER_ARGS_LOG_MSG.format(user_id=user_id, error=e))
         return {}
 from COMMANDS.image_cmd import image_command
+from DOWN_AND_UP.gallery_command_result import (
+    did_gallery_command_succeed,
+    is_gallery_command_result,
+)
 from HELPERS.safe_messeger import fake_message
 
 # Get app instance for decorators
 app = get_app()
+
+
+def _dispatch_gallery_fallback(
+    app,
+    *,
+    user_id: int,
+    fallback_text: str,
+    original_chat_id: int,
+    message_thread_id,
+    original_message,
+    runtime_task: RuntimeTask | None = None,
+) -> None:
+    fake_msg = fake_message(
+        fallback_text,
+        user_id,
+        original_chat_id=original_chat_id,
+        message_thread_id=message_thread_id,
+        original_message=original_message,
+        runtime_task=runtime_task,
+    )
+    return image_command(app, fake_msg)
 
 # Proxy functionality is now handled by COMMANDS.proxy_cmd
 logger.info(LoggerMsg.ALWAYS_ASK_IMPORTED_LOG_MSG.format(app_available=app is not None))
@@ -1674,14 +1702,37 @@ def askq_callback(app, callback_query):
                 fallback_text += " #nsfw"
                 logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_ADDED_NSFW_TAG_LOG_MSG}: {url}")
             
-            # Run /img with a "fake" message to go through gallery-dl
-            fake_msg = fake_message(fallback_text, original_message.chat.id, original_chat_id=original_message.chat.id)
-            # Preserve message_thread_id from the original message
-            fake_msg.message_thread_id = getattr(original_message, 'message_thread_id', None)
-            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_FAKE_MSG_DETAILS_LOG_MSG}={fake_msg.chat.id}, fake_msg.message_thread_id={fake_msg.message_thread_id}, original_message.chat.id={original_message.chat.id}, original_message.message_thread_id={getattr(original_message, 'message_thread_id', None)}")
+            fallback_branch = gallery_fallback_branch(
+                None,
+                origin="always_ask_menu",
+                reason="explicit_image_menu_fallback",
+            )
+            fallback_task = _make_callback_runtime_task(
+                original_message,
+                url=parsed_url,
+                tags=["#nsfw"] if is_nsfw else [],
+                tags_text="#nsfw" if is_nsfw else "",
+                branch_result=fallback_branch,
+                video_count=max(1, end_range - start_range + 1),
+                video_start_with=start_range,
+            )
+            logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_FAKE_MSG_DETAILS_LOG_MSG}={original_message.chat.id}, message_thread_id={getattr(original_message, 'message_thread_id', None)}, original_message.chat.id={original_message.chat.id}, original_message.message_thread_id={getattr(original_message, 'message_thread_id', None)}")
             logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_ORIGINAL_MESSAGE_TYPE_LOG_MSG}: {type(original_message)}, original_message.chat type: {type(original_message.chat)}")
             logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_ORIGINAL_MESSAGE_ATTRIBUTES_LOG_MSG}: {dir(original_message)}")
-            image_command(app, fake_msg)
+            fallback_result = _dispatch_gallery_fallback(
+                app,
+                user_id=original_message.chat.id,
+                fallback_text=fallback_text,
+                original_chat_id=original_message.chat.id,
+                message_thread_id=getattr(original_message, 'message_thread_id', None),
+                original_message=original_message,
+                runtime_task=fallback_task,
+            )
+            logger.info(
+                "Always Ask image fallback result: outcome=%s success=%s",
+                fallback_result.outcome_kind if is_gallery_command_result(fallback_result) else None,
+                did_gallery_command_succeed(fallback_result) if is_gallery_command_result(fallback_result) else None,
+            )
         except Exception as e:
             logger.error(f"{LoggerMsg.ALWAYS_ASK_IMAGE_FALLBACK_FAILED_LOG_MSG}: {e}")
         
@@ -2954,12 +3005,40 @@ def fallback_gallery_dl_callback(app, callback_query):
         
         # Preserve message_thread_id from the original message
         message_thread_id = getattr(callback_query.message, 'message_thread_id', None)
-        fake_msg = fake_message(fallback_text, user_id, original_chat_id=original_chat_id, message_thread_id=message_thread_id, original_message=callback_query.message)
-        logger.info(f"[FALLBACK] fake_msg.chat.id={fake_msg.chat.id}, fake_msg.message_thread_id={fake_msg.message_thread_id}, callback_query.message.chat.id={callback_query.message.chat.id}, callback_query.message.message_thread_id={getattr(callback_query.message, 'message_thread_id', None)}")
+        fallback_branch = gallery_fallback_branch(
+            None,
+            origin="always_ask_menu",
+            reason="explicit_callback_gallery_fallback",
+        )
+        fallback_task = make_runtime_task(
+            user_id=user_id,
+            source_message_id=getattr(callback_query.message, "id", None),
+            url=url,
+            tags_text="",
+            video_count=max(1, video_end_with - video_start_with + 1),
+            video_start_with=video_start_with,
+            proc_msg_id=None,
+            branch_selection_result=fallback_branch,
+        )
+        logger.info(f"[FALLBACK] fallback_task.user_id={fallback_task.user_id}, message_thread_id={message_thread_id}, callback_query.message.chat.id={callback_query.message.chat.id}, callback_query.message.message_thread_id={getattr(callback_query.message, 'message_thread_id', None)}")
         
         # Execute gallery-dl command
         logger.info(f"About to execute image_command for user {user_id} with fake_msg: {fallback_text}")
-        image_command(app, fake_msg)
+        fallback_result = _dispatch_gallery_fallback(
+            app,
+            user_id=user_id,
+            fallback_text=fallback_text,
+            original_chat_id=original_chat_id,
+            message_thread_id=message_thread_id,
+            original_message=callback_query.message,
+            runtime_task=fallback_task,
+        )
+        logger.info(
+            "Gallery-dl callback fallback result for user %s: outcome=%s success=%s",
+            user_id,
+            fallback_result.outcome_kind if is_gallery_command_result(fallback_result) else None,
+            did_gallery_command_succeed(fallback_result) if is_gallery_command_result(fallback_result) else None,
+        )
         
         logger.info(f"Gallery-dl fallback executed for user {user_id}: {fallback_text}")
         
@@ -5795,6 +5874,8 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
         cap += f"{dynamic_hint_text}\n"
         
         keyboard = InlineKeyboardMarkup(keyboard_rows)
+        # Playlist menus are task-level controls; prefer text messages over first-item media previews.
+        can_send_thumb_menu = bool(thumb_path and os.path.exists(thumb_path) and not is_playlist)
         # cap now contains dynamic hints based on actual buttons
         # Replace current menu in-place if possible
         if cb is not None and getattr(cb, 'message', None):
@@ -5808,7 +5889,7 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
                 logger.warning(f"Failed to edit message for callback: {e}")
                 # Fallback: send new message if edit fails
                 try:
-                    if thumb_path and os.path.exists(thumb_path):
+                    if can_send_thumb_menu:
                         app.send_photo(
                             user_id,
                             thumb_path,
@@ -5839,7 +5920,7 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
                 proc_msg = None
             # Try to send with keyboard first
             try:
-                if thumb_path and os.path.exists(thumb_path):
+                if can_send_thumb_menu:
                     app.send_photo(
                         user_id,
                         thumb_path,
@@ -5854,7 +5935,7 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
             except Exception as keyboard_error:
                 # If keyboard fails (e.g., BUTTON_TYPE_INVALID), try without keyboard
                 logger.warning(f"Failed to send with keyboard, retrying without: {keyboard_error}")
-                if thumb_path and os.path.exists(thumb_path):
+                if can_send_thumb_menu:
                     app.send_photo(
                         user_id,
                         thumb_path,
@@ -5989,7 +6070,37 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
                         # For groups, preserve original chat_id and message_thread_id
                         original_chat_id = user_id
                         message_thread_id = None  # This is for private chat fallback
-                        image_command(app, fake_message(fallback_text, user_id, original_chat_id=original_chat_id, message_thread_id=message_thread_id, original_message=None))
+                        fallback_branch = gallery_fallback_branch(
+                            None,
+                            origin="always_ask_menu",
+                            reason="menu_quality_detection_fallback",
+                        )
+                        fallback_task = make_runtime_task(
+                            user_id=user_id,
+                            source_message_id=getattr(message, "id", None),
+                            url=parsed_url,
+                            tags_text=tags_text if tags else ("#nsfw" if is_nsfw else ""),
+                            tags=list(tags) if tags else (["#nsfw"] if is_nsfw else None),
+                            video_count=max(1, end_range - start_range + 1),
+                            video_start_with=start_range,
+                            proc_msg_id=getattr(proc_msg, "id", None) if proc_msg else None,
+                            branch_selection_result=fallback_branch,
+                        )
+                        fallback_result = _dispatch_gallery_fallback(
+                            app,
+                            user_id=user_id,
+                            fallback_text=fallback_text,
+                            original_chat_id=original_chat_id,
+                            message_thread_id=message_thread_id,
+                            original_message=None,
+                            runtime_task=fallback_task,
+                        )
+                        logger.info(
+                            "Always Ask menu fallback result for user %s: outcome=%s success=%s",
+                            user_id,
+                            fallback_result.outcome_kind if is_gallery_command_result(fallback_result) else None,
+                            did_gallery_command_succeed(fallback_result) if is_gallery_command_result(fallback_result) else None,
+                        )
                         logger.info(f"Triggered gallery-dl fallback via /img from Always Ask menu, is_nsfw={is_nsfw}, range={start_range}-{end_range}")
                         return
                     except Exception as call_e:

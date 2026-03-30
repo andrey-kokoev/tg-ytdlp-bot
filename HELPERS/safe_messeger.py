@@ -27,7 +27,15 @@ def get_app_safe():
         raise RuntimeError(safe_get_messages(user_id).HELPER_APP_INSTANCE_NOT_AVAILABLE_MSG)
     return app
 
-def fake_message(text, user_id, command=None, original_chat_id=None, message_thread_id=None, original_message=None):
+def fake_message(
+    text,
+    user_id,
+    command=None,
+    original_chat_id=None,
+    message_thread_id=None,
+    original_message=None,
+    runtime_task=None,
+):
     messages = safe_get_messages(user_id)
     m = SimpleNamespace()
     m.chat = SimpleNamespace()
@@ -55,6 +63,8 @@ def fake_message(text, user_id, command=None, original_chat_id=None, message_thr
     m.message_thread_id = message_thread_id
     # STRICT: preserve original message for replies
     m._original_message = original_message
+    # Optional task context bridge for cross-subsystem fallback flows.
+    m._runtime_task = runtime_task
     if command is not None:
         m.command = command
     else:

@@ -13,7 +13,16 @@ from pyrogram.errors import FloodWait
 from HELPERS.app_instance import get_app
 from HELPERS.logger import logger, send_to_logger, send_to_user, send_error_to_user, log_error_to_channel
 from HELPERS.limitter import TimeFormatter
-from HELPERS.download_status import set_active_download, clear_download_start_time, check_download_timeout, start_hourglass_animation, start_cycle_progress, playlist_errors, playlist_errors_lock
+from HELPERS.download_status import (
+    set_active_download,
+    clear_download_start_time,
+    check_download_timeout,
+    start_hourglass_animation,
+    start_cycle_progress,
+    clear_playlist_error_state,
+    get_playlist_error_summary,
+    mark_playlist_error,
+)
 from HELPERS.safe_messeger import safe_delete_messages, safe_edit_message_text, safe_forward_messages
 from HELPERS.filesystem_hlp import sanitize_filename_strict, create_directory, check_disk_space, cleanup_user_temp_files
 from DATABASE.firebase_init import write_logs
@@ -34,6 +43,11 @@ from CONFIG.config import Config
 from CONFIG.messages import safe_get_messages
 from COMMANDS.subtitles_cmd import is_subs_enabled, check_subs_availability, get_user_subs_auto_mode, _subs_check_cache, download_subtitles_ytdlp, is_subs_always_ask
 from COMMANDS.mediainfo_cmd import send_mediainfo_if_enabled
+from DOWN_AND_UP.gallery_command_result import (
+    did_gallery_command_fail,
+    did_gallery_command_succeed,
+    is_handled_gallery_command_result,
+)
 from URL_PARSERS.playlist_utils import is_playlist_with_range
 from URL_PARSERS.normalizer import get_clean_playlist_url
 from DATABASE.cache_db import get_cached_playlist_videos, get_cached_message_ids, save_to_video_cache, save_to_playlist_cache
@@ -50,7 +64,9 @@ from DOWN_AND_UP.direct_link_flow import (
     send_standard_direct_link_response,
 )
 from DOWN_AND_UP.terminal_outcome_result import (
+    downgrade_completed_outcome_to_partial,
     failed_terminal_outcome,
+    format_playlist_error_summary_suffix,
     format_audio_terminal_status,
     format_audio_failure_status,
     upload_terminal_outcome,
@@ -74,6 +90,7 @@ from DOWN_AND_UP.cache_flow import (
 
 # Get app instance for decorators
 app = get_app()
+
 
 
 def _send_audio_failure(
@@ -1138,10 +1155,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
 
         # Reset of the flag of errors for the new launch of the playlist
         if playlist_name:
-            with playlist_errors_lock:
-                error_key = f"{user_id}_{playlist_name}"
-                if error_key in playlist_errors:
-                    del playlist_errors[error_key]
+            clear_playlist_error_state(f"{user_id}_{playlist_name}")
 
         cookie_file = _resolve_audio_cookiefile(
             user_id=user_id,
@@ -1696,10 +1710,10 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             )
 
             if result is None:
-                with playlist_errors_lock:
-                    error_key = f"{user_id}_{playlist_name}"
-                    if error_key not in playlist_errors:
-                        playlist_errors[error_key] = True
+                mark_playlist_error(
+                    f"{user_id}_{playlist_name}",
+                    reason="download_attempt_failed",
+                )
 
                 break
             elif isinstance(result, str):
@@ -1798,9 +1812,22 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                 elif result == "SKIP":
                     # Skip this item and continue with next
                     continue
-                elif result == "IMG":
-                    # Gallery-dl fallback has been triggered for this specific item
-                    logger.info(f"Gallery-dl fallback triggered for audio item {current_index}, continuing with next item")
+                elif is_handled_gallery_command_result(result):
+                    if did_gallery_command_succeed(result):
+                        logger.info(
+                            "Gallery-dl fallback succeeded for audio item %s, continuing with next item",
+                            current_index,
+                        )
+                    else:
+                        logger.warning(
+                            "Gallery-dl fallback handled but failed for audio item %s, continuing with next item",
+                            current_index,
+                        )
+                        if playlist_name and did_gallery_command_fail(result):
+                            mark_playlist_error(
+                                f"{user_id}_{playlist_name}",
+                                reason="gallery_fallback_failed",
+                            )
                     continue
                 elif result == "LIVE_STREAM":
                     # Live stream detected, skip this item
@@ -2235,6 +2262,13 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             delivered_count=successful_uploads,
             cached_count=len(cached_videos) if is_playlist and quality_key else 0,
         )
+        if playlist_name:
+            error_summary = get_playlist_error_summary(f"{user_id}_{playlist_name}")
+            if error_summary is not None:
+                outcome = downgrade_completed_outcome_to_partial(
+                    outcome,
+                    playlist_error_summary=error_summary,
+                )
         credits_msg = safe_get_messages(user_id).CREDITS_MSG
         task_context, success_msg = attach_and_render_terminal_outcome(
             user_id=user_id,
@@ -2253,7 +2287,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
         except Exception as e:
             logger.error(f"Error updating final status: {e}")
 
-        send_to_logger(message, success_msg)
+        send_to_logger(message, success_msg + format_playlist_error_summary_suffix(outcome))
         
         # Clean up download subdirectory after successful upload
         try:
@@ -2277,7 +2311,15 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     total=len(requested_indices),
                 ),
             )
-            send_to_logger(message, safe_get_messages(user_id).PLAYLIST_AUDIO_SENT_LOG_MSG.format(sent=outcome.total_sent_count, total=len(requested_indices), quality=quality_key, user_id=user_id))
+            send_to_logger(
+                message,
+                safe_get_messages(user_id).PLAYLIST_AUDIO_SENT_LOG_MSG.format(
+                    sent=outcome.total_sent_count,
+                    total=len(requested_indices),
+                    quality=quality_key,
+                    user_id=user_id,
+                ) + format_playlist_error_summary_suffix(outcome),
+            )
 
     except Exception as e:
         if "Download timeout exceeded" in str(e):
@@ -2383,7 +2425,4 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
 
         # Reset playlist errors if this was a playlist
         if playlist_name:
-            with playlist_errors_lock:
-                error_key = f"{user_id}_{playlist_name}"
-                if error_key in playlist_errors:
-                    del playlist_errors[error_key]
+            clear_playlist_error_state(f"{user_id}_{playlist_name}")

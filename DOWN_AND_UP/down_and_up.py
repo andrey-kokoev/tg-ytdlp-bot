@@ -16,7 +16,18 @@ from HELPERS.logger import logger, send_to_logger, send_to_user, send_error_to_u
 from CONFIG.logger_msg import LoggerMsg
 from CONFIG.messages import safe_get_messages
 from HELPERS.limitter import TimeFormatter, humanbytes, check_file_size_limit, check_subs_limits
-from HELPERS.download_status import set_active_download, clear_download_start_time, check_download_timeout, start_hourglass_animation, start_cycle_progress, playlist_errors_lock, playlist_errors
+from HELPERS.download_status import (
+    set_active_download,
+    clear_download_start_time,
+    check_download_timeout,
+    start_hourglass_animation,
+    start_cycle_progress,
+    playlist_errors_lock,
+    playlist_errors,
+    clear_playlist_error_state,
+    get_playlist_error_summary,
+    mark_playlist_error,
+)
 from HELPERS.safe_messeger import safe_delete_messages, safe_edit_message_text, safe_forward_messages
 from HELPERS.filesystem_hlp import sanitize_filename, sanitize_filename_strict, cleanup_user_temp_files, cleanup_subtitle_files, create_directory, check_disk_space
 from DOWN_AND_UP.ffmpeg import get_duration_thumb, get_video_info_ffprobe, embed_subs_to_video, create_default_thumbnail, split_video_2
@@ -35,6 +46,11 @@ from CONFIG.limits import LimitsConfig
 from COMMANDS.subtitles_cmd import is_subs_enabled, check_subs_availability, get_user_subs_auto_mode, _subs_check_cache, download_subtitles_ytdlp, get_user_subs_language, clear_subs_check_cache, is_subs_always_ask
 from COMMANDS.split_sizer import get_user_split_size
 from COMMANDS.mediainfo_cmd import send_mediainfo_if_enabled
+from DOWN_AND_UP.gallery_command_result import (
+    did_gallery_command_fail,
+    did_gallery_command_succeed,
+    is_handled_gallery_command_result,
+)
 from URL_PARSERS.playlist_utils import is_playlist_with_range
 from URL_PARSERS.normalizer import get_clean_playlist_url
 from urllib.parse import urlparse
@@ -47,6 +63,7 @@ from HELPERS.safe_messeger import safe_send_message
 from URL_PARSERS.tags import extract_url_range_tags
 from HELPERS.fallback_helper import should_fallback_to_gallery_dl
 from DOWN_AND_UP.branch_selection_result import (
+    gallery_fallback_branch,
     log_branch_selection,
     resolve_direct_link_preference,
     redirected_audio_branch,
@@ -56,7 +73,9 @@ from DOWN_AND_UP.direct_link_flow import (
     send_standard_direct_link_response,
 )
 from DOWN_AND_UP.terminal_outcome_result import (
+    downgrade_completed_outcome_to_partial,
     failed_terminal_outcome,
+    format_playlist_error_summary_suffix,
     format_video_terminal_status,
     format_video_failure_status,
     upload_terminal_outcome,
@@ -984,6 +1003,7 @@ def _try_gallery_dl_fallback(
     current_index: int,
     tags_text: str,
     user_forced_nsfw: bool,
+    task_context: RuntimeTask | None = None,
     log_suffix: str = "",
 ):
     try:
@@ -1004,6 +1024,15 @@ def _try_gallery_dl_fallback(
         pass
 
     try:
+        if task_context is not None:
+            with_branch_selection(
+                task_context,
+                gallery_fallback_branch(
+                    task_context.branch_selection_result,
+                    origin="down_and_up",
+                    reason="yt_dlp_to_gallery_dl_fallback",
+                ),
+            )
         is_nsfw = is_porn(url, "", "", None) or user_forced_nsfw
         logger.info(
             "[FALLBACK] is_porn check for %s: %s, user_forced_nsfw: %s, final is_nsfw: %s",
@@ -1027,7 +1056,7 @@ def _try_gallery_dl_fallback(
             if hasattr(message, "message_thread_id")
             else None
         )
-        image_command(
+        result = image_command(
             app,
             fake_message(
                 fallback_text,
@@ -1035,6 +1064,7 @@ def _try_gallery_dl_fallback(
                 original_chat_id=original_chat_id,
                 message_thread_id=message_thread_id,
                 original_message=message,
+                runtime_task=task_context,
             ),
         )
         logger.info(
@@ -1044,10 +1074,11 @@ def _try_gallery_dl_fallback(
             start_range,
             end_range,
         )
-        return "IMG"
+        return result
     except Exception as call_e:
         logger.error("Failed to trigger gallery-dl fallback%s: %s", log_suffix, call_e)
         return None
+
 
 
 def _maybe_retry_video_download_after_error(
@@ -1154,6 +1185,7 @@ def _handle_generic_video_download_exception(
             current_index=current_index,
             tags_text=tags_text,
             user_forced_nsfw=user_forced_nsfw,
+            task_context=task_context,
             log_suffix=" (generic)",
         )
         if fallback_result is not None:
@@ -1624,10 +1656,7 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
 
         # Reset of the flag of errors for the new launch of the playlist
         if playlist_name:
-            with playlist_errors_lock:
-                error_key = f"{user_id}_{playlist_name}"
-                if error_key in playlist_errors:
-                    del playlist_errors[error_key]
+            clear_playlist_error_state(f"{user_id}_{playlist_name}")
 
         # if use_default_format is True, then do not take from format.txt, but use default ones
         custom_format_path = os.path.join(user_dir_name, "format.txt")
@@ -2324,6 +2353,7 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                         current_index=current_index,
                         tags_text=tags_text,
                         user_forced_nsfw=user_forced_nsfw,
+                        task_context=task_context,
                     )
                     if fallback_result is not None:
                         return fallback_result
@@ -2506,9 +2536,22 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                     elif result == "SKIP":
                         skip_item = True
                         break
-                    elif result == "IMG":
-                        # Gallery-dl fallback has been triggered for this specific item
-                        logger.info(f"Gallery-dl fallback triggered for item {current_index}, continuing with next item")
+                    elif is_handled_gallery_command_result(result):
+                        if did_gallery_command_succeed(result):
+                            logger.info(
+                                "Gallery-dl fallback succeeded for item %s, continuing with next item",
+                                current_index,
+                            )
+                        else:
+                            logger.warning(
+                                "Gallery-dl fallback handled but failed for item %s, continuing with next item",
+                                current_index,
+                            )
+                            if playlist_name and did_gallery_command_fail(result):
+                                mark_playlist_error(
+                                    f"{user_id}_{playlist_name}",
+                                    reason="gallery_fallback_failed",
+                                )
                         skip_item = True
                         break
                     elif result is not None and isinstance(result, dict):
@@ -2621,10 +2664,10 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                         )
                         error_message_sent = True
                 
-                with playlist_errors_lock:
-                    error_key = f"{user_id}_{playlist_name}"
-                    if error_key not in playlist_errors:
-                        playlist_errors[error_key] = True
+                mark_playlist_error(
+                    f"{user_id}_{playlist_name}",
+                    reason="download_attempt_failed",
+                )
 
                 break
 
@@ -3875,6 +3918,13 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
             delivered_count=successful_uploads,
             cached_count=len(cached_videos) if is_playlist and safe_quality_key else 0,
         )
+        if playlist_name:
+            error_summary = get_playlist_error_summary(f"{user_id}_{playlist_name}")
+            if error_summary is not None:
+                outcome = downgrade_completed_outcome_to_partial(
+                    outcome,
+                    playlist_error_summary=error_summary,
+                )
         if outcome.outcome_kind == "completed":
             credits_msg = safe_get_messages(user_id).CREDITS_MSG
             task_context, success_msg = attach_and_render_terminal_outcome(
@@ -3889,7 +3939,7 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                 ),
             )
             safe_edit_message_text(user_id, proc_msg_id, success_msg)
-            send_to_logger(message, success_msg)
+            send_to_logger(message, success_msg + format_playlist_error_summary_suffix(outcome))
             try:
                 from COMMANDS.subtitles_cmd import clear_subs_cache_for
                 from DOWN_AND_UP.always_ask_menu import delete_subs_langs_cache
@@ -3921,7 +3971,15 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                     total=len(requested_indices),
                 ),
             )
-            send_to_logger(message, safe_get_messages(user_id).PLAYLIST_VIDEOS_SENT_LOG_MSG.format(sent=outcome.total_sent_count, total=len(requested_indices), quality=safe_quality_key, user_id=user_id))
+            send_to_logger(
+                message,
+                safe_get_messages(user_id).PLAYLIST_VIDEOS_SENT_LOG_MSG.format(
+                    sent=outcome.total_sent_count,
+                    total=len(requested_indices),
+                    quality=safe_quality_key,
+                    user_id=user_id,
+                ) + format_playlist_error_summary_suffix(outcome),
+            )
 
     except Exception as e:
         if "Download timeout exceeded" in str(e):
@@ -3988,10 +4046,7 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
         set_active_download(user_id, False)
         clear_download_start_time(user_id)  # Clear the download start time
         if playlist_name:
-            with playlist_errors_lock:
-                error_key = f"{user_id}_{playlist_name}"
-                if error_key in playlist_errors:
-                    del playlist_errors[error_key]
+            clear_playlist_error_state(f"{user_id}_{playlist_name}")
 
         # Clean up temporary files
         try:

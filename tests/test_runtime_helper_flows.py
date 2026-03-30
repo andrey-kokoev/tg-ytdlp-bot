@@ -95,6 +95,11 @@ from DOWN_AND_UP.retry_flow import (
     maybe_retry_with_different_cookies,
     maybe_retry_with_proxy_on_geo_error,
 )
+from HELPERS.download_status import (
+    clear_playlist_error_state,
+    get_playlist_error_summary,
+    mark_playlist_error,
+)
 
 
 class DummyLogger:
@@ -407,3 +412,24 @@ def test_preflight_flow_helpers(tmp_path, monkeypatch):
     assert handshake["proc_msg_id"] == app.sent_messages[-1].id
     assert app.edited[-1]["text"] == "started"
     assert schedule_calls
+
+
+def test_playlist_error_summary_tracks_reasons_and_clears():
+    error_key = "u_p"
+    clear_playlist_error_state(error_key)
+
+    mark_playlist_error(error_key, reason="gallery_fallback_failed")
+    mark_playlist_error(error_key, reason="gallery_fallback_failed")
+    mark_playlist_error(error_key, reason="download_attempt_failed")
+
+    summary = get_playlist_error_summary(error_key)
+    assert summary == {
+        "count": 3,
+        "reasons": {
+            "gallery_fallback_failed": 2,
+            "download_attempt_failed": 1,
+        },
+    }
+
+    clear_playlist_error_state(error_key)
+    assert get_playlist_error_summary(error_key) is None
