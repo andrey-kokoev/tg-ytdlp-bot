@@ -68,6 +68,7 @@ def build_concat_request(
     video_end_with: int,
 ) -> ConcatRequested:
     command_tokens = list((envelope.raw_payload or {}).get("command_tokens") or [])
+    command_name = f"/{command_tokens[0]}" if command_tokens else "/concat"
     concat_ordering = "reverse" if reverse_output else "original"
     chapter_policy = "none"
     concat_policy = "direct_concat_only"
@@ -81,6 +82,7 @@ def build_concat_request(
         provenance={
             "event_kind": envelope.event_kind,
             "command_tokens": command_tokens,
+            "command_name": command_name,
             "media_mode": media_mode,
             "concat_ordering": concat_ordering,
             "concat_policy": concat_policy,
@@ -139,6 +141,7 @@ def build_audio_download_request(
     video_start_with: int,
 ) -> AudioDownloadRequested:
     command_tokens = list((envelope.raw_payload or {}).get("command_tokens") or [])
+    command_name = f"/{command_tokens[0]}" if command_tokens else "/audio"
     return AudioDownloadRequested(
         request_kind="AudioDownloadRequested",
         user_id=envelope.user_id,
@@ -149,6 +152,7 @@ def build_audio_download_request(
         provenance={
             "event_kind": envelope.event_kind,
             "command_tokens": command_tokens,
+            "command_name": command_name,
             "quality_key": quality_key,
             "format_override": format_override,
         },

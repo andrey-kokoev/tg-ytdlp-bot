@@ -19,8 +19,12 @@ from HELPERS.ingress_requests import (
     build_subtitle_only_request,
     build_subtitle_settings_selection_request,
 )
+from HELPERS.request_execution import (
+    handle_subtitle_only_request,
+    handle_subtitle_settings_selection_request,
+)
 from DOWN_AND_UP.yt_dlp_hook import get_video_formats
-from URL_PARSERS.tags import extract_url_range_tags, save_user_tags
+from URL_PARSERS.tags import extract_url_range_tags
 from URL_PARSERS.youtube import is_youtube_url
 from HELPERS.pot_helper import add_pot_to_ytdl_opts
 import math
@@ -498,7 +502,6 @@ def subtitle_download_command(app, message):
         )
         return
 
-    save_user_tags(user_id, tags)
     request = build_subtitle_only_request(
         envelope,
         url=url,
@@ -508,26 +511,12 @@ def subtitle_download_command(app, message):
         video_count=video_count,
         video_start_with=video_start_with,
     )
-    normal_langs, auto_langs = get_or_compute_subs_langs(user_id, url)
-    available_langs = sorted(set((normal_langs or []) + (auto_langs or [])))
-    download_subtitles_only(
-        app,
-        message,
-        request.url,
-        request.tags,
-        available_langs,
-        playlist_name=request.playlist_name,
-        video_count=request.video_count,
-        video_start_with=request.video_start_with,
-        text_only=request.text_only,
-    )
+    handle_subtitle_only_request(app, message, request)
 
 
 @app.on_callback_query(filters.regex(r"^subs_page\|"))
 def subs_page_callback(app, callback_query):
     """Handle page navigation in subtitle language selection menu"""
-    user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_subtitle_settings_selection_request(
         callback_envelope,
@@ -535,59 +524,23 @@ def subs_page_callback(app, callback_query):
         action_value="page",
         page=int(callback_query.data.split("|")[1]),
     )
-    page = request.page
-    current_lang = get_user_subs_language(user_id)
-    auto_mode = get_user_subs_auto_mode(user_id)
-    
-    # Create status text
-    if current_lang == "OFF" or current_lang is None:
-        status_text = safe_get_messages(user_id).SUBS_DISABLED_STATUS_MSG
-    else:
-        lang_info = LANGUAGES.get(current_lang, {"name": current_lang, "flag": "🌐"})
-        auto_text = safe_get_messages(user_id).SUBS_AUTO_SUBS_TEXT if auto_mode else ""
-        status_text = safe_get_messages(user_id).SUBS_SELECTED_LANGUAGE_MSG.format(flag=lang_info['flag'], name=lang_info['name'], auto_text=auto_text)
-    
-    callback_query.edit_message_text(
-        safe_get_messages(user_id).SUBS_SETTINGS_MENU_MSG.format(status_text=status_text) +
-        safe_get_messages(user_id).SUBS_QUICK_COMMANDS_MSG +
-        safe_get_messages(user_id).SUBS_SETTINGS_ADDITIONAL_MSG +
-        safe_get_messages(user_id).SUBS_SET_LANGUAGE_CODE_MSG +
-        "• <code>/subs ru</code> - set language\n" +
-        "• <code>/subs ru auto</code> - set language with AUTO/TRANS",
-        reply_markup=get_language_keyboard(page, user_id=user_id)
-    )
-    callback_query.answer()
+    handle_subtitle_settings_selection_request(app, callback_query, request)
 
 
 @app.on_callback_query(filters.regex(r"^subs_lang\|"))
 def subs_lang_callback(app, callback_query):
     """Handle language selection in subtitle language menu"""
-    user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_subtitle_settings_selection_request(
         callback_envelope,
         action_kind="lang",
         action_value=callback_query.data.split("|")[1],
     )
-    lang_code = request.action_value
-    
-    save_user_subs_language(user_id, lang_code)
-    
-    if lang_code == "OFF":
-        status = safe_get_messages(user_id).SUBS_DISABLED_STATUS_MSG
-    else:
-        status = safe_get_messages(user_id).SUBS_LANGUAGE_SET_STATUS_MSG.format(flag=LANGUAGES[lang_code]['flag'], name=LANGUAGES[lang_code]['name'])
-    
-    callback_query.edit_message_text(status)
-    callback_query.answer(safe_get_messages(user_id).SUBS_LANGUAGE_UPDATED_MSG)
-    send_to_logger(callback_query.message, safe_get_messages(user_id).SUBS_LANGUAGE_SET_CALLBACK_LOG_MSG.format(lang_code=lang_code))
+    handle_subtitle_settings_selection_request(app, callback_query, request)
 
 @app.on_callback_query(filters.regex(r"^subs_auto\|"))
 def subs_auto_callback(app, callback_query):
     """Handle AUTO/TRANS mode toggle in subtitle language menu"""
-    user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
     parts = callback_query.data.split("|")
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_subtitle_settings_selection_request(
@@ -596,47 +549,12 @@ def subs_auto_callback(app, callback_query):
         action_value=parts[1],
         page=int(parts[2]) if len(parts) > 2 else 0,
     )
-    action = request.action_value
-    page = request.page
-    
-    if action == "toggle":
-        current_auto = get_user_subs_auto_mode(user_id)
-        new_auto = not current_auto
-        save_user_subs_auto_mode(user_id, new_auto)
-        
-        # We show the notification to the user
-        auto_text = "enabled" if new_auto else "disabled"
-        notification = safe_get_messages(user_id).SUBS_AUTO_MODE_TOGGLE_MSG.format(status=auto_text)
-        
-        # We answer only by notification, do not close the menu
-        callback_query.answer(notification, show_alert=False)
-        
-        # We update the menu with the new Auto state
-        current_lang = get_user_subs_language(user_id)
-        auto_mode = get_user_subs_auto_mode(user_id)
-        
-        # Create status text
-        if current_lang == "OFF" or current_lang is None:
-            status_text = safe_get_messages(user_id).SUBS_DISABLED_STATUS_MSG
-        else:
-            lang_info = LANGUAGES.get(current_lang, {"name": current_lang, "flag": "🌐"})
-            auto_text = safe_get_messages(user_id).SUBS_AUTO_SUBS_TEXT if auto_mode else ""
-            status_text = safe_get_messages(user_id).SUBS_SELECTED_LANGUAGE_MSG.format(flag=lang_info['flag'], name=lang_info['name'], auto_text=auto_text)
-        
-        # We update the message from the new menu
-        callback_query.edit_message_text(
-            safe_get_messages(user_id).SUBS_AUTO_MENU_MSG.format(status_text=status_text),
-            reply_markup=get_language_keyboard(page=page, user_id=user_id)
-        )
-        
-        send_to_logger(callback_query.message, safe_get_messages(user_id).SUBS_AUTO_MODE_TOGGLED_LOG_MSG.format(new_auto=new_auto))
+    handle_subtitle_settings_selection_request(app, callback_query, request)
 
 
 @app.on_callback_query(filters.regex(r"^subs_always_ask\|"))
 def subs_always_ask_callback(app, callback_query):
     """Handle Always Ask mode toggle in subtitle language menu"""
-    user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
     parts = callback_query.data.split("|")
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_subtitle_settings_selection_request(
@@ -645,47 +563,122 @@ def subs_always_ask_callback(app, callback_query):
         action_value=parts[1],
         page=int(parts[2]) if len(parts) > 2 else 0,
     )
-    action = request.action_value
-    page = request.page
-    
-    if action == "toggle":
-        current_always_ask = is_subs_always_ask(user_id)
-        new_always_ask = not current_always_ask
-        save_subs_always_ask(user_id, new_always_ask)
-        
-        # Show notification
-        always_ask_text = "enabled" if new_always_ask else "disabled"
-        notification = safe_get_messages(user_id).SUBS_ALWAYS_ASK_TOGGLE_MSG.format(status=always_ask_text)
-        callback_query.answer(notification, show_alert=False)
-        
-        # Auto-close menu after toggling Always Ask
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        
-        send_to_logger(callback_query.message, safe_get_messages(user_id).SUBS_ALWAYS_ASK_TOGGLED_LOG_MSG.format(new_always_ask=new_always_ask))
+    handle_subtitle_settings_selection_request(app, callback_query, request)
 
 
 @app.on_callback_query(filters.regex(r"^subs_lang_close\|"))
 def subs_lang_close_callback(app, callback_query):
-    user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_subtitle_settings_selection_request(
         callback_envelope,
         action_kind="close",
         action_value=callback_query.data.split("|")[1],
     )
-    data = request.action_value
-    if data == "close":
+    handle_subtitle_settings_selection_request(app, callback_query, request)
+
+
+def subtitle_settings_callback_logic(app, callback_query, request) -> None:
+    user_id = callback_query.from_user.id
+
+    if request.action_kind == "page":
+        current_lang = get_user_subs_language(user_id)
+        auto_mode = get_user_subs_auto_mode(user_id)
+        if current_lang == "OFF" or current_lang is None:
+            status_text = safe_get_messages(user_id).SUBS_DISABLED_STATUS_MSG
+        else:
+            lang_info = LANGUAGES.get(current_lang, {"name": current_lang, "flag": "🌐"})
+            auto_text = safe_get_messages(user_id).SUBS_AUTO_SUBS_TEXT if auto_mode else ""
+            status_text = safe_get_messages(user_id).SUBS_SELECTED_LANGUAGE_MSG.format(
+                flag=lang_info["flag"], name=lang_info["name"], auto_text=auto_text
+            )
+        callback_query.edit_message_text(
+            safe_get_messages(user_id).SUBS_SETTINGS_MENU_MSG.format(status_text=status_text)
+            + safe_get_messages(user_id).SUBS_QUICK_COMMANDS_MSG
+            + safe_get_messages(user_id).SUBS_SETTINGS_ADDITIONAL_MSG
+            + safe_get_messages(user_id).SUBS_SET_LANGUAGE_CODE_MSG
+            + "• <code>/subs ru</code> - set language\n"
+            + "• <code>/subs ru auto</code> - set language with AUTO/TRANS",
+            reply_markup=get_language_keyboard(request.page, user_id=user_id),
+        )
+        callback_query.answer()
+        return
+
+    if request.action_kind == "lang":
+        lang_code = request.action_value
+        save_user_subs_language(user_id, lang_code)
+        if lang_code == "OFF":
+            status = safe_get_messages(user_id).SUBS_DISABLED_STATUS_MSG
+        else:
+            status = safe_get_messages(user_id).SUBS_LANGUAGE_SET_STATUS_MSG.format(
+                flag=LANGUAGES[lang_code]["flag"], name=LANGUAGES[lang_code]["name"]
+            )
+        callback_query.edit_message_text(status)
+        callback_query.answer(safe_get_messages(user_id).SUBS_LANGUAGE_UPDATED_MSG)
+        send_to_logger(
+            callback_query.message,
+            safe_get_messages(user_id).SUBS_LANGUAGE_SET_CALLBACK_LOG_MSG.format(
+                lang_code=lang_code
+            ),
+        )
+        return
+
+    if request.action_kind == "auto" and request.action_value == "toggle":
+        current_auto = get_user_subs_auto_mode(user_id)
+        new_auto = not current_auto
+        save_user_subs_auto_mode(user_id, new_auto)
+        auto_text = "enabled" if new_auto else "disabled"
+        callback_query.answer(
+            safe_get_messages(user_id).SUBS_AUTO_MODE_TOGGLE_MSG.format(status=auto_text),
+            show_alert=False,
+        )
+        current_lang = get_user_subs_language(user_id)
+        auto_mode = get_user_subs_auto_mode(user_id)
+        if current_lang == "OFF" or current_lang is None:
+            status_text = safe_get_messages(user_id).SUBS_DISABLED_STATUS_MSG
+        else:
+            lang_info = LANGUAGES.get(current_lang, {"name": current_lang, "flag": "🌐"})
+            auto_text = safe_get_messages(user_id).SUBS_AUTO_SUBS_TEXT if auto_mode else ""
+            status_text = safe_get_messages(user_id).SUBS_SELECTED_LANGUAGE_MSG.format(
+                flag=lang_info["flag"], name=lang_info["name"], auto_text=auto_text
+            )
+        callback_query.edit_message_text(
+            safe_get_messages(user_id).SUBS_AUTO_MENU_MSG.format(status_text=status_text),
+            reply_markup=get_language_keyboard(page=request.page, user_id=user_id),
+        )
+        send_to_logger(
+            callback_query.message,
+            safe_get_messages(user_id).SUBS_AUTO_MODE_TOGGLED_LOG_MSG.format(new_auto=new_auto),
+        )
+        return
+
+    if request.action_kind == "always_ask" and request.action_value == "toggle":
+        current_always_ask = is_subs_always_ask(user_id)
+        new_always_ask = not current_always_ask
+        save_subs_always_ask(user_id, new_always_ask)
+        always_ask_text = "enabled" if new_always_ask else "disabled"
+        callback_query.answer(
+            safe_get_messages(user_id).SUBS_ALWAYS_ASK_TOGGLE_MSG.format(status=always_ask_text),
+            show_alert=False,
+        )
+        try:
+            callback_query.message.delete()
+        except Exception:
+            callback_query.edit_message_reply_markup(reply_markup=None)
+        send_to_logger(
+            callback_query.message,
+            safe_get_messages(user_id).SUBS_ALWAYS_ASK_TOGGLED_LOG_MSG.format(
+                new_always_ask=new_always_ask
+            ),
+        )
+        return
+
+    if request.action_kind == "close" and request.action_value == "close":
         try:
             callback_query.message.delete()
         except Exception:
             callback_query.edit_message_reply_markup(reply_markup=None)
         callback_query.answer(safe_get_messages(user_id).SUBS_MENU_CLOSED_MSG)
         send_to_logger(callback_query.message, safe_get_messages(user_id).SUBS_LANGUAGE_MENU_CLOSED_MSG)
-        return
 
 #############################################################################################
 

@@ -40,6 +40,7 @@ from DOWN_AND_UP.runtime_task import with_terminal_outcome
 from DOWN_AND_UP.terminal_outcome_result import failed_terminal_outcome, upload_terminal_outcome
 from HELPERS.ingress_models import build_telegram_callback_envelope
 from HELPERS.ingress_requests import build_image_range_selection_request
+from HELPERS.request_execution import handle_image_range_selection_request
 
 # Unified helpers to create thumbnails/covers for videos
 def _get_file_mb(file_path):
@@ -4250,24 +4251,10 @@ def img_range_callback(app, callback_query: CallbackQuery):
         except Exception as e:
             logger.error(f"[IMG_RANGE_CALLBACK] Failed to delete message: {e}")
         
-        # Create new message with range command
-        range_command = f"/img {start}-{end} {url}"
-        logger.info(f"[IMG_RANGE_CALLBACK] Created command: {range_command}")
-
-        # Re-enter the image command through the existing fake-message helper,
-        # but keep the callback parsed as a real callback request first.
-        from HELPERS.safe_messeger import fake_message
-        mock_message = fake_message(
-            range_command,
-            user_id,
-            original_chat_id=callback_query.message.chat.id,
-            message_thread_id=getattr(callback_query.message, "message_thread_id", None),
-            original_message=callback_query.message,
+        logger.info(
+            f"[IMG_RANGE_CALLBACK] Dispatching image range request: start={start}, end={end}, url={url}"
         )
-
-        # Call the image command function
-        logger.info(f"[IMG_RANGE_CALLBACK] Calling image_command with mock_message")
-        image_command(app, mock_message)
+        handle_image_range_selection_request(app, callback_query, range_request)
         logger.info(f"[IMG_RANGE_CALLBACK] image_command completed")
         
     except Exception as e:

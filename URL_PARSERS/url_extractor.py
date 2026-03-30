@@ -39,6 +39,7 @@ from pyrogram import enums
 from HELPERS.safe_messeger import fake_message
 from HELPERS.ingress_models import build_telegram_message_envelope
 from HELPERS.ingress_requests import build_url_download_request
+from HELPERS.request_execution import handle_url_download_request
 
 # Get app instance for decorators
 app = get_app()
@@ -1098,7 +1099,7 @@ def url_distractor(app, message):
                     video_start_with=video_start_with,
                     video_end_with=video_end_with,
                 )
-                video_url_extractor(app, message, url_request=request)
+                handle_url_download_request(app, message, request)
             except Exception as e:
                 logger.error(LoggerMsg.URL_EXTRACTOR_VIDEO_EXTRACTOR_FAILED_LOG_MSG.format(e=e))
                 try:

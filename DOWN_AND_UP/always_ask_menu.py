@@ -15,6 +15,10 @@ from HELPERS.ingress_requests import (
     build_ask_filter_selection_request,
     build_ask_quality_selection_request,
 )
+from HELPERS.request_execution import (
+    handle_ask_filter_selection_request,
+    handle_ask_quality_selection_request,
+)
 
 def safe_callback_answer(callback_query, text, show_alert=False):
     """Safely answer callback query, handling QueryIdInvalid errors"""
@@ -827,9 +831,7 @@ def _dub_flag(lang_code: str) -> str:
 @app.on_callback_query(filters.regex(r"^askf\|"))
 def ask_filter_callback(app, callback_query):
     messages = safe_get_messages(callback_query.from_user.id)
-    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     logger.info(LoggerMsg.ALWAYS_ASK_CALLBACK_RECEIVED_LOG_MSG.format(callback_data=callback_query.data))
-    user_id = callback_query.from_user.id
     parts = callback_query.data.split("|")
     if len(parts) >= 3:
         _, kind, value = parts[:3]
@@ -839,146 +841,72 @@ def ask_filter_callback(app, callback_query):
             filter_kind=kind,
             filter_value=value,
         )
-        kind = filter_request.filter_kind
-        value = filter_request.filter_value
-        logger.info(LoggerMsg.ALWAYS_ASK_PARSED_LOG_MSG.format(kind=kind, value=value))
+        handle_ask_filter_selection_request(app, callback_query, filter_request)
 
-        # --- SUBS handlers must run BEFORE generic filter rebuild ---
-        if kind == "subs" and value == "open":
-            # In Always Ask mode, allow user to choose from available subtitle languages
-            # regardless of their current subtitle settings
-                
-            original_message = callback_query.message.reply_to_message
-            if not original_message:
-                callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
-                return
-            url_text = original_message.text or (original_message.caption or "")
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            try:
-                # Warm up once per session: try to load from per-session cache,
-                # otherwise compute a single time and persist for reuse within this download
-                from COMMANDS.subtitles_cmd import get_or_compute_subs_langs
-                normal, auto = get_or_compute_subs_langs(user_id, url)
-                # Also warm in-memory availability cache classification once
-                check_subs_availability(url, user_id, return_type=True)
-                langs = sorted(set(normal) | set(auto))
-            except Exception:
-                # fallback to local cache if network check failed
-                normal, auto = load_subs_langs_cache(user_id, url)
-                langs = sorted(set(normal) | set(auto))
-            if not langs:
-                safe_callback_answer(callback_query, safe_get_messages(user_id).NO_SUBTITLES_DETECTED_MSG, show_alert=True)
-                return
-            kb = get_language_keyboard_always_ask(page=0, user_id=user_id, langs_override=langs, per_page_rows=8, normal_langs=normal, auto_langs=auto)
-            try:
-                callback_query.edit_message_reply_markup(reply_markup=kb)
-            except Exception:
-                pass
-            safe_callback_answer(callback_query, safe_get_messages(user_id).CHOOSE_SUBTITLE_LANGUAGE_MSG)
+
+def ask_filter_callback_logic(app, callback_query, filter_request):
+    messages = safe_get_messages(callback_query.from_user.id)
+    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    user_id = callback_query.from_user.id
+    kind = filter_request.filter_kind
+    value = filter_request.filter_value
+    logger.info(LoggerMsg.ALWAYS_ASK_PARSED_LOG_MSG.format(kind=kind, value=value))
+
+    # --- SUBS handlers must run BEFORE generic filter rebuild ---
+    if kind == "subs" and value == "open":
+        original_message = callback_query.message.reply_to_message
+        if not original_message:
+            callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             return
-        if kind == "subs_page":
-            page = int(value)
-            original_message = callback_query.message.reply_to_message
-            if not original_message:
-                callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
-                return
-            url_text = original_message.text or (original_message.caption or "")
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            # Prefer persisted cache to avoid list loss on edits
-            n_cached, a_cached = load_subs_langs_cache(user_id, url)
-            if n_cached or a_cached:
-                normal, auto = n_cached, a_cached
-            else:
-                normal = _subs_check_cache.get(f"{url}_{user_id}_normal_langs") or []
-                auto = _subs_check_cache.get(f"{url}_{user_id}_auto_langs") or []
+        url_text = original_message.text or (original_message.caption or "")
+        import re as _re
+        m = _re.search(r'https?://[^\s\*#]+', url_text)
+        url = m.group(0) if m else url_text
+        try:
+            from COMMANDS.subtitles_cmd import get_or_compute_subs_langs
+            normal, auto = get_or_compute_subs_langs(user_id, url)
+            check_subs_availability(url, user_id, return_type=True)
             langs = sorted(set(normal) | set(auto))
-            kb = get_language_keyboard_always_ask(page=page, user_id=user_id, langs_override=langs, per_page_rows=8, normal_langs=normal, auto_langs=auto)
-            try:
-                callback_query.edit_message_reply_markup(reply_markup=kb)
-            except Exception:
-                pass
-            callback_query.answer(safe_get_messages(user_id).PAGE_NUMBER_MSG.format(page=page + 1))
+        except Exception:
+            normal, auto = load_subs_langs_cache(user_id, url)
+            langs = sorted(set(normal) | set(auto))
+        if not langs:
+            safe_callback_answer(callback_query, safe_get_messages(user_id).NO_SUBTITLES_DETECTED_MSG, show_alert=True)
             return
-        if kind == "subs" and value in ("back", "close"):
-            if value == "back":
-                original_message = callback_query.message.reply_to_message
-                if original_message:
-                    url_text = original_message.text or (original_message.caption or "")
-                    import re as _re
-                    m = _re.search(r'https?://[^\s\*#]+', url_text)
-                    url = m.group(0) if m else url_text
-                    ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-                return
-            # close
-            try:
-                safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
-            except Exception:
-                app.edit_message_reply_markup(chat_id=callback_query.message.chat.id, message_id=callback_query.message.id, reply_markup=None)
-            callback_query.answer(safe_get_messages(user_id).SUBTITLE_MENU_CLOSED_MSG)
+        kb = get_language_keyboard_always_ask(page=0, user_id=user_id, langs_override=langs, per_page_rows=8, normal_langs=normal, auto_langs=auto)
+        try:
+            callback_query.edit_message_reply_markup(reply_markup=kb)
+        except Exception:
+            pass
+        safe_callback_answer(callback_query, safe_get_messages(user_id).CHOOSE_SUBTITLE_LANGUAGE_MSG)
+        return
+    if kind == "subs_page":
+        page = int(value)
+        original_message = callback_query.message.reply_to_message
+        if not original_message:
+            callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             return
-        if kind == "subs_lang":
-            # Persist selected subtitle language as global setting used by embed logic
-            try:
-                save_user_subs_language(user_id, value)
-                # If user picks explicit language from SUBS menu – assume manual, not auto
-                save_user_subs_auto_mode(user_id, False)
-            except Exception:
-                pass
-            original_message = callback_query.message.reply_to_message
-            if original_message:
-                url_text = original_message.text or (original_message.caption or "")
-                import re as _re
-                m = _re.search(r'https?://[^\s\*#]+', url_text)
-                url = m.group(0) if m else url_text
-                # Close subs keyboard and rebuild Always Ask menu with selected lang in summary
-                ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-            try:
-                callback_query.answer(safe_get_messages(user_id).SUBTITLE_LANGUAGE_SET_MSG.format(value=value))
-            except Exception:
-                pass
-            return
-        # DUBS open: show languages grid with flags
-        if kind == "dubs" and value == "open":
-            original_message = callback_query.message.reply_to_message
-            if not original_message:
-                callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
-                return
-            url_text = original_message.text or (original_message.caption or "")
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            fstate = get_filters(user_id)
-            langs = fstate.get("available_dubs", [])
-            if not langs or len(langs) <= 1:
-                callback_query.answer(safe_get_messages(user_id).NO_ALTERNATIVE_AUDIO_LANGUAGES_MSG, show_alert=True)
-                return
-            rows, row = [], []
-            for i, lang in enumerate(sorted(langs)):
-                # Use robust flag lookup for DUBS (strict overrides first)
-                flag = _dub_flag(lang)
-                label = f"{flag} {lang}" if flag else lang
-                row.append(InlineKeyboardButton(label, callback_data=f"askf|audio_lang|{lang}"))
-                if (i+1) % 3 == 0:
-                    rows.append(row)
-                    row = []
-            if row:
-                rows.append(row)
-            rows.append([InlineKeyboardButton(safe_get_messages(user_id).BACK_BUTTON_TEXT, callback_data="askf|dubs|back"), InlineKeyboardButton(safe_get_messages(user_id).CLOSE_BUTTON_TEXT, callback_data="askf|dubs|close")])
-            try:
-                callback_query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
-            except Exception:
-                pass
-            try:
-                callback_query.answer(safe_get_messages(user_id).CHOOSE_AUDIO_LANGUAGE_MSG)
-            except Exception:
-                pass
-            return
-        if kind == "audio_lang":
-            set_filter(user_id, kind, value)
+        url_text = original_message.text or (original_message.caption or "")
+        import re as _re
+        m = _re.search(r'https?://[^\s\*#]+', url_text)
+        url = m.group(0) if m else url_text
+        n_cached, a_cached = load_subs_langs_cache(user_id, url)
+        if n_cached or a_cached:
+            normal, auto = n_cached, a_cached
+        else:
+            normal = _subs_check_cache.get(f"{url}_{user_id}_normal_langs") or []
+            auto = _subs_check_cache.get(f"{url}_{user_id}_auto_langs") or []
+        langs = sorted(set(normal) | set(auto))
+        kb = get_language_keyboard_always_ask(page=page, user_id=user_id, langs_override=langs, per_page_rows=8, normal_langs=normal, auto_langs=auto)
+        try:
+            callback_query.edit_message_reply_markup(reply_markup=kb)
+        except Exception:
+            pass
+        callback_query.answer(safe_get_messages(user_id).PAGE_NUMBER_MSG.format(page=page + 1))
+        return
+    if kind == "subs" and value in ("back", "close"):
+        if value == "back":
             original_message = callback_query.message.reply_to_message
             if original_message:
                 url_text = original_message.text or (original_message.caption or "")
@@ -986,38 +914,19 @@ def ask_filter_callback(app, callback_query):
                 m = _re.search(r'https?://[^\s\*#]+', url_text)
                 url = m.group(0) if m else url_text
                 ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-            try:
-                callback_query.answer(safe_get_messages(user_id).AUDIO_SET_MSG.format(value=value))
-            except Exception:
-                pass
             return
-        if kind == "dubs" and value in ("back", "close"):
-            original_message = callback_query.message.reply_to_message
-            if original_message:
-                url_text = original_message.text or (original_message.caption or "")
-                import re as _re
-                m = _re.search(r'https?://[^\s\*#]+', url_text)
-                url = m.group(0) if m else url_text
-                ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-            try:
-                callback_query.answer(safe_get_messages(user_id).FILTERS_UPDATED_MSG)
-            except Exception:
-                pass
-            return
-        if kind in ("codec", "ext"):
-            set_filter(user_id, kind, value)
-            try:
-                if kind == "ext":
-                    set_session_mkv_override(user_id, value == "mkv")
-            except Exception:
-                pass
-        elif kind == "toggle":
-            set_filter(user_id, kind, value)
-            # Reset codec/ext to defaults when closing CODEC menu via Back
-            if value == "off":
-                set_filter(user_id, "codec", "avc1")
-                set_filter(user_id, "ext", "mp4")
-        # Rebuild the same message in place (fast, using cache)
+        try:
+            safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+        except Exception:
+            app.edit_message_reply_markup(chat_id=callback_query.message.chat.id, message_id=callback_query.message.id, reply_markup=None)
+        callback_query.answer(safe_get_messages(user_id).SUBTITLE_MENU_CLOSED_MSG)
+        return
+    if kind == "subs_lang":
+        try:
+            save_user_subs_language(user_id, value)
+            save_user_subs_auto_mode(user_id, False)
+        except Exception:
+            pass
         original_message = callback_query.message.reply_to_message
         if original_message:
             url_text = original_message.text or (original_message.caption or "")
@@ -1025,16 +934,100 @@ def ask_filter_callback(app, callback_query):
             m = _re.search(r'https?://[^\s\*#]+', url_text)
             url = m.group(0) if m else url_text
             ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-            # After starting download from menu, we will remove temp subs cache in down_and_up_with_format
-            try:
-                callback_query.answer(safe_get_messages(user_id).FILTERS_UPDATED_MSG)
-            except Exception:
-                pass
+        try:
+            callback_query.answer(safe_get_messages(user_id).SUBTITLE_LANGUAGE_SET_MSG.format(value=value))
+        except Exception:
+            pass
+        return
+    if kind == "dubs" and value == "open":
+        original_message = callback_query.message.reply_to_message
+        if not original_message:
+            callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             return
+        url_text = original_message.text or (original_message.caption or "")
+        import re as _re
+        m = _re.search(r'https?://[^\s\*#]+', url_text)
+        url = m.group(0) if m else url_text
+        fstate = get_filters(user_id)
+        langs = fstate.get("available_dubs", [])
+        if not langs or len(langs) <= 1:
+            callback_query.answer(safe_get_messages(user_id).NO_ALTERNATIVE_AUDIO_LANGUAGES_MSG, show_alert=True)
+            return
+        rows, row = [], []
+        for i, lang in enumerate(sorted(langs)):
+            flag = _dub_flag(lang)
+            label = f"{flag} {lang}" if flag else lang
+            row.append(InlineKeyboardButton(label, callback_data=f"askf|audio_lang|{lang}"))
+            if (i + 1) % 3 == 0:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([InlineKeyboardButton(safe_get_messages(user_id).BACK_BUTTON_TEXT, callback_data="askf|dubs|back"), InlineKeyboardButton(safe_get_messages(user_id).CLOSE_BUTTON_TEXT, callback_data="askf|dubs|close")])
+        try:
+            callback_query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        except Exception:
+            pass
+        try:
+            callback_query.answer(safe_get_messages(user_id).CHOOSE_AUDIO_LANGUAGE_MSG)
+        except Exception:
+            pass
+        return
+    if kind == "audio_lang":
+        set_filter(user_id, kind, value)
+        original_message = callback_query.message.reply_to_message
+        if original_message:
+            url_text = original_message.text or (original_message.caption or "")
+            import re as _re
+            m = _re.search(r'https?://[^\s\*#]+', url_text)
+            url = m.group(0) if m else url_text
+            ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
+        try:
+            callback_query.answer(safe_get_messages(user_id).AUDIO_SET_MSG.format(value=value))
+        except Exception:
+            pass
+        return
+    if kind == "dubs" and value in ("back", "close"):
+        original_message = callback_query.message.reply_to_message
+        if original_message:
+            url_text = original_message.text or (original_message.caption or "")
+            import re as _re
+            m = _re.search(r'https?://[^\s\*#]+', url_text)
+            url = m.group(0) if m else url_text
+            ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
         try:
             callback_query.answer(safe_get_messages(user_id).FILTERS_UPDATED_MSG)
         except Exception:
             pass
+        return
+    if kind in ("codec", "ext"):
+        set_filter(user_id, kind, value)
+        try:
+            if kind == "ext":
+                set_session_mkv_override(user_id, value == "mkv")
+        except Exception:
+            pass
+    elif kind == "toggle":
+        set_filter(user_id, kind, value)
+        if value == "off":
+            set_filter(user_id, "codec", "avc1")
+            set_filter(user_id, "ext", "mp4")
+    original_message = callback_query.message.reply_to_message
+    if original_message:
+        url_text = original_message.text or (original_message.caption or "")
+        import re as _re
+        m = _re.search(r'https?://[^\s\*#]+', url_text)
+        url = m.group(0) if m else url_text
+        ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
+        try:
+            callback_query.answer(safe_get_messages(user_id).FILTERS_UPDATED_MSG)
+        except Exception:
+            pass
+        return
+    try:
+        callback_query.answer(safe_get_messages(user_id).FILTERS_UPDATED_MSG)
+    except Exception:
+        pass
 
 def get_available_formats_from_cache(user_id, url, download_dir=None):
     """Get available codecs and formats from ask_formats.json cache"""
@@ -2944,7 +2937,16 @@ def askq_callback(app, callback_query):
                     logger.info("Video with subtitles (real subs found and needed) is not cached!")
                 # Don't show error message if we successfully got video from cache
                 # The video was already sent successfully in the try block
-                askq_callback_logic(app, callback_query, data, original_message, url, tags_text, available_langs, proc_msg)
+                handle_ask_quality_selection_request(
+                    app,
+                    callback_query,
+                    selection_request,
+                    original_message=original_message,
+                    url=url,
+                    tags_text=tags_text,
+                    available_langs=available_langs,
+                    proc_msg=proc_msg,
+                )
             
             # Delete the Always Ask menu after handling
             try:
@@ -2957,7 +2959,16 @@ def askq_callback(app, callback_query):
             logger.info(f"[VIDEO CACHE] Skipping cache check because Always Ask mode is enabled: url={url}, quality={data}")
         else:
             logger.info(f"[VIDEO CACHE] Skipping cache check because need_subs=True: url={url}, quality={data}")
-    askq_callback_logic(app, callback_query, data, original_message, url, tags_text, available_langs, proc_msg)
+    handle_ask_quality_selection_request(
+        app,
+        callback_query,
+        selection_request,
+        original_message=original_message,
+        url=url,
+        tags_text=tags_text,
+        available_langs=available_langs,
+        proc_msg=proc_msg,
+    )
     
     # Delete the Always Ask menu after handling
     try:

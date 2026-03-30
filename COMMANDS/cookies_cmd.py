@@ -16,6 +16,7 @@ from HELPERS.safe_messeger import safe_send_message, safe_edit_message_text
 from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_document_envelope
 from HELPERS.ingress_requests import build_cookie_menu_selection_request, build_cookie_upload_request
 from HELPERS.message_bridge import bridge_message_from_existing
+from HELPERS.request_execution import handle_cookie_menu_selection_request
 from pyrogram.errors import FloodWait
 import subprocess
 import os
@@ -670,12 +671,10 @@ def download_cookie_callback(app, callback_query):
         callback_envelope,
         selection_key=selection_key,
     )
-    _handle_cookie_menu_selection(
+    handle_cookie_menu_selection_request(
         app,
-        user_id=user_id,
-        selection_key=selection_request.selection_key,
-        message=callback_query.message,
-        callback_query=callback_query,
+        callback_query,
+        selection_request,
     )
 
 

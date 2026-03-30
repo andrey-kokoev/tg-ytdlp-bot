@@ -13,6 +13,11 @@ from HELPERS.ingress_requests import (
     build_concat_request,
     build_rename_request,
 )
+from HELPERS.request_execution import (
+    handle_audio_download_request,
+    handle_concat_request,
+    handle_rename_request,
+)
 
 from HELPERS.app_instance import get_app
 from HELPERS.decorators import reply_with_keyboard, send_reply_keyboard_always, background_handler
@@ -24,22 +29,12 @@ from HELPERS.filesystem_hlp import create_directory
 from CONFIG.config import Config
 from CONFIG.messages import Messages, safe_get_messages
 
-from URL_PARSERS.tags import extract_url_range_tags, save_user_tags
+from URL_PARSERS.tags import extract_url_range_tags
 
 from DOWN_AND_UP.audio_concat import (
-    concat_audio_playlist_range,
     parse_concat_name_override,
     resend_last_audio_concat_with_new_name,
 )
-from DOWN_AND_UP.branch_selection_result import (
-    audio_concat_branch,
-    audio_download_branch,
-    log_branch_selection,
-    video_concat_branch,
-)
-from DOWN_AND_UP.down_and_audio import down_and_audio
-from DOWN_AND_UP.runtime_task import make_runtime_task, with_branch_selection
-from DOWN_AND_UP.video_concat import concat_video_playlist_range
 from COMMANDS.link_cmd import link_command
 from COMMANDS.proxy_cmd import proxy_command
 
@@ -122,8 +117,6 @@ def audio_command_handler(app, message):
         )
         send_to_logger(message, safe_get_messages(user_id).AUDIO_HELP_SHOWN_LOG_MSG)
         return
-    save_user_tags(user_id, tags)
-    
     # Extract playlist parameters from the message
     full_string = text or message.caption or ""
     _, video_start_with, video_end_with, playlist_name, _, _, tag_error = extract_url_range_tags(full_string)
@@ -139,15 +132,6 @@ def audio_command_handler(app, message):
     if not check_playlist_range_limits(url, video_start_with, video_end_with, app, message):
         return
     
-    branch_result = audio_download_branch(
-        quality_intent="mp3",
-        quality_key="mp3",
-        video_count=video_count,
-        format_override="ba",
-        selected_by="explicit_command",
-        origin="audio_command_handler",
-        provenance={"command": "/audio"},
-    )
     request = build_audio_download_request(
         envelope,
         url=url,
@@ -159,27 +143,7 @@ def audio_command_handler(app, message):
         video_count=video_count,
         video_start_with=video_start_with,
     )
-    log_branch_selection(logger, branch_result, user_id=user_id)
-    task = with_branch_selection(
-        make_runtime_task(
-            user_id=user_id,
-            source_message_id=getattr(message, "id", None),
-            url=request.url,
-            tags_text=request.tags_text,
-            tags=request.tags,
-            playlist_name=request.playlist_name,
-            video_count=request.video_count,
-            video_start_with=request.video_start_with,
-        ),
-        branch_result,
-    )
-    down_and_audio(
-        app,
-        message,
-        quality_key=request.quality_key,
-        format_override=request.format_override,
-        task_context=task,
-    )
+    handle_audio_download_request(app, message, request)
 
 
 def _normalize_concat_command_text(text: str) -> tuple[str, bool, bool]:
@@ -290,66 +254,7 @@ def audio_concat_command_handler(app, message):
         video_start_with=video_start_with,
         video_end_with=video_end_with,
     )
-    if audio_only:
-        branch_result = audio_concat_branch(
-            video_count=request.video_count,
-            selected_by="explicit_command",
-            origin="audio_concat_command_handler",
-            provenance={"command": command_name, "reverse_output": request.reverse_output, "audio_only": True},
-        )
-    else:
-        branch_result = video_concat_branch(
-            video_count=request.video_count,
-            selected_by="explicit_command",
-            origin="audio_concat_command_handler",
-            provenance={
-                "command": command_name,
-                "reverse_output": request.reverse_output,
-                "audio_only": False,
-                "concat_policy": request.concat_policy,
-                "chapter_policy": request.chapter_policy,
-            },
-        )
-    log_branch_selection(logger, branch_result, user_id=user_id)
-    task = with_branch_selection(
-        make_runtime_task(
-            user_id=user_id,
-            source_message_id=getattr(message, "id", None),
-            url=request.url,
-            tags_text=request.tags_text,
-            tags=request.tags,
-            playlist_name=request.playlist_name,
-            video_count=request.video_count,
-            video_start_with=request.video_start_with,
-            concat_policy=request.concat_policy,
-            concat_ordering=request.concat_ordering,
-            chapter_policy=request.chapter_policy,
-            output_name_override=request.output_name_override,
-        ),
-        branch_result,
-    )
-    if audio_only:
-        concat_audio_playlist_range(
-            app,
-            message,
-            url=request.url,
-            video_start_with=request.video_start_with,
-            video_end_with=request.video_end_with,
-            reverse_output=request.reverse_output,
-            output_name_override=request.output_name_override,
-            task_context=task,
-        )
-    else:
-        concat_video_playlist_range(
-            app,
-            message,
-            url=request.url,
-            video_start_with=request.video_start_with,
-            video_end_with=request.video_end_with,
-            reverse_output=request.reverse_output,
-            output_name_override=request.output_name_override,
-            task_context=task,
-        )
+    handle_concat_request(app, message, request)
 
 @app.on_message(filters.command(["arename", "rename"]) & filters.private)
 @background_handler(label="audio_concat_rename_command")
@@ -375,7 +280,7 @@ def audio_concat_rename_command_handler(app, message):
         target_kind="audio_concat",
         new_name=match.group(1).strip(),
     )
-    resend_last_audio_concat_with_new_name(app, message, new_name=request.new_name)
+    handle_rename_request(app, message, request)
 
 
 # /Link Command

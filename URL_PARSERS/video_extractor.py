@@ -1,24 +1,19 @@
 # URL Extractor
 from HELPERS.app_instance import get_app
-from HELPERS.limitter import check_user, check_playlist_range_limits
+from HELPERS.limitter import check_playlist_range_limits
 from HELPERS.download_status import get_active_download
-from HELPERS.logger import send_to_logger, send_to_all, send_error_to_user, logger
-from HELPERS.filesystem_hlp import create_directory
-from URL_PARSERS.tags import extract_url_range_tags, save_user_tags, get_auto_tags
-from URL_PARSERS.tiktok import is_tiktok_url
-from DOWN_AND_UP.always_ask_menu import ask_quality_menu
-from DOWN_AND_UP.down_and_up import down_and_up
-from DOWN_AND_UP.branch_selection_result import log_branch_selection, saved_format_branch
-from DOWN_AND_UP.runtime_task import make_runtime_task, with_branch_selection
-from HELPERS.download_status import playlist_errors, playlist_errors_lock
-from pyrogram import filters
-from CONFIG.config import Config
-from CONFIG.messages import Messages, safe_get_messages
-from CONFIG.logger_msg import LoggerMsg
-import os
-from pyrogram import enums
-from pyrogram.types import ReplyParameters
-import hashlib
+from HELPERS.logger import send_to_logger, send_error_to_user, logger
+from HELPERS.request_execution import (
+    clear_user_playlist_error_state,
+    derive_url_runtime_media_policy,
+    handle_saved_format_url_runtime,
+    handle_url_quality_menu_runtime,
+    is_url_blacklisted,
+    normalize_url_download_runtime_request,
+    resolve_saved_format_policy,
+    send_url_tag_error,
+)
+from CONFIG.messages import safe_get_messages
 
 # Get app instance for decorators
 app = get_app()
@@ -28,194 +23,74 @@ def video_url_extractor(app, message, url_request=None):
     messages = safe_get_messages(message.chat.id)
     global active_downloads
     user_id = message.chat.id
-    user_dir = os.path.join("users", str(user_id))
-    
-    # Create user directory (subscription already checked in url_distractor)
-    if not os.path.exists(user_dir):
-        os.makedirs(user_dir, exist_ok=True)
-    format_file = os.path.join(user_dir, "format.txt")
-
-    # By default, ask for quality if a specific format is not selected
-    should_ask = True
-    saved_format = None
-    if os.path.exists(format_file):
-        with open(format_file, "r", encoding="utf-8") as f:
-            fmt = f.read().strip()
-        # Do not ask only if the format is set and it is NOT "ALWAYS_ASK"
-        if fmt != "ALWAYS_ASK":
-            should_ask = False
-            saved_format = fmt
+    full_string = getattr(url_request, "raw_input", None) or message.text
+    runtime_request, tag_error = normalize_url_download_runtime_request(
+        user_id=user_id,
+        source_message_id=getattr(message, "id", None),
+        raw_input=full_string,
+        request=url_request,
+    )
+    should_ask, saved_format = resolve_saved_format_policy(user_id=user_id)
 
     if should_ask:
-        full_string = getattr(url_request, "raw_input", None) or message.text
         logger.info(f"🔍 [DEBUG] video_extractor: full_string='{full_string}'")
-        if url_request is not None:
-            url = url_request.url
-            video_start_with = url_request.video_start_with
-            video_end_with = url_request.video_end_with
-            tags = list(url_request.tags)
-            tag_error = None
-        else:
-            url, video_start_with, video_end_with, _, tags, _, tag_error = extract_url_range_tags(full_string)
-        logger.info(f"🔍 [DEBUG] video_extractor: after extract_url_range_tags: url='{url}', video_start_with={video_start_with}, video_end_with={video_end_with}")
-        # Add tag error check
+        logger.info(
+            f"🔍 [DEBUG] video_extractor: after extract_url_range_tags: url='{runtime_request.url}', "
+            f"video_start_with={runtime_request.video_start_with}, video_end_with={runtime_request.video_end_with}"
+        )
         if tag_error:
-            wrong, example = tag_error
-            error_msg = safe_get_messages(user_id).TAG_FORBIDDEN_CHARS_MSG.format(tag=wrong, example=example)
-            app.send_message(user_id, error_msg, reply_parameters=ReplyParameters(message_id=message.id))
-            from HELPERS.logger import log_error_to_channel
-            log_error_to_channel(message, error_msg)
+            send_url_tag_error(app, message, user_id=user_id, tag_error=tag_error)
             return
-        # If a range is present, use video_start_with from parsing; otherwise 1
-        # ask_quality_menu will determine the range from original_text and update playlist_start_index
-        # For negative indices, ensure at least one number is not equal to 1
-        has_range = (video_start_with != 1 or video_end_with != 1) or (video_start_with < 0 or video_end_with < 0)
-        playlist_start_index = video_start_with if has_range else 1
-        logger.info(f"🔍 [DEBUG] video_extractor: video_start_with={video_start_with}, video_end_with={video_end_with}, has_range={has_range}, playlist_start_index={playlist_start_index}")
-        ask_quality_menu(app, message, url, tags, playlist_start_index)
+        logger.info(
+            "🔍 [DEBUG] video_extractor: video_start_with=%s, video_end_with=%s",
+            runtime_request.video_start_with,
+            runtime_request.video_end_with,
+        )
+        handle_url_quality_menu_runtime(app, message, runtime_request)
         return
 
     # This code is executed only if the user has selected a specific format
-    with playlist_errors_lock:
-        keys_to_remove = [k for k in playlist_errors if k.startswith(f"{user_id}_")]
-        for key in keys_to_remove:
-            del playlist_errors[key]
+    clear_user_playlist_error_state(user_id=user_id)
             
     if get_active_download(user_id):
         app.send_message(user_id, safe_get_messages(user_id).VIDEO_EXTRACTOR_WAIT_DOWNLOAD_MSG, reply_parameters=ReplyParameters(message_id=message.id))
         return
         
-    full_string = getattr(url_request, "raw_input", None) or message.text
-    # Also add tag error check here
-    if url_request is not None:
-        url = url_request.url
-        video_start_with = url_request.video_start_with
-        video_end_with = url_request.video_end_with
-        playlist_name = url_request.playlist_name
-        tags = list(url_request.tags)
-        tags_text = url_request.tags_text
-        tag_error = None
-    else:
-        url, video_start_with, video_end_with, playlist_name, tags, tags_text, tag_error = extract_url_range_tags(full_string)
     if tag_error:
-        wrong, example = tag_error
-        error_msg = safe_get_messages(user_id).TAG_FORBIDDEN_CHARS_MSG.format(tag=wrong, example=example)
-        app.send_message(user_id, error_msg, reply_parameters=ReplyParameters(message_id=message.id))
-        from HELPERS.logger import log_error_to_channel
-        log_error_to_channel(message, error_msg)
+        send_url_tag_error(app, message, user_id=user_id, tag_error=tag_error)
         return
     
     # Checking the range limit
-    if not check_playlist_range_limits(url, video_start_with, video_end_with, app, message):
+    if not check_playlist_range_limits(
+        runtime_request.url,
+        runtime_request.video_start_with,
+        runtime_request.video_end_with,
+        app,
+        message,
+    ):
         return
     
-    if url:
+    if runtime_request.url:
         users_first_name = message.chat.first_name
         send_to_logger(message, safe_get_messages(user_id).URL_PARSER_USER_ENTERED_URL_LOG_MSG.format(user_name=users_first_name, url=full_string))
-        for j in range(len(Config.BLACK_LIST)):
-            if Config.BLACK_LIST[j] in full_string:
-                send_error_to_user(message, safe_get_messages(user_id).PORN_CONTENT_CANNOT_DOWNLOAD_MSG)
-                return
-        # --- TikTok: auto-tag profile and no title ---
-        is_tiktok = is_tiktok_url(url)
-        auto_tags = get_auto_tags(url, tags)
-        all_tags = tags + auto_tags
-        tags_text_full = ' '.join(all_tags)
-        # Correct video_count calculation for negative indices
-        if video_start_with < 0 and video_end_with < 0:
-            # For negative indices: -1 to -7 = 7 items (from last to 7th from the end)
-            video_count = abs(video_end_with) - abs(video_start_with) + 1
-        elif video_start_with > video_end_with:
-            # Reverse order: use absolute difference
-            video_count = abs(video_start_with - video_end_with) + 1
-        else:
-            # Forward order: standard formula
-            video_count = video_end_with - video_start_with + 1
-        if playlist_name:
-            with playlist_errors_lock:
-                error_key = f"{user_id}_{playlist_name}"
-                if error_key in playlist_errors:
-                    del playlist_errors[error_key]
-        save_user_tags(user_id, all_tags)
-        
-        # Create quality_key based on saved format for caching
-        quality_key = None
-        if saved_format:
-            # Convert format to quality_key for caching
-            # First check for exact height matches, then for <= matches
-            if "height=144" in saved_format:
-                quality_key = "144p"
-            elif "height=240" in saved_format:
-                quality_key = "240p"
-            elif "height=360" in saved_format:
-                quality_key = "360p"
-            elif "height=480" in saved_format:
-                quality_key = "480p"
-            elif "height=720" in saved_format:
-                quality_key = "720p"
-            elif "height=1080" in saved_format:
-                quality_key = "1080p"
-            elif "height=1440" in saved_format:
-                quality_key = "1440p"
-            elif "height=2160" in saved_format:
-                quality_key = "2160p"
-            elif "height=4320" in saved_format:
-                quality_key = "4320p"
-            elif "height<=144" in saved_format:
-                quality_key = "144p"
-            elif "height<=240" in saved_format:
-                quality_key = "240p"
-            elif "height<=360" in saved_format:
-                quality_key = "360p"
-            elif "height<=480" in saved_format:
-                quality_key = "480p"
-            elif "height<=720" in saved_format:
-                quality_key = "720p"
-            elif "height<=1080" in saved_format:
-                quality_key = "1080p"
-            elif "height<=1440" in saved_format:
-                quality_key = "1440p"
-            elif "height<=2160" in saved_format:
-                quality_key = "2160p"
-            elif "height<=4320" in saved_format:
-                quality_key = "4320p"
-            elif "bestvideo+bestaudio" in saved_format or "bv*[vcodec*=avc1]+ba" in saved_format or "bv*[vcodec*=av01]+ba" in saved_format:
-                quality_key = "bestvideo"
-            elif saved_format == "best":
-                quality_key = "best"
-            else:
-                # For custom formats, we use the format hash as quality_key
-                quality_key = f"custom_{hashlib.md5(saved_format.encode()).hexdigest()[:8]}"
-        
-        logger.info(LoggerMsg.VIDEO_EXTRACTOR_SAVED_FORMAT_LOG_MSG.format(saved_format=saved_format, quality_key=quality_key))
-        branch_result = saved_format_branch(
-            saved_format=saved_format,
-            quality_key=quality_key,
-            video_count=video_count,
-            origin="video_url_extractor",
-        )
-        task = with_branch_selection(
-            make_runtime_task(
+        if is_url_blacklisted(full_string):
+            send_error_to_user(message, safe_get_messages(user_id).PORN_CONTENT_CANNOT_DOWNLOAD_MSG)
+            return
+        media_policy = derive_url_runtime_media_policy(runtime_request)
+        if runtime_request.playlist_name:
+            clear_user_playlist_error_state(
                 user_id=user_id,
-                source_message_id=getattr(message, "id", None),
-                url=url,
-                tags_text=tags_text_full,
-                tags=list(all_tags),
-                playlist_name=playlist_name,
-                video_count=video_count,
-                video_start_with=video_start_with,
-                force_no_title=is_tiktok,
-            ),
-            branch_result,
-        )
-        log_branch_selection(logger, branch_result, user_id=user_id)
-        
-        down_and_up(
+                playlist_name=runtime_request.playlist_name,
+            )
+        handle_saved_format_url_runtime(
             app,
             message,
-            format_override=saved_format,
-            quality_key=quality_key,
-            task_context=task,
+            runtime_request,
+            saved_format=saved_format,
+            tags=list(media_policy["all_tags"]),
+            tags_text=media_policy["tags_text"],
+            video_count=media_policy["video_count"],
+            force_no_title=media_policy["force_no_title"],
         )
     else:
         send_error_to_user(message, safe_get_messages(user_id).URL_PARSER_USER_ENTERED_INVALID_MSG.format(input=full_string, error_msg=safe_get_messages(user_id).ERROR1))

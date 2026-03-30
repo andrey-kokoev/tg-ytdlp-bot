@@ -1,0 +1,1186 @@
+import sys
+from types import ModuleType, SimpleNamespace
+
+from HELPERS.ingress_models import (
+    AudioDownloadRequested,
+    AskFilterSelectionRequested,
+    ImageRangeSelectionRequested,
+    AskQualitySelectionRequested,
+    ConcatRequested,
+    CookieMenuSelectionRequested,
+    FormatMenuSelectionRequested,
+    RenameRequested,
+    SubtitleOnlyRequested,
+    SubtitleSettingsSelectionRequested,
+    UrlDownloadRequested,
+)
+from HELPERS.request_execution import (
+    clear_user_playlist_error_state,
+    derive_url_runtime_media_policy,
+    derive_saved_format_quality_key,
+    derive_playlist_start_index,
+    is_url_blacklisted,
+    handle_audio_download_request,
+    handle_ask_filter_selection_request,
+    handle_ask_quality_selection_request,
+    handle_cookie_menu_selection_request,
+    handle_format_menu_selection_request,
+    handle_image_range_selection_request,
+    handle_concat_request,
+    handle_rename_request,
+    handle_saved_format_url_runtime,
+    handle_subtitle_only_request,
+    handle_subtitle_settings_selection_request,
+    handle_url_quality_menu_runtime,
+    handle_url_download_request,
+    normalize_url_download_runtime_request,
+    resolve_saved_format_policy,
+    send_url_tag_error,
+)
+from pathlib import Path
+
+
+def test_handle_subtitle_only_request_routes_request_to_subtitle_runtime(monkeypatch):
+    captured = {}
+
+    def fake_save_user_tags(user_id, tags):
+        captured["saved_tags"] = (user_id, list(tags))
+
+    def fake_get_or_compute_subs_langs(user_id, url):
+        captured["langs_for"] = (user_id, url)
+        return ["en"], ["ru"]
+
+    def fake_download_subtitles_only(
+        app,
+        message,
+        url,
+        tags,
+        available_langs,
+        playlist_name=None,
+        video_count=1,
+        video_start_with=1,
+        text_only=False,
+    ):
+        captured["download_call"] = {
+            "app": app,
+            "message": message,
+            "url": url,
+            "tags": list(tags),
+            "available_langs": list(available_langs),
+            "playlist_name": playlist_name,
+            "video_count": video_count,
+            "video_start_with": video_start_with,
+            "text_only": text_only,
+        }
+
+    fake_subtitles_module = ModuleType("COMMANDS.subtitles_cmd")
+    fake_subtitles_module.get_or_compute_subs_langs = fake_get_or_compute_subs_langs
+    fake_subtitles_module.download_subtitles_only = fake_download_subtitles_only
+    fake_tags_module = ModuleType("URL_PARSERS.tags")
+    fake_tags_module.save_user_tags = fake_save_user_tags
+
+    monkeypatch.setitem(sys.modules, "COMMANDS.subtitles_cmd", fake_subtitles_module)
+    monkeypatch.setitem(sys.modules, "URL_PARSERS.tags", fake_tags_module)
+
+    request = SubtitleOnlyRequested(
+        request_kind="SubtitleOnlyRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=77,
+        source_transport="telegram",
+        raw_input="/sub --text-only https://youtu.be/example",
+        provenance={"event_kind": "command_message"},
+        url="https://youtu.be/example",
+        subtitle_mode="text_only",
+        text_only=True,
+        tags=["#tag1"],
+        playlist_name="Playlist",
+        video_count=1,
+        video_start_with=1,
+    )
+    app = object()
+    message = SimpleNamespace(id=77, chat=SimpleNamespace(id=91363026))
+
+    handle_subtitle_only_request(app, message, request)
+
+    assert captured["saved_tags"] == (91363026, ["#tag1"])
+    assert captured["langs_for"] == (91363026, "https://youtu.be/example")
+    assert captured["download_call"] == {
+        "app": app,
+        "message": message,
+        "url": "https://youtu.be/example",
+        "tags": ["#tag1"],
+        "available_langs": ["en", "ru"],
+        "playlist_name": "Playlist",
+        "video_count": 1,
+        "video_start_with": 1,
+        "text_only": True,
+    }
+
+
+def test_handle_ask_quality_selection_request_routes_request_to_callback_runtime(monkeypatch):
+    captured = {}
+
+    def fake_askq_callback_logic(
+        app,
+        callback_query,
+        data,
+        original_message,
+        url,
+        tags_text,
+        available_langs,
+        proc_msg=None,
+    ):
+        captured["askq_call"] = {
+            "app": app,
+            "callback_query": callback_query,
+            "data": data,
+            "original_message": original_message,
+            "url": url,
+            "tags_text": tags_text,
+            "available_langs": available_langs,
+            "proc_msg": proc_msg,
+        }
+
+    fake_menu_module = ModuleType("DOWN_AND_UP.always_ask_menu")
+    fake_menu_module.askq_callback_logic = fake_askq_callback_logic
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.always_ask_menu", fake_menu_module)
+
+    request = AskQualitySelectionRequested(
+        request_kind="AskQualitySelectionRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=205,
+        source_transport="telegram",
+        raw_input="askq|360p",
+        provenance={"event_kind": "callback_query"},
+        selection_token="360p",
+        original_message_id=101,
+    )
+    app = object()
+    callback_query = SimpleNamespace(id="cbq")
+    original_message = SimpleNamespace(id=101)
+    proc_msg = SimpleNamespace(id=301)
+
+    handle_ask_quality_selection_request(
+        app,
+        callback_query,
+        request,
+        original_message=original_message,
+        url="https://youtube.com/watch?v=abc",
+        tags_text="#tag1",
+        available_langs=["en", "ru"],
+        proc_msg=proc_msg,
+    )
+
+    assert captured["askq_call"] == {
+        "app": app,
+        "callback_query": callback_query,
+        "data": "360p",
+        "original_message": original_message,
+        "url": "https://youtube.com/watch?v=abc",
+        "tags_text": "#tag1",
+        "available_langs": ["en", "ru"],
+        "proc_msg": proc_msg,
+    }
+
+
+def test_handle_ask_filter_selection_request_routes_request_to_callback_runtime(monkeypatch):
+    captured = {}
+
+    def fake_ask_filter_callback_logic(app, callback_query, request):
+        captured["askf_call"] = {
+            "app": app,
+            "callback_query": callback_query,
+            "request": request,
+        }
+
+    fake_menu_module = ModuleType("DOWN_AND_UP.always_ask_menu")
+    fake_menu_module.ask_filter_callback_logic = fake_ask_filter_callback_logic
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.always_ask_menu", fake_menu_module)
+
+    request = AskFilterSelectionRequested(
+        request_kind="AskFilterSelectionRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=206,
+        source_transport="telegram",
+        raw_input="askf|codec|avc1",
+        provenance={"event_kind": "callback_query"},
+        filter_kind="codec",
+        filter_value="avc1",
+        original_message_id=101,
+    )
+    app = object()
+    callback_query = SimpleNamespace(id="cbq")
+
+    handle_ask_filter_selection_request(
+        app,
+        callback_query,
+        request,
+    )
+
+    assert captured["askf_call"] == {
+        "app": app,
+        "callback_query": callback_query,
+        "request": request,
+    }
+
+
+def test_handle_image_range_selection_request_routes_request_to_image_runtime(monkeypatch):
+    captured = {}
+
+    def fake_fake_message(
+        text,
+        user_id,
+        original_chat_id=None,
+        message_thread_id=None,
+        original_message=None,
+    ):
+        captured["fake_message_call"] = {
+            "text": text,
+            "user_id": user_id,
+            "original_chat_id": original_chat_id,
+            "message_thread_id": message_thread_id,
+            "original_message": original_message,
+        }
+        return {"mock_message": text}
+
+    def fake_image_command(app, message):
+        captured["image_command_call"] = {"app": app, "message": message}
+
+    fake_safe_messeger_module = ModuleType("HELPERS.safe_messeger")
+    fake_safe_messeger_module.fake_message = fake_fake_message
+    fake_image_module = ModuleType("COMMANDS.image_cmd")
+    fake_image_module.image_command = fake_image_command
+    monkeypatch.setitem(sys.modules, "HELPERS.safe_messeger", fake_safe_messeger_module)
+    monkeypatch.setitem(sys.modules, "COMMANDS.image_cmd", fake_image_module)
+
+    request = ImageRangeSelectionRequested(
+        request_kind="ImageRangeSelectionRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=401,
+        source_transport="telegram",
+        raw_input="img_range|2|5|https://example.com/gallery",
+        provenance={"event_kind": "callback_query"},
+        start_index=2,
+        end_index=5,
+        url="https://example.com/gallery",
+    )
+    app = object()
+    callback_query = SimpleNamespace(
+        message=SimpleNamespace(
+            chat=SimpleNamespace(id=91363026),
+            message_thread_id=777,
+        )
+    )
+
+    handle_image_range_selection_request(app, callback_query, request)
+
+    assert captured["fake_message_call"] == {
+        "text": "/img 2-5 https://example.com/gallery",
+        "user_id": 91363026,
+        "original_chat_id": 91363026,
+        "message_thread_id": 777,
+        "original_message": callback_query.message,
+    }
+    assert captured["image_command_call"] == {
+        "app": app,
+        "message": {"mock_message": "/img 2-5 https://example.com/gallery"},
+    }
+
+
+def test_handle_cookie_menu_selection_request_routes_request_to_cookie_runtime(monkeypatch):
+    captured = {}
+
+    def fake_handle_cookie_menu_selection(
+        app,
+        *,
+        user_id,
+        selection_key,
+        message,
+        callback_query=None,
+    ):
+        captured["cookie_selection_call"] = {
+            "app": app,
+            "user_id": user_id,
+            "selection_key": selection_key,
+            "message": message,
+            "callback_query": callback_query,
+        }
+
+    fake_cookies_module = ModuleType("COMMANDS.cookies_cmd")
+    fake_cookies_module._handle_cookie_menu_selection = fake_handle_cookie_menu_selection
+    monkeypatch.setitem(sys.modules, "COMMANDS.cookies_cmd", fake_cookies_module)
+
+    request = CookieMenuSelectionRequested(
+        request_kind="CookieMenuSelectionRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=501,
+        source_transport="telegram",
+        raw_input="download_cookie|youtube",
+        provenance={"event_kind": "callback_query"},
+        selection_key="youtube",
+    )
+    app = object()
+    callback_query = SimpleNamespace(
+        message=SimpleNamespace(id=501, chat=SimpleNamespace(id=91363026)),
+    )
+
+    handle_cookie_menu_selection_request(app, callback_query, request)
+
+    assert captured["cookie_selection_call"] == {
+        "app": app,
+        "user_id": 91363026,
+        "selection_key": "youtube",
+        "message": callback_query.message,
+        "callback_query": callback_query,
+    }
+
+
+def test_handle_subtitle_settings_selection_request_routes_request_to_subtitle_runtime(monkeypatch):
+    captured = {}
+
+    def fake_subtitle_settings_callback_logic(app, callback_query, request):
+        captured["subtitle_settings_call"] = {
+            "app": app,
+            "callback_query": callback_query,
+            "request": request,
+        }
+
+    fake_subtitles_module = ModuleType("COMMANDS.subtitles_cmd")
+    fake_subtitles_module.subtitle_settings_callback_logic = fake_subtitle_settings_callback_logic
+    monkeypatch.setitem(sys.modules, "COMMANDS.subtitles_cmd", fake_subtitles_module)
+
+    request = SubtitleSettingsSelectionRequested(
+        request_kind="SubtitleSettingsSelectionRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=601,
+        source_transport="telegram",
+        raw_input="subs_auto|toggle|0",
+        provenance={"event_kind": "callback_query"},
+        action_kind="auto",
+        action_value="toggle",
+        page=0,
+    )
+    app = object()
+    callback_query = SimpleNamespace(id="cbq")
+
+    handle_subtitle_settings_selection_request(app, callback_query, request)
+
+    assert captured["subtitle_settings_call"] == {
+        "app": app,
+        "callback_query": callback_query,
+        "request": request,
+    }
+
+
+def test_handle_format_menu_selection_request_routes_request_to_format_runtime(monkeypatch):
+    captured = {}
+
+    def fake_format_menu_callback_logic(app, callback_query, request):
+        captured["format_menu_call"] = {
+            "app": app,
+            "callback_query": callback_query,
+            "request": request,
+        }
+
+    fake_format_module = ModuleType("COMMANDS.format_cmd")
+    fake_format_module.format_menu_callback_logic = fake_format_menu_callback_logic
+    monkeypatch.setitem(sys.modules, "COMMANDS.format_cmd", fake_format_module)
+
+    request = FormatMenuSelectionRequested(
+        request_kind="FormatMenuSelectionRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=602,
+        source_transport="telegram",
+        raw_input="format_option|others",
+        provenance={"event_kind": "callback_query"},
+        action_kind="format_option",
+        action_value="others",
+    )
+    app = object()
+    callback_query = SimpleNamespace(id="cbq")
+
+    handle_format_menu_selection_request(app, callback_query, request)
+
+    assert captured["format_menu_call"] == {
+        "app": app,
+        "callback_query": callback_query,
+        "request": request,
+    }
+
+
+def test_handle_concat_request_routes_audio_request_to_audio_concat_runtime(monkeypatch):
+    captured = {}
+
+    def fake_audio_concat_branch(**kwargs):
+        captured["audio_branch_kwargs"] = kwargs
+        return {"branch_family": "audio_concat_download"}
+
+    def fake_video_concat_branch(**kwargs):
+        raise AssertionError("video concat branch should not be used for audio request")
+
+    def fake_log_branch_selection(logger, branch_result, user_id):
+        captured["logged_branch"] = {"branch_result": branch_result, "user_id": user_id}
+
+    def fake_make_runtime_task(**kwargs):
+        captured["task_kwargs"] = kwargs
+        return {"task_seed": kwargs}
+
+    def fake_with_branch_selection(task, branch_result):
+        captured["task_branch"] = branch_result
+        task["branch_result"] = branch_result
+        return task
+
+    def fake_concat_audio_playlist_range(app, message, **kwargs):
+        captured["audio_exec"] = {"app": app, "message": message, **kwargs}
+
+    def fake_concat_video_playlist_range(app, message, **kwargs):
+        raise AssertionError("video concat executor should not be used for audio request")
+
+    fake_branch_module = ModuleType("DOWN_AND_UP.branch_selection_result")
+    fake_branch_module.audio_concat_branch = fake_audio_concat_branch
+    fake_branch_module.video_concat_branch = fake_video_concat_branch
+    fake_branch_module.log_branch_selection = fake_log_branch_selection
+
+    fake_runtime_module = ModuleType("DOWN_AND_UP.runtime_task")
+    fake_runtime_module.make_runtime_task = fake_make_runtime_task
+    fake_runtime_module.with_branch_selection = fake_with_branch_selection
+
+    fake_audio_concat_module = ModuleType("DOWN_AND_UP.audio_concat")
+    fake_audio_concat_module.concat_audio_playlist_range = fake_concat_audio_playlist_range
+
+    fake_video_concat_module = ModuleType("DOWN_AND_UP.video_concat")
+    fake_video_concat_module.concat_video_playlist_range = fake_concat_video_playlist_range
+
+    fake_logger_module = ModuleType("HELPERS.logger")
+    fake_logger_module.logger = object()
+
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.branch_selection_result", fake_branch_module)
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.runtime_task", fake_runtime_module)
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.audio_concat", fake_audio_concat_module)
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.video_concat", fake_video_concat_module)
+    monkeypatch.setitem(sys.modules, "HELPERS.logger", fake_logger_module)
+
+    request = ConcatRequested(
+        request_kind="ConcatRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=88,
+        source_transport="telegram",
+        raw_input="/concat --audio-only 2-5 https://youtube.com/playlist?list=abc",
+        provenance={"command_name": "/concat"},
+        url="https://youtube.com/playlist?list=abc",
+        media_mode="audio",
+        reverse_output=True,
+        output_name_override="My Mix",
+        tags=["#tag1"],
+        tags_text="#tag1",
+        playlist_name="Playlist",
+        video_count=4,
+        video_start_with=2,
+        video_end_with=5,
+        concat_policy="direct_concat_only",
+        chapter_policy="none",
+        concat_ordering="reverse",
+    )
+    app = object()
+    message = SimpleNamespace(id=88, chat=SimpleNamespace(id=91363026))
+
+    handle_concat_request(app, message, request)
+
+    assert captured["audio_branch_kwargs"]["video_count"] == 4
+    assert captured["audio_branch_kwargs"]["provenance"]["command"] == "/concat"
+    assert captured["logged_branch"]["user_id"] == 91363026
+    assert captured["task_kwargs"]["output_name_override"] == "My Mix"
+    assert captured["audio_exec"] == {
+        "app": app,
+        "message": message,
+        "url": "https://youtube.com/playlist?list=abc",
+        "video_start_with": 2,
+        "video_end_with": 5,
+        "reverse_output": True,
+        "output_name_override": "My Mix",
+        "task_context": {
+            "task_seed": captured["task_kwargs"],
+            "branch_result": {"branch_family": "audio_concat_download"},
+        },
+    }
+
+
+def test_handle_concat_request_routes_video_request_to_video_concat_runtime(monkeypatch):
+    captured = {}
+
+    def fake_audio_concat_branch(**kwargs):
+        raise AssertionError("audio concat branch should not be used for video request")
+
+    def fake_video_concat_branch(**kwargs):
+        captured["video_branch_kwargs"] = kwargs
+        return {"branch_family": "video_concat_download"}
+
+    def fake_log_branch_selection(logger, branch_result, user_id):
+        captured["logged_branch"] = {"branch_result": branch_result, "user_id": user_id}
+
+    def fake_make_runtime_task(**kwargs):
+        captured["task_kwargs"] = kwargs
+        return {"task_seed": kwargs}
+
+    def fake_with_branch_selection(task, branch_result):
+        captured["task_branch"] = branch_result
+        task["branch_result"] = branch_result
+        return task
+
+    def fake_concat_audio_playlist_range(app, message, **kwargs):
+        raise AssertionError("audio concat executor should not be used for video request")
+
+    def fake_concat_video_playlist_range(app, message, **kwargs):
+        captured["video_exec"] = {"app": app, "message": message, **kwargs}
+
+    fake_branch_module = ModuleType("DOWN_AND_UP.branch_selection_result")
+    fake_branch_module.audio_concat_branch = fake_audio_concat_branch
+    fake_branch_module.video_concat_branch = fake_video_concat_branch
+    fake_branch_module.log_branch_selection = fake_log_branch_selection
+
+    fake_runtime_module = ModuleType("DOWN_AND_UP.runtime_task")
+    fake_runtime_module.make_runtime_task = fake_make_runtime_task
+    fake_runtime_module.with_branch_selection = fake_with_branch_selection
+
+    fake_audio_concat_module = ModuleType("DOWN_AND_UP.audio_concat")
+    fake_audio_concat_module.concat_audio_playlist_range = fake_concat_audio_playlist_range
+
+    fake_video_concat_module = ModuleType("DOWN_AND_UP.video_concat")
+    fake_video_concat_module.concat_video_playlist_range = fake_concat_video_playlist_range
+
+    fake_logger_module = ModuleType("HELPERS.logger")
+    fake_logger_module.logger = object()
+
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.branch_selection_result", fake_branch_module)
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.runtime_task", fake_runtime_module)
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.audio_concat", fake_audio_concat_module)
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.video_concat", fake_video_concat_module)
+    monkeypatch.setitem(sys.modules, "HELPERS.logger", fake_logger_module)
+
+    request = ConcatRequested(
+        request_kind="ConcatRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=99,
+        source_transport="telegram",
+        raw_input="/concat reverse 1-3 https://youtube.com/playlist?list=abc",
+        provenance={"command_name": "/concat"},
+        url="https://youtube.com/playlist?list=abc",
+        media_mode="video",
+        reverse_output=False,
+        output_name_override=None,
+        tags=[],
+        tags_text="",
+        playlist_name="Playlist",
+        video_count=3,
+        video_start_with=1,
+        video_end_with=3,
+        concat_policy="direct_concat_only",
+        chapter_policy="none",
+        concat_ordering="original",
+    )
+    app = object()
+    message = SimpleNamespace(id=99, chat=SimpleNamespace(id=91363026))
+
+    handle_concat_request(app, message, request)
+
+    assert captured["video_branch_kwargs"]["video_count"] == 3
+    assert captured["video_branch_kwargs"]["provenance"]["concat_policy"] == "direct_concat_only"
+    assert captured["logged_branch"]["user_id"] == 91363026
+    assert captured["task_kwargs"]["concat_policy"] == "direct_concat_only"
+    assert captured["video_exec"] == {
+        "app": app,
+        "message": message,
+        "url": "https://youtube.com/playlist?list=abc",
+        "video_start_with": 1,
+        "video_end_with": 3,
+        "reverse_output": False,
+        "output_name_override": None,
+        "task_context": {
+            "task_seed": captured["task_kwargs"],
+            "branch_result": {"branch_family": "video_concat_download"},
+        },
+    }
+
+
+def test_handle_rename_request_routes_request_to_rename_runtime(monkeypatch):
+    captured = {}
+
+    def fake_resend_last_audio_concat_with_new_name(app, message, *, new_name):
+        captured["rename_call"] = {"app": app, "message": message, "new_name": new_name}
+
+    fake_audio_concat_module = ModuleType("DOWN_AND_UP.audio_concat")
+    fake_audio_concat_module.resend_last_audio_concat_with_new_name = fake_resend_last_audio_concat_with_new_name
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.audio_concat", fake_audio_concat_module)
+
+    request = RenameRequested(
+        request_kind="RenameRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=101,
+        source_transport="telegram",
+        raw_input='/rename "My Better Mix"',
+        provenance={"command_name": "/rename"},
+        target_kind="audio_concat",
+        new_name="My Better Mix",
+    )
+    app = object()
+    message = SimpleNamespace(id=101, chat=SimpleNamespace(id=91363026))
+
+    handle_rename_request(app, message, request)
+
+    assert captured["rename_call"] == {
+        "app": app,
+        "message": message,
+        "new_name": "My Better Mix",
+    }
+
+
+def test_handle_audio_download_request_routes_request_to_audio_runtime(monkeypatch):
+    captured = {}
+
+    def fake_save_user_tags(user_id, tags):
+        captured["saved_tags"] = (user_id, list(tags))
+
+    def fake_audio_download_branch(**kwargs):
+        captured["audio_branch_kwargs"] = kwargs
+        return {"branch_family": "audio_download"}
+
+    def fake_log_branch_selection(logger, branch_result, user_id):
+        captured["logged_branch"] = {"branch_result": branch_result, "user_id": user_id}
+
+    def fake_make_runtime_task(**kwargs):
+        captured["task_kwargs"] = kwargs
+        return {"task_seed": kwargs}
+
+    def fake_with_branch_selection(task, branch_result):
+        task["branch_result"] = branch_result
+        return task
+
+    def fake_down_and_audio(app, message, **kwargs):
+        captured["audio_exec"] = {"app": app, "message": message, **kwargs}
+
+    fake_branch_module = ModuleType("DOWN_AND_UP.branch_selection_result")
+    fake_branch_module.audio_download_branch = fake_audio_download_branch
+    fake_branch_module.log_branch_selection = fake_log_branch_selection
+
+    fake_runtime_module = ModuleType("DOWN_AND_UP.runtime_task")
+    fake_runtime_module.make_runtime_task = fake_make_runtime_task
+    fake_runtime_module.with_branch_selection = fake_with_branch_selection
+
+    fake_audio_module = ModuleType("DOWN_AND_UP.down_and_audio")
+    fake_audio_module.down_and_audio = fake_down_and_audio
+
+    fake_logger_module = ModuleType("HELPERS.logger")
+    fake_logger_module.logger = object()
+
+    fake_tags_module = ModuleType("URL_PARSERS.tags")
+    fake_tags_module.save_user_tags = fake_save_user_tags
+
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.branch_selection_result", fake_branch_module)
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.runtime_task", fake_runtime_module)
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.down_and_audio", fake_audio_module)
+    monkeypatch.setitem(sys.modules, "HELPERS.logger", fake_logger_module)
+    monkeypatch.setitem(sys.modules, "URL_PARSERS.tags", fake_tags_module)
+
+    request = AudioDownloadRequested(
+        request_kind="AudioDownloadRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=111,
+        source_transport="telegram",
+        raw_input="/audio 1-3 https://youtu.be/example",
+        provenance={"command_name": "/audio"},
+        url="https://youtu.be/example",
+        quality_key="mp3",
+        format_override="ba",
+        tags=["#tag1"],
+        tags_text="#tag1",
+        playlist_name="Playlist",
+        video_count=3,
+        video_start_with=1,
+    )
+    app = object()
+    message = SimpleNamespace(id=111, chat=SimpleNamespace(id=91363026))
+
+    handle_audio_download_request(app, message, request)
+
+    assert captured["saved_tags"] == (91363026, ["#tag1"])
+    assert captured["audio_branch_kwargs"]["provenance"]["command"] == "/audio"
+    assert captured["logged_branch"]["user_id"] == 91363026
+    assert captured["task_kwargs"]["playlist_name"] == "Playlist"
+    assert captured["audio_exec"] == {
+        "app": app,
+        "message": message,
+        "quality_key": "mp3",
+        "format_override": "ba",
+        "task_context": {
+            "task_seed": captured["task_kwargs"],
+            "branch_result": {"branch_family": "audio_download"},
+        },
+    }
+
+
+def test_handle_url_download_request_routes_request_to_video_extractor(monkeypatch):
+    captured = {}
+
+    def fake_video_url_extractor(app, message, url_request=None):
+        captured["video_url_extractor_call"] = {
+            "app": app,
+            "message": message,
+            "url_request": url_request,
+        }
+
+    fake_video_extractor_module = ModuleType("URL_PARSERS.video_extractor")
+    fake_video_extractor_module.video_url_extractor = fake_video_url_extractor
+    monkeypatch.setitem(sys.modules, "URL_PARSERS.video_extractor", fake_video_extractor_module)
+
+    request = UrlDownloadRequested(
+        request_kind="UrlDownloadRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=121,
+        source_transport="telegram",
+        raw_input="https://youtube.com/playlist?list=abc*2*5 #tag1",
+        provenance={"event_kind": "text_message"},
+        url="https://youtube.com/playlist?list=abc",
+        tags=["#tag1"],
+        tags_text="#tag1",
+        playlist_name="Playlist",
+        video_start_with=2,
+        video_end_with=5,
+    )
+    app = object()
+    message = SimpleNamespace(id=121, chat=SimpleNamespace(id=91363026))
+
+    handle_url_download_request(app, message, request)
+
+    assert captured["video_url_extractor_call"] == {
+        "app": app,
+        "message": message,
+        "url_request": request,
+    }
+
+
+def test_derive_playlist_start_index_uses_first_item_only_when_no_range():
+    assert derive_playlist_start_index(1, 1) == 1
+    assert derive_playlist_start_index(3, 5) == 3
+    assert derive_playlist_start_index(-1, -7) == -1
+
+
+def test_resolve_saved_format_policy_defaults_to_ask_when_missing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    should_ask, saved_format = resolve_saved_format_policy(user_id=91363026)
+
+    assert should_ask is True
+    assert saved_format is None
+    assert Path("users/91363026").is_dir()
+
+
+def test_resolve_saved_format_policy_uses_saved_format_when_present(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    user_dir = Path("users/91363026")
+    user_dir.mkdir(parents=True)
+    (user_dir / "format.txt").write_text("bv*[height<=720]+ba", encoding="utf-8")
+
+    should_ask, saved_format = resolve_saved_format_policy(user_id=91363026)
+
+    assert should_ask is False
+    assert saved_format == "bv*[height<=720]+ba"
+
+
+def test_resolve_saved_format_policy_keeps_always_ask_mode(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    user_dir = Path("users/91363026")
+    user_dir.mkdir(parents=True)
+    (user_dir / "format.txt").write_text("ALWAYS_ASK", encoding="utf-8")
+
+    should_ask, saved_format = resolve_saved_format_policy(user_id=91363026)
+
+    assert should_ask is True
+    assert saved_format is None
+
+
+def test_normalize_url_download_runtime_request_reuses_existing_request():
+    request = UrlDownloadRequested(
+        request_kind="UrlDownloadRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=121,
+        source_transport="telegram",
+        raw_input="https://youtube.com/playlist?list=abc*2*5 #tag1",
+        provenance={"event_kind": "text_message"},
+        url="https://youtube.com/playlist?list=abc",
+        tags=["#tag1"],
+        tags_text="#tag1",
+        playlist_name="Playlist",
+        video_start_with=2,
+        video_end_with=5,
+    )
+
+    normalized, tag_error = normalize_url_download_runtime_request(
+        user_id=91363026,
+        source_message_id=121,
+        raw_input=request.raw_input,
+        request=request,
+    )
+
+    assert normalized is request
+    assert tag_error is None
+
+
+def test_normalize_url_download_runtime_request_parses_legacy_raw_input(monkeypatch):
+    def fake_extract_url_range_tags(raw_input):
+        assert raw_input == "https://youtube.com/playlist?list=abc*2*5 #tag1"
+        return (
+            "https://youtube.com/playlist?list=abc",
+            2,
+            5,
+            "Playlist",
+            ["#tag1"],
+            "#tag1",
+            None,
+        )
+
+    fake_tags_module = ModuleType("URL_PARSERS.tags")
+    fake_tags_module.extract_url_range_tags = fake_extract_url_range_tags
+    monkeypatch.setitem(sys.modules, "URL_PARSERS.tags", fake_tags_module)
+
+    normalized, tag_error = normalize_url_download_runtime_request(
+        user_id=91363026,
+        source_message_id=121,
+        raw_input="https://youtube.com/playlist?list=abc*2*5 #tag1",
+        request=None,
+    )
+
+    assert tag_error is None
+    assert normalized.user_id == 91363026
+    assert normalized.source_message_id == 121
+    assert normalized.url == "https://youtube.com/playlist?list=abc"
+    assert normalized.tags == ["#tag1"]
+    assert normalized.tags_text == "#tag1"
+    assert normalized.playlist_name == "Playlist"
+    assert normalized.video_start_with == 2
+    assert normalized.video_end_with == 5
+
+
+def test_derive_url_runtime_media_policy_adds_auto_tags_and_tiktok_flag(monkeypatch):
+    def fake_get_auto_tags(url, tags):
+        assert url == "https://www.tiktok.com/@user/video/123"
+        assert tags == ["#tag1"]
+        return ["#autotag"]
+
+    def fake_is_tiktok_url(url):
+        return url.startswith("https://www.tiktok.com/")
+
+    fake_tags_module = ModuleType("URL_PARSERS.tags")
+    fake_tags_module.get_auto_tags = fake_get_auto_tags
+    fake_tiktok_module = ModuleType("URL_PARSERS.tiktok")
+    fake_tiktok_module.is_tiktok_url = fake_is_tiktok_url
+    monkeypatch.setitem(sys.modules, "URL_PARSERS.tags", fake_tags_module)
+    monkeypatch.setitem(sys.modules, "URL_PARSERS.tiktok", fake_tiktok_module)
+
+    request = UrlDownloadRequested(
+        request_kind="UrlDownloadRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=141,
+        source_transport="telegram",
+        raw_input="https://www.tiktok.com/@user/video/123",
+        provenance={"event_kind": "text_message"},
+        url="https://www.tiktok.com/@user/video/123",
+        tags=["#tag1"],
+        tags_text="#tag1",
+        playlist_name=None,
+        video_start_with=1,
+        video_end_with=3,
+    )
+
+    policy = derive_url_runtime_media_policy(request)
+
+    assert policy == {
+        "force_no_title": True,
+        "all_tags": ["#tag1", "#autotag"],
+        "tags_text": "#tag1 #autotag",
+        "video_count": 3,
+    }
+
+
+def test_derive_url_runtime_media_policy_handles_reverse_negative_ranges(monkeypatch):
+    fake_tags_module = ModuleType("URL_PARSERS.tags")
+    fake_tags_module.get_auto_tags = lambda url, tags: []
+    fake_tiktok_module = ModuleType("URL_PARSERS.tiktok")
+    fake_tiktok_module.is_tiktok_url = lambda url: False
+    monkeypatch.setitem(sys.modules, "URL_PARSERS.tags", fake_tags_module)
+    monkeypatch.setitem(sys.modules, "URL_PARSERS.tiktok", fake_tiktok_module)
+
+    negative_request = UrlDownloadRequested(
+        request_kind="UrlDownloadRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=142,
+        source_transport="telegram",
+        raw_input="https://youtube.com/playlist?list=abc*-1*-7",
+        provenance={"event_kind": "text_message"},
+        url="https://youtube.com/playlist?list=abc",
+        tags=[],
+        tags_text="",
+        playlist_name="Playlist",
+        video_start_with=-1,
+        video_end_with=-7,
+    )
+    reverse_request = UrlDownloadRequested(
+        request_kind="UrlDownloadRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=143,
+        source_transport="telegram",
+        raw_input="https://youtube.com/playlist?list=abc*5*3",
+        provenance={"event_kind": "text_message"},
+        url="https://youtube.com/playlist?list=abc",
+        tags=[],
+        tags_text="",
+        playlist_name="Playlist",
+        video_start_with=5,
+        video_end_with=3,
+    )
+
+    negative_policy = derive_url_runtime_media_policy(negative_request)
+    reverse_policy = derive_url_runtime_media_policy(reverse_request)
+
+    assert negative_policy["video_count"] == 7
+    assert reverse_policy["video_count"] == 3
+    assert negative_policy["force_no_title"] is False
+
+
+def test_send_url_tag_error_renders_and_logs(monkeypatch):
+    captured = {}
+
+    def fake_safe_get_messages(user_id):
+        return SimpleNamespace(TAG_FORBIDDEN_CHARS_MSG="bad {tag} ex {example}")
+
+    def fake_log_error_to_channel(message, error_msg):
+        captured["logged_error"] = {"message": message, "error_msg": error_msg}
+
+    fake_messages_module = ModuleType("CONFIG.messages")
+    fake_messages_module.safe_get_messages = fake_safe_get_messages
+    fake_logger_module = ModuleType("HELPERS.logger")
+    fake_logger_module.log_error_to_channel = fake_log_error_to_channel
+    fake_types_module = ModuleType("pyrogram.types")
+    fake_types_module.ReplyParameters = lambda message_id: {"message_id": message_id}
+
+    monkeypatch.setitem(sys.modules, "CONFIG.messages", fake_messages_module)
+    monkeypatch.setitem(sys.modules, "HELPERS.logger", fake_logger_module)
+    monkeypatch.setitem(sys.modules, "pyrogram.types", fake_types_module)
+
+    class FakeApp:
+        def send_message(self, chat_id, text, reply_parameters=None):
+            captured["send_message"] = {
+                "chat_id": chat_id,
+                "text": text,
+                "reply_parameters": reply_parameters,
+            }
+
+    message = SimpleNamespace(id=501)
+    send_url_tag_error(FakeApp(), message, user_id=91363026, tag_error=("badtag", "#good"))
+
+    assert captured["send_message"] == {
+        "chat_id": 91363026,
+        "text": "bad badtag ex #good",
+        "reply_parameters": {"message_id": 501},
+    }
+    assert captured["logged_error"]["error_msg"] == "bad badtag ex #good"
+
+
+def test_clear_user_playlist_error_state_handles_full_and_named_cleanup(monkeypatch):
+    fake_download_status_module = ModuleType("HELPERS.download_status")
+    fake_download_status_module.playlist_errors = {
+        "91363026_one": True,
+        "91363026_two": True,
+        "999_other": True,
+    }
+
+    class DummyLock:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    fake_download_status_module.playlist_errors_lock = DummyLock()
+    monkeypatch.setitem(sys.modules, "HELPERS.download_status", fake_download_status_module)
+
+    clear_user_playlist_error_state(user_id=91363026, playlist_name="one")
+    assert fake_download_status_module.playlist_errors == {
+        "91363026_two": True,
+        "999_other": True,
+    }
+
+    clear_user_playlist_error_state(user_id=91363026)
+    assert fake_download_status_module.playlist_errors == {"999_other": True}
+
+
+def test_is_url_blacklisted_checks_against_config(monkeypatch):
+    fake_config_module = ModuleType("CONFIG.config")
+    fake_config_module.Config = SimpleNamespace(BLACK_LIST=["bad.example", "forbidden"])
+    monkeypatch.setitem(sys.modules, "CONFIG.config", fake_config_module)
+
+    assert is_url_blacklisted("https://bad.example/video") is True
+    assert is_url_blacklisted("https://good.example/video") is False
+
+
+def test_handle_url_quality_menu_runtime_routes_request_to_menu_runtime(monkeypatch):
+    captured = {}
+
+    def fake_ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, download_dir=None):
+        captured["ask_quality_call"] = {
+            "app": app,
+            "message": message,
+            "url": url,
+            "tags": list(tags),
+            "playlist_start_index": playlist_start_index,
+            "cb": cb,
+            "download_dir": download_dir,
+        }
+
+    fake_menu_module = ModuleType("DOWN_AND_UP.always_ask_menu")
+    fake_menu_module.ask_quality_menu = fake_ask_quality_menu
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.always_ask_menu", fake_menu_module)
+
+    request = UrlDownloadRequested(
+        request_kind="UrlDownloadRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=122,
+        source_transport="telegram",
+        raw_input="https://youtube.com/playlist?list=abc*2*5 #tag1",
+        provenance={"event_kind": "text_message"},
+        url="https://youtube.com/playlist?list=abc",
+        tags=["#tag1"],
+        tags_text="#tag1",
+        playlist_name="Playlist",
+        video_start_with=2,
+        video_end_with=5,
+    )
+    app = object()
+    message = SimpleNamespace(id=122, chat=SimpleNamespace(id=91363026))
+
+    handle_url_quality_menu_runtime(app, message, request)
+
+    assert captured["ask_quality_call"] == {
+        "app": app,
+        "message": message,
+        "url": "https://youtube.com/playlist?list=abc",
+        "tags": ["#tag1"],
+        "playlist_start_index": 2,
+        "cb": None,
+        "download_dir": None,
+    }
+
+
+def test_derive_saved_format_quality_key_maps_known_and_custom_formats():
+    assert derive_saved_format_quality_key("best") == "best"
+    assert derive_saved_format_quality_key("bestvideo+bestaudio") == "bestvideo"
+    assert derive_saved_format_quality_key("bv*[height<=720]+ba") == "720p"
+    assert derive_saved_format_quality_key("custom_format_selector").startswith("custom_")
+
+
+def test_handle_saved_format_url_runtime_routes_request_to_saved_format_runtime(monkeypatch):
+    captured = {}
+
+    def fake_save_user_tags(user_id, tags):
+        captured["saved_tags"] = (user_id, list(tags))
+
+    def fake_saved_format_branch(**kwargs):
+        captured["branch_kwargs"] = kwargs
+        return {"branch_family": "saved_format_download"}
+
+    def fake_log_branch_selection(logger, branch_result, user_id):
+        captured["logged_branch"] = {"branch_result": branch_result, "user_id": user_id}
+
+    def fake_make_runtime_task(**kwargs):
+        captured["task_kwargs"] = kwargs
+        return {"task_seed": kwargs}
+
+    def fake_with_branch_selection(task, branch_result):
+        task["branch_result"] = branch_result
+        return task
+
+    def fake_down_and_up(app, message, **kwargs):
+        captured["video_exec"] = {"app": app, "message": message, **kwargs}
+
+    fake_branch_module = ModuleType("DOWN_AND_UP.branch_selection_result")
+    fake_branch_module.saved_format_branch = fake_saved_format_branch
+    fake_branch_module.log_branch_selection = fake_log_branch_selection
+
+    fake_runtime_module = ModuleType("DOWN_AND_UP.runtime_task")
+    fake_runtime_module.make_runtime_task = fake_make_runtime_task
+    fake_runtime_module.with_branch_selection = fake_with_branch_selection
+
+    fake_down_and_up_module = ModuleType("DOWN_AND_UP.down_and_up")
+    fake_down_and_up_module.down_and_up = fake_down_and_up
+
+    fake_logger_module = ModuleType("HELPERS.logger")
+    fake_logger_module.logger = object()
+
+    fake_tags_module = ModuleType("URL_PARSERS.tags")
+    fake_tags_module.save_user_tags = fake_save_user_tags
+
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.branch_selection_result", fake_branch_module)
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.runtime_task", fake_runtime_module)
+    monkeypatch.setitem(sys.modules, "DOWN_AND_UP.down_and_up", fake_down_and_up_module)
+    monkeypatch.setitem(sys.modules, "HELPERS.logger", fake_logger_module)
+    monkeypatch.setitem(sys.modules, "URL_PARSERS.tags", fake_tags_module)
+
+    request = UrlDownloadRequested(
+        request_kind="UrlDownloadRequested",
+        user_id=91363026,
+        chat_id=91363026,
+        source_message_id=131,
+        source_transport="telegram",
+        raw_input="https://youtube.com/watch?v=abc",
+        provenance={"event_kind": "text_message"},
+        url="https://youtube.com/watch?v=abc",
+        tags=["#tag1"],
+        tags_text="#tag1",
+        playlist_name="Playlist",
+        video_start_with=1,
+        video_end_with=1,
+    )
+    app = object()
+    message = SimpleNamespace(id=131, chat=SimpleNamespace(id=91363026))
+
+    handle_saved_format_url_runtime(
+        app,
+        message,
+        request,
+        saved_format="bv*[height<=720]+ba",
+        tags=["#tag1", "#auto"],
+        tags_text="#tag1 #auto",
+        video_count=1,
+        force_no_title=True,
+    )
+
+    assert captured["saved_tags"] == (91363026, ["#tag1", "#auto"])
+    assert captured["branch_kwargs"]["quality_key"] == "720p"
+    assert captured["logged_branch"]["user_id"] == 91363026
+    assert captured["task_kwargs"]["force_no_title"] is True
+    assert captured["video_exec"] == {
+        "app": app,
+        "message": message,
+        "format_override": "bv*[height<=720]+ba",
+        "quality_key": "720p",
+        "task_context": {
+            "task_seed": captured["task_kwargs"],
+            "branch_result": {"branch_family": "saved_format_download"},
+        },
+    }

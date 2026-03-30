@@ -13,6 +13,7 @@ from HELPERS.limitter import is_user_in_channel
 from HELPERS.safe_messeger import safe_send_message, safe_edit_message_text
 from HELPERS.ingress_models import build_telegram_callback_envelope
 from HELPERS.ingress_requests import build_format_menu_selection_request
+from HELPERS.request_execution import handle_format_menu_selection_request
 from HELPERS.decorators import background_handler
 from urllib.parse import urlparse
 import os
@@ -248,314 +249,216 @@ safe_get_messages(user_id).FORMAT_MENU_MSG + "\n"
 @app.on_callback_query(filters.regex(r"^format_option\|"))
 # @reply_with_keyboard
 def format_option_callback(app, callback_query):
-    user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
-    logger.info(LoggerMsg.FORMAT_CALLBACK_LOG_MSG.format(callback_data=callback_query.data))
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_format_menu_selection_request(
         callback_envelope,
         action_kind="format_option",
         action_value=callback_query.data.split("|")[1],
     )
-    data = request.action_value
-
-    # If you press the close button
-    if data == "close":
-        try:
-            callback_query.message.delete()
-        except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-        callback_query.answer(safe_get_messages(user_id).FORMAT_CHOICE_UPDATED_MSG)
-        send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_SELECTION_CLOSED_LOG_MSG)
-        return
-
-    # If the Custom button is pressed
-    if data == "custom":
-        # Sending a message with the Close button
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="format_custom|close")]
-        ])
-        safe_send_message(
-            user_id,
-safe_get_messages(user_id).FORMAT_CUSTOM_HINT_MSG,
-            reply_parameters=ReplyParameters(message_id=callback_query.message.id),
-            reply_markup=keyboard
-        )
-        callback_query.answer(safe_get_messages(user_id).FORMAT_HINT_SENT_MSG)
-        send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_CUSTOM_HINT_SENT_LOG_MSG)
-        return
-
-    # If the Others button is pressed - we display the second set of options
-    if data == "others":
-        # Get current codec preference
-        current_codec = get_user_codec_preference(user_id)
-        mkv_on = get_user_mkv_preference(user_id)
-        
-        # Create codec selection buttons with active state indicators
-        avc1_button = safe_get_messages(user_id).FORMAT_AVC1_BUTTON_MSG if current_codec == "avc1" else safe_get_messages(user_id).FORMAT_AVC1_BUTTON_INACTIVE_MSG
-        av01_button = safe_get_messages(user_id).FORMAT_AV01_BUTTON_MSG if current_codec == "av01" else safe_get_messages(user_id).FORMAT_AV01_BUTTON_INACTIVE_MSG
-        vp9_button = safe_get_messages(user_id).FORMAT_VP9_BUTTON_MSG if current_codec == "vp9" else safe_get_messages(user_id).FORMAT_VP9_BUTTON_INACTIVE_MSG
-        mkv_button = safe_get_messages(user_id).FORMAT_MKV_ON_BUTTON_MSG if mkv_on else safe_get_messages(user_id).FORMAT_MKV_OFF_BUTTON_MSG
-        
-        full_res_keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("144p (256×144)", callback_data="format_option|bv144"),
-                InlineKeyboardButton("240p (426×240)", callback_data="format_option|bv240"),
-                InlineKeyboardButton("360p (640×360)", callback_data="format_option|bv360")
-            ],
-            [
-                InlineKeyboardButton("480p (854×480)", callback_data="format_option|bv480"),
-                InlineKeyboardButton("720p (1280×720)", callback_data="format_option|bv720"),
-                InlineKeyboardButton("1080p (1920×1080)", callback_data="format_option|bv1080")
-            ],
-            [
-                InlineKeyboardButton("1440p (2560×1440)", callback_data="format_option|bv1440"),
-                InlineKeyboardButton("2160p (3840×2160)", callback_data="format_option|bv2160"),
-                InlineKeyboardButton("4320p (7680×4320)", callback_data="format_option|bv4320")
-            ],
-            [
-                InlineKeyboardButton(avc1_button, callback_data="format_codec|avc1"),
-                InlineKeyboardButton(av01_button, callback_data="format_codec|av01"),
-                InlineKeyboardButton(vp9_button, callback_data="format_codec|vp9"),
-            ],
-            [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_BACK_BUTTON_MSG, callback_data="format_option|back"), InlineKeyboardButton(mkv_button, callback_data="format_container|mkv_toggle"), InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="format_option|close")]
-        ])
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id, safe_get_messages(user_id).FORMAT_RESOLUTION_MENU_MSG, reply_markup=full_res_keyboard)
-        try:
-            callback_query.answer()
-        except Exception:
-            pass
-        send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_RESOLUTION_MENU_SENT_LOG_MSG)
-        return
-
-    # If the Back button is pressed - we return to the main menu
-    if data == "back":
-        main_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_ALWAYS_ASK_BUTTON_MSG, callback_data="format_option|alwaysask")],
-            [InlineKeyboardButton("🎛Others (144p - 4320p)", callback_data="format_option|others")],
-            [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_4K_PC_BUTTON_MSG, callback_data="format_option|bv2160")],
-            [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_FULLHD_MOBILE_BUTTON_MSG, callback_data="format_option|bv1080")],
-            [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_BESTVIDEO_BUTTON_MSG, callback_data="format_option|bestvideo")],
-            # [InlineKeyboardButton("📉best (no ffmpeg) (bad)", callback_data="format_option|best")],
-            [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_CUSTOM_BUTTON_MSG, callback_data="format_option|custom")],
-            [InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="format_option|close")]
-        ])
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id, safe_get_messages(user_id).FORMAT_MENU_MSG + "\n" + safe_get_messages(user_id).FORMAT_MENU_ADDITIONAL_MSG + "\n" + safe_get_messages(user_id).FORMAT_8K_QUALITY_MSG, reply_markup=main_keyboard)
-        try:
-            callback_query.answer()
-        except Exception:
-            pass
-        send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_RETURNED_MAIN_MENU_LOG_MSG)
-        return
-
-    # Get user's codec preference
-    user_codec = get_user_codec_preference(user_id)
-    
-    # Mapping for the Rest of the Options based on selected codec
-    if data == "bv144":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01][height<=144]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=144]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9][height<=144]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=144]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1][height<=144]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=144]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    elif data == "bv240":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01][height<=240][height>144]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=240][height>144]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9][height<=240][height>144]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=240][height>144]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1][height<=240][height>144]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=240]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    elif data == "bv360":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01][height<=360][height>240]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=360][height>240]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9][height<=360][height>240]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=360][height>240]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1][height<=360][height>240]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=360]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    elif data == "bv480":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01][height<=480][height>360]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=480][height>360]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9][height<=480][height>360]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=480][height>360]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1][height<=480][height>360]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=480]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    elif data == "bv720":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01][height<=720][height>480]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=720][height>480]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9][height<=720][height>480]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=720][height>480]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1][height<=720][height>480]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=720]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    elif data == "bv1080":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01][height<=1080][height>720]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=1080][height>720]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9][height<=1080][height>720]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=1080][height>720]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1][height<=1080][height>720]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=1080]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    elif data == "bv1440":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01][height<=1440][height>1080]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=1440][height>1080]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9][height<=1440][height>1080]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=1440][height>1080]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1][height<=1440][height>1080]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=1440]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    elif data == "bv2160":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01][height<=2160][height>1440]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=2160][height>1440]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9][height<=2160][height>1440]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=2160][height>1440]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1][height<=2160][height>1440]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=2160]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    elif data == "bv4320":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01][height<=4320][height>2160]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=4320][height>2160]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9][height<=4320][height>2160]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=4320][height>2160]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1][height<=4320][height>2160]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=4320]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    elif data == "bestvideo":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01]+ba[acodec*=mp4a]/bv*[vcodec*=av01]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9]+ba[acodec*=mp4a]/bv*[vcodec*=vp9]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1]+ba[acodec*=mp4a]/bv*[vcodec*=avc1]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    elif data == "best":
-        if user_codec == "av01":
-            chosen_format = "bv*[vcodec*=av01][ext=mp4]+ba[acodec*=mp4a]/bv*[vcodec*=av01]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best"
-        elif user_codec == "vp9":
-            chosen_format = "bv*[vcodec*=vp9][ext=mp4]+ba[acodec*=mp4a]/bv*[vcodec*=vp9]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best"
-        else:  # avc1
-            chosen_format = "bv*[vcodec*=avc1][ext=mp4]+ba[acodec*=mp4a]/bv*[vcodec*=avc1]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
-    else:
-        chosen_format = data
-
-    # Save The Selected Format
-    user_dir = os.path.join("users", str(user_id))
-    create_directory(user_dir)
-    with open(os.path.join(user_dir, "format.txt"), "w", encoding="utf-8") as f:
-        f.write(chosen_format)
-    safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id, safe_get_messages(user_id).FORMAT_UPDATED_MSG.format(format=chosen_format))
-    try:
-        callback_query.answer(safe_get_messages(user_id).FORMAT_SAVED_MSG)
-    except Exception:
-        pass
-    send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_UPDATED_CALLBACK_LOG_MSG.format(format=chosen_format))
-
-    if data == "alwaysask":
-        user_dir = os.path.join("users", str(user_id))
-        create_directory(user_dir)
-        with open(os.path.join(user_dir, "format.txt"), "w", encoding="utf-8") as f:
-            f.write("ALWAYS_ASK")
-        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id,
-                               safe_get_messages(user_id).FORMAT_ALWAYS_ASK_CONFIRM_MSG)
-        send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_ALWAYS_ASK_SET_CALLBACK_LOG_MSG)
-        return
+    handle_format_menu_selection_request(app, callback_query, request)
 
 # Callback processor for codec selection
 @app.on_callback_query(filters.regex(r"^format_codec\|"))
 def format_codec_callback(app, callback_query):
-    user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_format_menu_selection_request(
         callback_envelope,
         action_kind="format_codec",
         action_value=callback_query.data.split("|")[1],
     )
-    data = request.action_value
-    
-    if data in ["avc1", "av01", "vp9"]:
-        set_user_codec_preference(user_id, data)
-        callback_query.answer(safe_get_messages(user_id).FORMAT_CODEC_SET_MSG.format(codec=data.upper()))
-        
-        # Refresh the menu to show updated codec selection
-        current_codec = get_user_codec_preference(user_id)
-        mkv_on = get_user_mkv_preference(user_id)
-        avc1_button = safe_get_messages(user_id).FORMAT_AVC1_BUTTON_MSG if current_codec == "avc1" else safe_get_messages(user_id).FORMAT_AVC1_BUTTON_INACTIVE_MSG
-        av01_button = safe_get_messages(user_id).FORMAT_AV01_BUTTON_MSG if current_codec == "av01" else safe_get_messages(user_id).FORMAT_AV01_BUTTON_INACTIVE_MSG
-        vp9_button = safe_get_messages(user_id).FORMAT_VP9_BUTTON_MSG if current_codec == "vp9" else safe_get_messages(user_id).FORMAT_VP9_BUTTON_INACTIVE_MSG
-        mkv_button = safe_get_messages(user_id).FORMAT_MKV_ON_BUTTON_MSG if mkv_on else safe_get_messages(user_id).FORMAT_MKV_OFF_BUTTON_MSG
-        
-        full_res_keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("144p (256×144)", callback_data="format_option|bv144"),
-                InlineKeyboardButton("240p (426×240)", callback_data="format_option|bv240"),
-                InlineKeyboardButton("360p (640×360)", callback_data="format_option|bv360")
-            ],
-            [
-                InlineKeyboardButton("480p (854×480)", callback_data="format_option|bv480"),
-                InlineKeyboardButton("720p (1280×720)", callback_data="format_option|bv720"),
-                InlineKeyboardButton("1080p (1920×1080)", callback_data="format_option|bv1080")
-            ],
-            [
-                InlineKeyboardButton("1440p (2560×1440)", callback_data="format_option|bv1440"),
-                InlineKeyboardButton("2160p (3840×2160)", callback_data="format_option|bv2160"),
-                InlineKeyboardButton("4320p (7680×4320)", callback_data="format_option|bv4320")
-            ],
-            [
-                InlineKeyboardButton(avc1_button, callback_data="format_codec|avc1"),
-                InlineKeyboardButton(av01_button, callback_data="format_codec|av01"),
-                InlineKeyboardButton(vp9_button, callback_data="format_codec|vp9")
-            ],
-            [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_BACK_BUTTON_MSG, callback_data="format_option|back"), InlineKeyboardButton(mkv_button, callback_data="format_container|mkv_toggle"), InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="format_option|close")]
-        ])
-        try:
-            callback_query.edit_message_reply_markup(reply_markup=full_res_keyboard)
-        except Exception:
-            pass
-        send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_CODEC_SET_LOG_MSG.format(codec=data))
+    handle_format_menu_selection_request(app, callback_query, request)
 
 @app.on_callback_query(filters.regex(r"^format_container\|"))
 def format_container_callback(app, callback_query):
-    user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_format_menu_selection_request(
         callback_envelope,
         action_kind="format_container",
         action_value=callback_query.data.split("|")[1],
     )
-    data = request.action_value
-    if data == "mkv_toggle":
-        mkv_on = toggle_user_mkv_preference(user_id)
-        # Re-render Others menu
-        current_codec = get_user_codec_preference(user_id)
-        avc1_button = safe_get_messages(user_id).FORMAT_AVC1_BUTTON_MSG if current_codec == "avc1" else safe_get_messages(user_id).FORMAT_AVC1_BUTTON_INACTIVE_MSG
-        av01_button = safe_get_messages(user_id).FORMAT_AV01_BUTTON_MSG if current_codec == "av01" else safe_get_messages(user_id).FORMAT_AV01_BUTTON_INACTIVE_MSG
-        vp9_button = safe_get_messages(user_id).FORMAT_VP9_BUTTON_MSG if current_codec == "vp9" else safe_get_messages(user_id).FORMAT_VP9_BUTTON_INACTIVE_MSG
-        mkv_button = safe_get_messages(user_id).FORMAT_MKV_ON_BUTTON_MSG if mkv_on else safe_get_messages(user_id).FORMAT_MKV_OFF_BUTTON_MSG
-        full_res_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("144p (256×144)", callback_data="format_option|bv144"), InlineKeyboardButton("240p (426×240)", callback_data="format_option|bv240"), InlineKeyboardButton("360p (640×360)", callback_data="format_option|bv360")],
-            [InlineKeyboardButton("480p (854×480)", callback_data="format_option|bv480"), InlineKeyboardButton("720p (1280×720)", callback_data="format_option|bv720"), InlineKeyboardButton("1080p (1920×1080)", callback_data="format_option|bv1080")],
-            [InlineKeyboardButton("1440p (2560×1440)", callback_data="format_option|bv1440"), InlineKeyboardButton("2160p (3840×2160)", callback_data="format_option|bv2160"), InlineKeyboardButton("4320p (7680×4320)", callback_data="format_option|bv4320")],
-            [InlineKeyboardButton(avc1_button, callback_data="format_codec|avc1"), InlineKeyboardButton(av01_button, callback_data="format_codec|av01"), InlineKeyboardButton(vp9_button, callback_data="format_codec|vp9")],
-            [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_BACK_BUTTON_MSG, callback_data="format_option|back"), InlineKeyboardButton(mkv_button, callback_data="format_container|mkv_toggle"), InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="format_option|close")]
-        ])
-        try:
-            callback_query.edit_message_reply_markup(reply_markup=full_res_keyboard)
-        except Exception:
-            pass
-        try:
-            callback_query.answer(safe_get_messages(user_id).FORMAT_MKV_TOGGLE_MSG.format(status='ON' if mkv_on else 'OFF'))
-        except Exception:
-            pass
+    handle_format_menu_selection_request(app, callback_query, request)
 
 # Callback processor to close the message
 @app.on_callback_query(filters.regex(r"^format_custom\|"))
 def format_custom_callback(app, callback_query):
-    user_id = callback_query.from_user.id
-    messages = safe_get_messages(user_id)
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_format_menu_selection_request(
         callback_envelope,
         action_kind="format_custom",
         action_value=callback_query.data.split("|")[1],
     )
+    handle_format_menu_selection_request(app, callback_query, request)
+
+
+def _build_format_main_keyboard(user_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_ALWAYS_ASK_BUTTON_MSG, callback_data="format_option|alwaysask")],
+        [InlineKeyboardButton("🎛Others (144p - 4320p)", callback_data="format_option|others")],
+        [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_4K_PC_BUTTON_MSG, callback_data="format_option|bv2160")],
+        [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_FULLHD_MOBILE_BUTTON_MSG, callback_data="format_option|bv1080")],
+        [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_BESTVIDEO_BUTTON_MSG, callback_data="format_option|bestvideo")],
+        [InlineKeyboardButton(safe_get_messages(user_id).FORMAT_CUSTOM_BUTTON_MSG, callback_data="format_option|custom")],
+        [InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="format_option|close")],
+    ])
+
+
+def _build_format_resolution_keyboard(user_id):
+    current_codec = get_user_codec_preference(user_id)
+    mkv_on = get_user_mkv_preference(user_id)
+    avc1_button = safe_get_messages(user_id).FORMAT_AVC1_BUTTON_MSG if current_codec == "avc1" else safe_get_messages(user_id).FORMAT_AVC1_BUTTON_INACTIVE_MSG
+    av01_button = safe_get_messages(user_id).FORMAT_AV01_BUTTON_MSG if current_codec == "av01" else safe_get_messages(user_id).FORMAT_AV01_BUTTON_INACTIVE_MSG
+    vp9_button = safe_get_messages(user_id).FORMAT_VP9_BUTTON_MSG if current_codec == "vp9" else safe_get_messages(user_id).FORMAT_VP9_BUTTON_INACTIVE_MSG
+    mkv_button = safe_get_messages(user_id).FORMAT_MKV_ON_BUTTON_MSG if mkv_on else safe_get_messages(user_id).FORMAT_MKV_OFF_BUTTON_MSG
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("144p (256×144)", callback_data="format_option|bv144"),
+            InlineKeyboardButton("240p (426×240)", callback_data="format_option|bv240"),
+            InlineKeyboardButton("360p (640×360)", callback_data="format_option|bv360"),
+        ],
+        [
+            InlineKeyboardButton("480p (854×480)", callback_data="format_option|bv480"),
+            InlineKeyboardButton("720p (1280×720)", callback_data="format_option|bv720"),
+            InlineKeyboardButton("1080p (1920×1080)", callback_data="format_option|bv1080"),
+        ],
+        [
+            InlineKeyboardButton("1440p (2560×1440)", callback_data="format_option|bv1440"),
+            InlineKeyboardButton("2160p (3840×2160)", callback_data="format_option|bv2160"),
+            InlineKeyboardButton("4320p (7680×4320)", callback_data="format_option|bv4320"),
+        ],
+        [
+            InlineKeyboardButton(avc1_button, callback_data="format_codec|avc1"),
+            InlineKeyboardButton(av01_button, callback_data="format_codec|av01"),
+            InlineKeyboardButton(vp9_button, callback_data="format_codec|vp9"),
+        ],
+        [
+            InlineKeyboardButton(safe_get_messages(user_id).FORMAT_BACK_BUTTON_MSG, callback_data="format_option|back"),
+            InlineKeyboardButton(mkv_button, callback_data="format_container|mkv_toggle"),
+            InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="format_option|close"),
+        ],
+    ])
+
+
+def format_menu_callback_logic(app, callback_query, request) -> None:
+    user_id = callback_query.from_user.id
+    logger.info(LoggerMsg.FORMAT_CALLBACK_LOG_MSG.format(callback_data=callback_query.data))
     data = request.action_value
-    if data == "close":
+
+    if request.action_kind == "format_option":
+        if data == "close":
+            try:
+                callback_query.message.delete()
+            except Exception:
+                callback_query.edit_message_reply_markup(reply_markup=None)
+            callback_query.answer(safe_get_messages(user_id).FORMAT_CHOICE_UPDATED_MSG)
+            send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_SELECTION_CLOSED_LOG_MSG)
+            return
+        if data == "custom":
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="format_custom|close")]
+            ])
+            safe_send_message(
+                user_id,
+                safe_get_messages(user_id).FORMAT_CUSTOM_HINT_MSG,
+                reply_parameters=ReplyParameters(message_id=callback_query.message.id),
+                reply_markup=keyboard,
+            )
+            callback_query.answer(safe_get_messages(user_id).FORMAT_HINT_SENT_MSG)
+            send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_CUSTOM_HINT_SENT_LOG_MSG)
+            return
+        if data == "others":
+            safe_edit_message_text(
+                callback_query.message.chat.id,
+                callback_query.message.id,
+                safe_get_messages(user_id).FORMAT_RESOLUTION_MENU_MSG,
+                reply_markup=_build_format_resolution_keyboard(user_id),
+            )
+            try:
+                callback_query.answer()
+            except Exception:
+                pass
+            send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_RESOLUTION_MENU_SENT_LOG_MSG)
+            return
+        if data == "back":
+            safe_edit_message_text(
+                callback_query.message.chat.id,
+                callback_query.message.id,
+                safe_get_messages(user_id).FORMAT_MENU_MSG + "\n" + safe_get_messages(user_id).FORMAT_MENU_ADDITIONAL_MSG + "\n" + safe_get_messages(user_id).FORMAT_8K_QUALITY_MSG,
+                reply_markup=_build_format_main_keyboard(user_id),
+            )
+            try:
+                callback_query.answer()
+            except Exception:
+                pass
+            send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_RETURNED_MAIN_MENU_LOG_MSG)
+            return
+
+        user_codec = get_user_codec_preference(user_id)
+        if data == "bv144":
+            chosen_format = "bv*[vcodec*=av01][height<=144]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=144]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9][height<=144]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=144]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1][height<=144]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=144]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        elif data == "bv240":
+            chosen_format = "bv*[vcodec*=av01][height<=240][height>144]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=240][height>144]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9][height<=240][height>144]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=240][height>144]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1][height<=240][height>144]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=240]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        elif data == "bv360":
+            chosen_format = "bv*[vcodec*=av01][height<=360][height>240]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=360][height>240]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9][height<=360][height>240]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=360][height>240]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1][height<=360][height>240]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=360]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        elif data == "bv480":
+            chosen_format = "bv*[vcodec*=av01][height<=480][height>360]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=480][height>360]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9][height<=480][height>360]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=480][height>360]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1][height<=480][height>360]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=480]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        elif data == "bv720":
+            chosen_format = "bv*[vcodec*=av01][height<=720][height>480]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=720][height>480]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9][height<=720][height>480]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=720][height>480]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1][height<=720][height>480]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=720]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        elif data == "bv1080":
+            chosen_format = "bv*[vcodec*=av01][height<=1080][height>720]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=1080][height>720]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9][height<=1080][height>720]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=1080][height>720]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1][height<=1080][height>720]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=1080]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        elif data == "bv1440":
+            chosen_format = "bv*[vcodec*=av01][height<=1440][height>1080]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=1440][height>1080]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9][height<=1440][height>1080]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=1440][height>1080]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1][height<=1440][height>1080]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=1440]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        elif data == "bv2160":
+            chosen_format = "bv*[vcodec*=av01][height<=2160][height>1440]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=2160][height>1440]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9][height<=2160][height>1440]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=2160][height>1440]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1][height<=2160][height>1440]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=2160]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        elif data == "bv4320":
+            chosen_format = "bv*[vcodec*=av01][height<=4320][height>2160]+ba[acodec*=mp4a]/bv*[vcodec*=av01][height<=4320][height>2160]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9][height<=4320][height>2160]+ba[acodec*=mp4a]/bv*[vcodec*=vp9][height<=4320][height>2160]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1][height<=4320][height>2160]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<=4320]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        elif data == "bestvideo":
+            chosen_format = "bv*[vcodec*=av01]+ba[acodec*=mp4a]/bv*[vcodec*=av01]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9]+ba[acodec*=mp4a]/bv*[vcodec*=vp9]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1]+ba[acodec*=mp4a]/bv*[vcodec*=avc1]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        elif data == "best":
+            chosen_format = "bv*[vcodec*=av01][ext=mp4]+ba[acodec*=mp4a]/bv*[vcodec*=av01]+ba[acodec*=opus]/bv*[vcodec*=av01]+ba/bv+ba/best" if user_codec == "av01" else "bv*[vcodec*=vp9][ext=mp4]+ba[acodec*=mp4a]/bv*[vcodec*=vp9]+ba[acodec*=opus]/bv*[vcodec*=vp9]+ba/bv+ba/best" if user_codec == "vp9" else "bv*[vcodec*=avc1][ext=mp4]+ba[acodec*=mp4a]/bv*[vcodec*=avc1]+ba/bv*[vcodec*=avc1]+ba/bv+ba/best"
+        else:
+            chosen_format = data
+
+        user_dir = os.path.join("users", str(user_id))
+        create_directory(user_dir)
+        if data == "alwaysask":
+            with open(os.path.join(user_dir, "format.txt"), "w", encoding="utf-8") as f:
+                f.write("ALWAYS_ASK")
+            safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id, safe_get_messages(user_id).FORMAT_ALWAYS_ASK_CONFIRM_MSG)
+            send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_ALWAYS_ASK_SET_CALLBACK_LOG_MSG)
+            return
+        with open(os.path.join(user_dir, "format.txt"), "w", encoding="utf-8") as f:
+            f.write(chosen_format)
+        safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id, safe_get_messages(user_id).FORMAT_UPDATED_MSG.format(format=chosen_format))
+        try:
+            callback_query.answer(safe_get_messages(user_id).FORMAT_SAVED_MSG)
+        except Exception:
+            pass
+        send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_UPDATED_CALLBACK_LOG_MSG.format(format=chosen_format))
+        return
+
+    if request.action_kind == "format_codec" and data in ["avc1", "av01", "vp9"]:
+        set_user_codec_preference(user_id, data)
+        callback_query.answer(safe_get_messages(user_id).FORMAT_CODEC_SET_MSG.format(codec=data.upper()))
+        try:
+            callback_query.edit_message_reply_markup(reply_markup=_build_format_resolution_keyboard(user_id))
+        except Exception:
+            pass
+        send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_CODEC_SET_LOG_MSG.format(codec=data))
+        return
+
+    if request.action_kind == "format_container" and data == "mkv_toggle":
+        mkv_on = toggle_user_mkv_preference(user_id)
+        try:
+            callback_query.edit_message_reply_markup(reply_markup=_build_format_resolution_keyboard(user_id))
+        except Exception:
+            pass
+        try:
+            callback_query.answer(safe_get_messages(user_id).FORMAT_MKV_TOGGLE_MSG.format(status="ON" if mkv_on else "OFF"))
+        except Exception:
+            pass
+        return
+
+    if request.action_kind == "format_custom" and data == "close":
         try:
             callback_query.message.delete()
         except Exception:
@@ -565,5 +468,4 @@ def format_custom_callback(app, callback_query):
         except Exception:
             pass
         send_to_logger(callback_query.message, safe_get_messages(user_id).FORMAT_CUSTOM_MENU_CLOSED_LOG_MSG)
-        return
 # ####################################################################################
