@@ -398,6 +398,18 @@ class QualityMenuComposition:
     keyboard_rows: list
 
 
+@dataclass(frozen=True)
+class QualityMenuDataModel:
+    cap: str
+    quality_map: dict
+    found_quality_keys: set
+    filters_state: dict
+    selected_codec: str
+    selected_ext: str
+    user_fixed_format: str | None
+    found_subtitle_type: str | None
+
+
 def _emit_gallery_fallback_transition_start(callback_query, plan: GalleryFallbackTransitionPlan) -> None:
     safe_callback_answer(callback_query, "🔄 Switching to gallery-dl...")
     try:
@@ -4496,6 +4508,544 @@ def _compose_quality_menu(
     return QualityMenuComposition(text=cap, keyboard_rows=keyboard_rows)
 
 
+def _build_quality_menu_data_model(
+    *,
+    message,
+    user_id: int,
+    url: str,
+    info: dict,
+    cached_qualities,
+    is_playlist: bool,
+    playlist_range,
+    tags_text: str,
+    is_nsfw: bool,
+    is_private_chat: bool,
+    send_as_file: bool,
+) -> QualityMenuDataModel:
+    filters_state = get_filters(user_id)
+    sel_codec = filters_state.get("codec", "avc1")
+    sel_ext = filters_state.get("ext", "mp4")
+
+    available_dubs = []
+    lang_seen = set()
+    for fmt in info.get("formats", []):
+        if fmt.get("vcodec") == "none" and fmt.get("acodec") and fmt.get("language"):
+            lang = fmt.get("language")
+            if lang and lang not in lang_seen:
+                lang_seen.add(lang)
+                available_dubs.append(lang)
+    has_dubs = len(available_dubs) > 1
+    filters_state["has_dubs"] = has_dubs
+    filters_state["available_dubs"] = sorted(available_dubs)
+    if not has_dubs:
+        filters_state["audio_lang"] = None
+    _ASK_FILTERS[str(user_id)] = filters_state
+    try:
+        set_session_mkv_override(user_id, sel_ext == "mkv")
+    except Exception:
+        pass
+
+    user_fixed_format = None
+    try:
+        user_args = get_user_args(user_id)
+        user_video_format = user_args.get("video_format", "mp4")
+        user_merge_format = user_args.get("merge_output_format", "mp4")
+        if user_video_format != "mp4":
+            user_fixed_format = user_video_format
+        elif user_merge_format != "mp4":
+            user_fixed_format = user_merge_format
+    except Exception:
+        pass
+
+    quality_map = {}
+    table_block = ""
+    found_quality_keys = set()
+    found_type = None
+
+    if ("youtube.com" in url or "youtu.be" in url):
+        for fmt in info.get("formats", []):
+            if fmt.get("vcodec", "none") == "none" or not fmt.get("height") or not fmt.get("width"):
+                continue
+            vcodec = fmt.get("vcodec") or ""
+            ext = fmt.get("ext") or ""
+            if sel_codec == "avc1" and "avc1" not in vcodec:
+                continue
+            if sel_codec == "av01" and not vcodec.startswith("av01"):
+                continue
+            if sel_codec == "vp9" and "vp9" not in vcodec:
+                continue
+            target_ext = user_fixed_format if user_fixed_format else sel_ext
+            if target_ext == "mp4" and ext != "mp4":
+                continue
+            if target_ext == "mkv" and ext == "mp4":
+                continue
+            if target_ext == "webm" and ext != "webm":
+                continue
+            if target_ext == "avi" and ext != "avi":
+                continue
+            if target_ext == "mov" and ext != "mov":
+                continue
+            if target_ext == "flv" and ext != "flv":
+                continue
+            if target_ext == "3gp" and ext not in ("3gp", "3g2"):
+                continue
+            if target_ext == "ogv" and ext not in ("ogv", "ogg"):
+                continue
+            if target_ext == "wmv" and ext != "wmv":
+                continue
+            if target_ext == "asf" and ext != "asf":
+                continue
+            w = fmt["width"]
+            h = fmt["height"]
+            quality_key = get_quality_by_min_side(w, h)
+            if quality_key == "best":
+                continue
+            filesize = fmt.get("filesize") or fmt.get("filesize_approx")
+            if quality_key not in quality_map or (filesize and filesize > (quality_map[quality_key].get("filesize") or 0)):
+                quality_map[quality_key] = fmt
+
+        table_lines = []
+        for q in sorted(quality_map.keys(), key=sort_quality_key):
+            fmt = quality_map[q]
+            w = fmt.get("width")
+            h = fmt.get("height")
+            filesize = fmt.get("filesize") or fmt.get("filesize_approx")
+            if filesize:
+                if filesize >= 1024 * 1024 * 1024:
+                    size_str = f"{round(filesize/1024/1024/1024, 2)}GB"
+                else:
+                    size_str = f"{round(filesize/1024/1024, 1)}MB"
+            else:
+                size_str = "—"
+            dim_str = f" ({w}×{h})" if w and h else ""
+            scissors = ""
+            if get_user_split_size(user_id) and filesize:
+                video_bytes = filesize
+                if video_bytes > get_user_split_size(user_id):
+                    n_parts = (video_bytes + get_user_split_size(user_id) - 1) // get_user_split_size(user_id)
+                    scissors = f" ✂️{n_parts}"
+            subs_enabled = is_subs_enabled(user_id)
+            auto_mode = get_user_subs_auto_mode(user_id)
+            subs_available = ""
+            if subs_enabled:
+                if sel_ext == "mkv":
+                    subs_available = "💬"
+                elif is_youtube_url(url) and w is not None and h is not None and min(int(w), int(h)) <= Config.MAX_SUB_QUALITY:
+                    found_type = check_subs_availability(url, user_id, q, return_type=True)
+                    if (auto_mode and found_type == "auto") or (not auto_mode and found_type == "normal"):
+                        temp_info = {"duration": info.get("duration"), "filesize": filesize, "filesize_approx": filesize}
+                        if check_subs_limits(temp_info, q):
+                            subs_available = "💬"
+            if send_as_file:
+                is_cached = False
+                postfix = ""
+            elif is_playlist and playlist_range:
+                start, end = playlist_range
+                has_negative = start < 0 or end < 0
+                if has_negative:
+                    if abs(start) < abs(end):
+                        indices = list(range(start, end - 1, -1))
+                    else:
+                        indices = list(range(start, end + 1, 1))
+                    try:
+                        from DOWN_AND_UP.yt_dlp_hook import get_video_formats
+                        temp_info = get_video_formats(url, user_id, 1, True, False, 1)
+                        if temp_info and isinstance(temp_info, dict):
+                            if "entries" in temp_info:
+                                total_playlist_count = len(temp_info["entries"])
+                            elif "_playlist_entries" in temp_info:
+                                total_playlist_count = len(temp_info["_playlist_entries"])
+                            else:
+                                total_playlist_count = None
+                            if total_playlist_count:
+                                converted_indices = []
+                                for neg_idx in indices:
+                                    if neg_idx < 0:
+                                        converted_indices.append(total_playlist_count + neg_idx + 1)
+                                    else:
+                                        converted_indices.append(neg_idx)
+                                indices = converted_indices
+                    except Exception as err:
+                        logger.warning(f"Failed to convert negative indices for cache check: {err}")
+                elif start > end:
+                    indices = list(range(start, end - 1, -1))
+                else:
+                    indices = list(range(start, end + 1))
+                n_cached = get_cached_playlist_count(get_clean_playlist_url(url), q, indices)
+                total = len(indices)
+                postfix = f" ({n_cached}/{total})"
+                is_cached = n_cached > 0
+            else:
+                is_cached = q in cached_qualities
+                if not is_cached:
+                    video_page_url = (
+                        info.get("webpage_url")
+                        or info.get("original_url")
+                        or info.get("url")
+                        or info.get("canonical_url")
+                        or url
+                    )
+                    if video_page_url != url and video_page_url:
+                        try:
+                            single_video_cached = get_cached_message_ids(video_page_url, q)
+                            if single_video_cached:
+                                is_cached = True
+                                logger.info(f"🔍 [CACHE] Found single video in cache by unique URL: {video_page_url}, quality: {q}")
+                        except Exception as err:
+                            logger.warning(f"⚠️ [CACHE] Error while checking cache for a single video: {err}")
+                postfix = ""
+            need_subs = subs_enabled and ((auto_mode and found_type == "auto") or (not auto_mode and found_type == "normal"))
+            emoji = "🚀" if (is_cached and not need_subs and not is_nsfw) else "📹"
+            sel_audio_lang = get_filters(user_id).get("audio_lang")
+            audio_mark = f" 🗣{sel_audio_lang}" if sel_audio_lang else ""
+            table_lines.append(f"{emoji}{q}{subs_available}{audio_mark}:  {size_str}{dim_str}{scissors}{postfix}")
+            found_quality_keys.add(q)
+        table_block = "\n".join(table_lines)
+    else:
+        import re as _re
+        def infer_quality_key(fmt):
+            w = fmt.get("width")
+            h = fmt.get("height")
+            if w and h:
+                return get_quality_by_min_side(w, h)
+            fid = fmt.get("format_id") or ""
+            for pattern in (r"^(\d{3,4})p$", r"^url(\d{3,4})$", r"(\d{3,4})p"):
+                match = _re.search(pattern, fid)
+                if match:
+                    try:
+                        return f"{int(match.group(1))}p"
+                    except Exception:
+                        pass
+            format_note = fmt.get("format_note") or ""
+            match = _re.search(r"(\d{3,4})p", format_note)
+            if match:
+                try:
+                    return f"{int(match.group(1))}p"
+                except Exception:
+                    pass
+            url_field = fmt.get("url") or ""
+            match = _re.search(r"(\d{3,4})p", url_field)
+            if match:
+                try:
+                    return f"{int(match.group(1))}p"
+                except Exception:
+                    pass
+            if w and h:
+                return get_quality_by_min_side(w, h)
+            return None
+
+        def is_manifest(fmt):
+            proto = (fmt.get("protocol") or "").lower()
+            return "m3u8" in proto or "dash" in (fmt.get("format_note") or "").lower() or fmt.get("manifest_url") is not None
+
+        def best_audio_kbps() -> int:
+            kbps = 0
+            for af in info.get("formats", []):
+                if af.get("vcodec") == "none":
+                    val = float(af["tbr"]) if af.get("tbr") else float(af["abr"]) if af.get("abr") else None
+                    if val:
+                        kbps = max(kbps, int(val))
+            return kbps or 128
+
+        _audio_kbps = best_audio_kbps()
+
+        def default_video_kbps_for_height(height: int, fps: int | None, vcodec: str | None) -> int:
+            baseline = {144: 250, 240: 400, 360: 800, 480: 1200, 540: 2000, 576: 2200, 720: 2500, 1080: 4500, 1440: 8000, 2160: 14000, 4320: 40000}
+            chosen = baseline[sorted(baseline.keys())[0]]
+            for hk in sorted(baseline.keys()):
+                if height >= hk:
+                    chosen = baseline[hk]
+            if fps and fps > 30:
+                chosen = int(chosen * 1.25)
+            if vcodec and (vcodec.startswith("av01") or "vp9" in vcodec):
+                chosen = int(chosen * 0.9)
+            return max(chosen, 200)
+
+        def sibling_video_kbps_for_quality(qk: str) -> int:
+            best = 0
+            for sf in info.get("formats", []):
+                if infer_quality_key(sf) != qk:
+                    continue
+                val = float(sf["tbr"]) if sf.get("tbr") else float(sf["vbr"]) if sf.get("vbr") else 0.0
+                if val:
+                    best = max(best, int(val))
+            return best
+
+        def estimate_size_mb(fmt, qk: str, filesize_str: str = "") -> int:
+            if fmt.get("filesize"):
+                return int(fmt["filesize"]) // (1024 * 1024)
+            if fmt.get("filesize_approx"):
+                return int(fmt["filesize_approx"]) // (1024 * 1024)
+            if filesize_str:
+                try:
+                    match = _re.match(r"^([\d.]+)\s*(KB|MB|GB)$", filesize_str.strip())
+                    if match:
+                        size_val = float(match.group(1))
+                        unit = match.group(2)
+                        if unit == "KB":
+                            return max(1, int(size_val / 1024))
+                        if unit == "MB":
+                            return int(size_val)
+                        if unit == "GB":
+                            return int(size_val * 1024)
+                except Exception:
+                    pass
+            duration = info.get("duration")
+            if not duration:
+                return 0
+            kbps = float(fmt["tbr"]) if fmt.get("tbr") else float(fmt["vbr"]) if fmt.get("vbr") else float(fmt["abr"]) if fmt.get("abr") else 0.0
+            if not kbps:
+                kbps = float(sibling_video_kbps_for_quality(qk))
+            if not kbps:
+                try:
+                    height = int((qk or "0p").rstrip("p"))
+                except Exception:
+                    height = fmt.get("height") or 0
+                kbps = float(default_video_kbps_for_height(int(height or 0), int(fmt.get("fps") or 30), fmt.get("vcodec") or ""))
+            if (fmt.get("acodec") in (None, "", "none")) or (not fmt.get("abr")):
+                kbps += float(_audio_kbps)
+            try:
+                mb = (kbps * float(duration) * 125) / (1024 * 1024)
+                return 1 if mb and 0 < mb < 1 else int(round(mb))
+            except Exception:
+                return 0
+
+        for fmt in info.get("formats", []):
+            if fmt.get("vcodec") == "none" and (fmt.get("audio_ext") or "") != "none":
+                continue
+            if user_fixed_format:
+                ext = fmt.get("ext") or ""
+                if user_fixed_format == "mp4" and ext != "mp4":
+                    continue
+                if user_fixed_format == "webm" and ext != "webm":
+                    continue
+                if user_fixed_format == "mkv" and ext == "mp4":
+                    continue
+                if user_fixed_format == "avi" and ext != "avi":
+                    continue
+                if user_fixed_format == "mov" and ext != "mov":
+                    continue
+                if user_fixed_format == "flv" and ext != "flv":
+                    continue
+                if user_fixed_format == "3gp" and ext not in ("3gp", "3g2"):
+                    continue
+                if user_fixed_format == "ogv" and ext not in ("ogv", "ogg"):
+                    continue
+                if user_fixed_format == "wmv" and ext != "wmv":
+                    continue
+                if user_fixed_format == "asf" and ext != "asf":
+                    continue
+            vcodec = fmt.get("vcodec") or ""
+            if sel_codec == "avc1" and "avc1" not in vcodec:
+                continue
+            if sel_codec == "av01" and not vcodec.startswith("av01"):
+                continue
+            if sel_codec == "vp9" and "vp9" not in vcodec:
+                continue
+            ext = fmt.get("ext") or ""
+            target_ext = user_fixed_format if user_fixed_format else sel_ext
+            if target_ext == "mp4" and ext != "mp4":
+                continue
+            if target_ext == "mkv" and ext == "mp4":
+                continue
+            if target_ext == "webm" and ext != "webm":
+                continue
+            qk = infer_quality_key(fmt)
+            if not qk or qk == "best":
+                continue
+            w_val = fmt.get("width") or 0
+            h_val = fmt.get("height") or 0
+            if not h_val:
+                try:
+                    h_val = int(qk.rstrip("p"))
+                except Exception:
+                    h_val = 0
+            if not w_val and h_val:
+                w_val = int(h_val * 16 / 9)
+            candidate = {
+                "w": w_val,
+                "h": h_val,
+                "size_mb": estimate_size_mb(fmt, qk, fmt.get("filesize_str") or ""),
+                "format_id": fmt.get("format_id") or "",
+                "protocol": fmt.get("protocol") or "",
+                "filesize_str": fmt.get("filesize_str") or "",
+            }
+            prev = quality_map.get(qk)
+            if not prev:
+                quality_map[qk] = candidate
+            else:
+                prev_has_dims = bool(prev.get("w")) and bool(prev.get("h"))
+                curr_has_dims = bool(candidate.get("w")) and bool(candidate.get("h"))
+                prev_has_size = prev.get("size_mb", 0) > 0
+                curr_has_size = candidate.get("size_mb", 0) > 0
+                prev_manifest = is_manifest(prev)
+                curr_manifest = is_manifest(candidate)
+                def better(a_has_dims, a_has_size, a_manifest, a_size, b_has_dims, b_has_size, b_manifest, b_size):
+                    if a_has_dims != b_has_dims:
+                        return a_has_dims
+                    if a_has_size != b_has_size:
+                        return a_has_size
+                    if a_manifest != b_manifest:
+                        return not a_manifest
+                    return a_size > b_size
+                if better(curr_has_dims, curr_has_size, curr_manifest, candidate["size_mb"], prev_has_dims, prev_has_size, prev_manifest, prev.get("size_mb", 0)):
+                    quality_map[qk] = candidate
+
+        if not quality_map:
+            video_formats = [fmt for fmt in info.get("formats", []) if fmt.get("vcodec") != "none"]
+            if video_formats:
+                resolution_groups = {}
+                for fmt in video_formats:
+                    w = fmt.get("width", 0)
+                    h = fmt.get("height", 0)
+                    if w and h:
+                        res_key = f"{w}x{h}"
+                        if res_key not in resolution_groups or (fmt.get("filesize") or 0) > (resolution_groups[res_key].get("filesize") or 0):
+                            resolution_groups[res_key] = fmt
+                for _, fmt in resolution_groups.items():
+                    w, h = fmt.get("width", 0), fmt.get("height", 0)
+                    if w and h:
+                        qk = get_quality_by_min_side(w, h)
+                        if qk not in quality_map:
+                            quality_map[qk] = {
+                                "w": w,
+                                "h": h,
+                                "size_mb": estimate_size_mb(fmt, qk, fmt.get("filesize_str") or ""),
+                                "format_id": fmt.get("format_id") or "",
+                                "protocol": fmt.get("protocol") or "",
+                                "filesize_str": fmt.get("filesize_str") or "",
+                            }
+        table_lines = []
+        for quality_key in sorted(quality_map.keys(), key=sort_quality_key):
+            entry = quality_map[quality_key]
+            w, h, size_val = entry["w"], entry["h"], entry["size_mb"]
+            found_quality_keys.add(quality_key)
+            size_str = f"{round(size_val/1024, 1)}GB" if size_val and size_val >= 1024 else (f"{size_val}MB" if size_val else "—")
+            dim_str = f" ({w}×{h})" if w and h else ""
+            scissors = ""
+            if get_user_split_size(user_id) and size_val:
+                video_bytes = size_val * 1024 * 1024
+                if video_bytes > get_user_split_size(user_id):
+                    n_parts = (video_bytes + get_user_split_size(user_id) - 1) // get_user_split_size(user_id)
+                    scissors = f" ✂️{n_parts}"
+            table_lines.append(f"📹{quality_key}:  {size_str}{dim_str}{scissors}")
+        table_block = "\n".join(table_lines)
+
+    title = info.get("title", "Video")
+    cap = f"<b>{title}</b>\n"
+    if user_fixed_format:
+        cap += f"\n<b>{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_FIXED_VIA_ARGS_MSG}: {user_fixed_format.upper()}</b>\n"
+
+    sel_audio_lang = filters_state.get("audio_lang")
+    subs_enabled = is_subs_enabled(user_id)
+    subs_lang = get_user_subs_language(user_id) if subs_enabled else None
+    summary_parts = []
+    if sel_audio_lang:
+        summary_parts.append(f"🗣 {sel_audio_lang}")
+    if subs_enabled and subs_lang:
+        summary_parts.append(f"💬 {subs_lang}")
+    if summary_parts:
+        cap += "<blockquote>" + " | ".join(summary_parts) + "</blockquote>\n"
+
+    is_youtube = ("youtube.com" in url or "youtu.be" in url)
+    if is_youtube:
+        uploader = info.get("uploader") or ""
+        view_count = info.get("view_count")
+        like_count = info.get("like_count")
+        channel_follower_count = info.get("channel_follower_count")
+        duration = info.get("duration")
+        upload_date = info.get("upload_date")
+        title_val = info.get("title") or ""
+        duration_str = TimeFormatter(duration * 1000) if duration else ""
+        upload_date_str = ""
+        if upload_date and len(str(upload_date)) == 8:
+            try:
+                upload_date_str = datetime.strptime(str(upload_date), "%Y%m%d").strftime("%d.%m.%Y")
+            except Exception:
+                upload_date_str = str(upload_date)
+        views_str = f"👁 {view_count:,}" if view_count is not None else ""
+        likes_str = f"❤️ {like_count:,}" if like_count is not None else ""
+        subs_str = f"👥 {channel_follower_count:,}" if channel_follower_count is not None else ""
+        meta_lines = []
+        if uploader:
+            ch_line = f"📺 <b>{uploader}</b>\n"
+            if subs_str:
+                ch_line += f"<blockquote>{subs_str}</blockquote>\n"
+            meta_lines.append(ch_line)
+        if title_val:
+            meta_lines.append(f"<b>{title_val}</b>")
+        date_dur_line = ""
+        if upload_date_str:
+            date_dur_line += f"📅 {upload_date_str}"
+        if duration_str:
+            date_dur_line += f"  ⏱️ {duration_str}" if date_dur_line else f"⏱️ {duration_str}"
+        if date_dur_line:
+            meta_lines.append(f"<blockquote>{date_dur_line}</blockquote>")
+        stat_line = views_str
+        if likes_str:
+            stat_line = f"{stat_line}  {likes_str}" if stat_line else likes_str
+        if stat_line:
+            meta_lines.append(f"<blockquote>{stat_line}</blockquote>")
+        cap = "\n".join(meta_lines) + "\n\n"
+    else:
+        title_ny = info.get("title") or ""
+        uploader_ny = info.get("uploader") or ""
+        duration_ny = info.get("duration")
+        duration_str_ny = TimeFormatter(duration_ny * 1000) if duration_ny else ""
+        meta_lines_ny = []
+        if uploader_ny:
+            meta_lines_ny.append(f"📺 <b>{uploader_ny}</b>")
+        if duration_str_ny:
+            meta_lines_ny.append(f"<blockquote>⏱️ {duration_str_ny}</blockquote>")
+        if title_ny:
+            meta_lines_ny.append(f"\n<b>{title_ny}</b>")
+        cap = ("\n".join(meta_lines_ny) + "\n\n") if meta_lines_ny else ""
+
+    if table_block:
+        cap += f"<blockquote>{table_block}</blockquote>\n"
+
+    subs_count_info = ""
+    dubs_count_info = ""
+    if is_subs_enabled(user_id) and is_subs_always_ask(user_id):
+        try:
+            from COMMANDS.subtitles_cmd import get_or_compute_subs_langs
+            normal_subs, auto_subs = get_or_compute_subs_langs(user_id, url)
+            total_subs = len(set(normal_subs) | set(auto_subs))
+            if total_subs > 0:
+                subs_count_info = f"{safe_get_messages(user_id).ALWAYS_ASK_SUBTITLES_MSG}: {total_subs} available\n"
+        except Exception as err:
+            logger.error(f"Error getting subtitles count: {err}")
+    available_dubs = filters_state.get("available_dubs", [])
+    if len(available_dubs) > 1:
+        dubs_count_info = f"{safe_get_messages(user_id).ALWAYS_ASK_DUBBED_AUDIO_MSG}: {len(available_dubs)} languages"
+    info_parts = []
+    if subs_count_info:
+        info_parts.append(subs_count_info)
+    if dubs_count_info:
+        info_parts.append(dubs_count_info)
+    if info_parts:
+        cap += f"<blockquote>{''.join(info_parts)}</blockquote>\n"
+    if tags_text:
+        cap += f"{tags_text}"
+
+    if len(cap) > 1024:
+        if is_youtube:
+            cap = cap[:1021] + "..."
+        else:
+            cap = cap[:1021] + "..."
+
+    return QualityMenuDataModel(
+        cap=cap,
+        quality_map=quality_map,
+        found_quality_keys=found_quality_keys,
+        filters_state=filters_state,
+        selected_codec=sel_codec,
+        selected_ext=sel_ext,
+        user_fixed_format=user_fixed_format,
+        found_subtitle_type=found_type,
+    )
+
+
 def _emit_quality_menu_render_plan(app, message, *, cb, proc_msg, user_id: int, render_plan: QualityMenuRenderPlan) -> None:
     if cb is not None and getattr(cb, "message", None):
         try:
@@ -5271,747 +5821,27 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
                 except Exception:
                     pass
         # At this point, lack of thumbnail must NOT block further UI
-        # --- Detect available audio dubs (languages) once per menu open ---
-        filters_state = get_filters(user_id)
-        sel_codec = filters_state.get("codec", "avc1")
-        sel_ext = filters_state.get("ext", "mp4")
-        # Build list of available audio languages from formats
-        available_dubs = []
-        lang_seen = set()
-        for f in info.get('formats', []):
-            if (f.get('vcodec') == 'none' and f.get('acodec') and f.get('language')):
-                lang = f.get('language')
-                if lang and lang not in lang_seen:
-                    lang_seen.add(lang)
-                    available_dubs.append(lang)
-        # Save dubs availability per-user (show only if 2+ languages exist)
-        fstate = get_filters(user_id)
-        has_dubs = len(available_dubs) > 1
-        fstate["has_dubs"] = has_dubs
-        fstate["available_dubs"] = sorted(available_dubs)
-        if not has_dubs:
-            # If only one or zero languages, reset audio selection
-            fstate["audio_lang"] = None
-        _ASK_FILTERS[str(user_id)] = fstate
-        # If user selected MKV container, reflect this to the download session preference
-        try:
-            set_session_mkv_override(user_id, sel_ext == "mkv")
-        except Exception:
-            pass
-        # --- Table with qualities and sizes ---
-        table_block = ''
-        found_quality_keys = set()
-        
-        # Check if user has fixed format via /args
-        user_fixed_format = None
-        try:
-            user_args = get_user_args(user_id)
-            user_video_format = user_args.get('video_format', 'mp4')
-            user_merge_format = user_args.get('merge_output_format', 'mp4')
-            
-            # If user has set video_format to something other than mp4, it's fixed
-            if user_video_format != 'mp4':
-                user_fixed_format = user_video_format
-            # If user has set merge_output_format to something other than mp4, it's fixed
-            elif user_merge_format != 'mp4':
-                user_fixed_format = user_merge_format
-        except Exception:
-            pass
-        
-        if ("youtube.com" in url or "youtu.be" in url):
-            quality_map = {}
-            for f in info.get('formats', []):
-                if f.get('vcodec', 'none') != 'none' and f.get('height') and f.get('width'):
-                    vcodec = f.get('vcodec') or ''
-                    ext = f.get('ext') or ''
-                    # Filter by codec
-                    if sel_codec == 'avc1' and 'avc1' not in vcodec:
-                        continue
-                    if sel_codec == 'av01' and not vcodec.startswith('av01'):
-                        continue
-                    if sel_codec == 'vp9' and 'vp9' not in vcodec:
-                        continue
-                    
-                    # Filter by extension - use fixed format if available
-                    target_ext = user_fixed_format if user_fixed_format else sel_ext
-                    if target_ext == 'mp4' and ext != 'mp4':
-                        continue
-                    if target_ext == 'mkv' and ext == 'mp4':
-                        continue
-                    if target_ext == 'webm' and ext != 'webm':
-                        continue
-                    if target_ext == 'avi' and ext != 'avi':
-                        continue
-                    if target_ext == 'mov' and ext != 'mov':
-                        continue
-                    if target_ext == 'flv' and ext != 'flv':
-                        continue
-                    if target_ext == '3gp' and ext not in ('3gp', '3g2'):
-                        continue
-                    if target_ext == 'ogv' and ext not in ('ogv', 'ogg'):
-                        continue
-                    if target_ext == 'wmv' and ext != 'wmv':
-                        continue
-                    if target_ext == 'asf' and ext != 'asf':
-                        continue
-                    w = f['width']
-                    h = f['height']
-                    quality_key = get_quality_by_min_side(w, h)
-                    if quality_key == "best":
-                        continue
-                    filesize = f.get('filesize') or f.get('filesize_approx')
-                    if quality_key not in quality_map or (filesize and filesize > (quality_map[quality_key].get('filesize') or 0)):
-                        quality_map[quality_key] = f
-            table_lines = []
-            for q in sorted(quality_map.keys(), key=sort_quality_key):
-                f = quality_map[q]
-                w = f.get('width')
-                h = f.get('height')
-                filesize = f.get('filesize') or f.get('filesize_approx')
-                if filesize:
-                    if filesize and filesize >= 1024*1024*1024:
-                        size_str = f"{round(filesize/1024/1024/1024, 2)}GB"
-                    else:
-                        size_str = f"{round(filesize/1024/1024, 1)}MB"
-                else:
-                    size_str = '—'
-                dim_str = f" ({w}×{h})" if w and h else ''
-                scissors = ""
-                if get_user_split_size(user_id) and filesize:
-                    video_bytes = filesize
-                    if video_bytes and video_bytes > get_user_split_size(user_id):
-                        n_parts = (video_bytes + get_user_split_size(user_id) - 1) // get_user_split_size(user_id)
-                        scissors = f" ✂️{n_parts}"
-                # Check the availability of subtitles for this quality 
-                subs_enabled = is_subs_enabled(user_id)
-                auto_mode = get_user_subs_auto_mode(user_id)
-                subs_available = ""
-                # Audio language marker for rows (keep UI light; summary shows selection)
-                if subs_enabled:
-                    if sel_ext == 'mkv':
-                        # For MKV with subtitles enabled, show without restrictions
-                        subs_available = "💬"
-                    elif is_youtube_url(url) and w is not None and h is not None and min(int(w), int(h)) <= Config.MAX_SUB_QUALITY:
-                        found_type = check_subs_availability(url, user_id, q, return_type=True)
-                        if (auto_mode and found_type == "auto") or (not auto_mode and found_type == "normal"):
-                            temp_info = {
-                                'duration': info.get('duration'),
-                                'filesize': filesize,
-                                'filesize_approx': filesize
-                            }
-                            if check_subs_limits(temp_info, q):
-                                subs_available = "💬"
-                # Cache/icon (skip if send_as_file is enabled)
-                if send_as_file:
-                    is_cached = False
-                    postfix = ""
-                elif is_playlist and playlist_range:
-                    # Correct indices construction for negative indices
-                    start, end = playlist_range
-                    has_negative = start < 0 or end < 0
-                    
-                    if has_negative:
-                        # For negative indices, build a list with negative values first
-                        if abs(start) < abs(end):
-                            indices = list(range(start, end - 1, -1))
-                        else:
-                            indices = list(range(start, end + 1, 1))
-                        
-                        # Convert negative indices to positive for cache checks
-                        # (cache stores them as positive indices)
-                        try:
-                            from DOWN_AND_UP.yt_dlp_hook import get_video_formats
-                            temp_info = get_video_formats(url, user_id, 1, True, False, 1)
-                            if temp_info and isinstance(temp_info, dict):
-                                if "entries" in temp_info:
-                                    total_playlist_count = len(temp_info["entries"])
-                                elif "_playlist_entries" in temp_info:
-                                    total_playlist_count = len(temp_info["_playlist_entries"])
-                                else:
-                                    total_playlist_count = None
-                                
-                                if total_playlist_count:
-                                    # Convert negative indices to positive
-                                    converted_indices = []
-                                    for neg_idx in indices:
-                                        if neg_idx < 0:
-                                            pos_idx = total_playlist_count + neg_idx + 1
-                                            converted_indices.append(pos_idx)
-                                        else:
-                                            converted_indices.append(neg_idx)
-                                    indices = converted_indices
-                        except Exception as e:
-                            logger.warning(f"Failed to convert negative indices for cache check: {e}")
-                    elif start > end:
-                        indices = list(range(start, end - 1, -1))
-                    else:
-                        indices = list(range(start, end + 1))
-                    
-                    n_cached = get_cached_playlist_count(get_clean_playlist_url(url), q, indices)
-                    total = len(indices)
-                    postfix = f" ({n_cached}/{total})"
-                    is_cached = n_cached > 0
-                else:
-                    # Check cache for a single video
-                    is_cached = q in cached_qualities
-                    # Additionally check cache by the video's unique URL (single video from a playlist)
-                    if not is_cached:
-                        # Extract the current video's unique URL
-                        video_page_url = (
-                            info.get("webpage_url")
-                            or info.get("original_url")
-                            or info.get("url")
-                            or info.get("canonical_url")
-                            or url
-                        )
-                        # If this is not the playlist URL, check cache by the unique URL
-                        if video_page_url != url and video_page_url:
-                            try:
-                                single_video_cached = get_cached_message_ids(video_page_url, q)
-                                if single_video_cached:
-                                    is_cached = True
-                                    logger.info(f"🔍 [CACHE] Found single video in cache by unique URL: {video_page_url}, quality: {q}")
-                            except Exception as e:
-                                logger.warning(f"⚠️ [CACHE] Error while checking cache for a single video: {e}")
-                    postfix = ""
-                need_subs = (subs_enabled and ((auto_mode and found_type == "auto") or (not auto_mode and found_type == "normal")))
-                emoji = "🚀" if (is_cached and not need_subs and not is_nsfw) else "📹"
-                # Show selected audio language if any
-                sel_audio_lang = get_filters(user_id).get("audio_lang")
-                audio_mark = f" 🗣{sel_audio_lang}" if sel_audio_lang else ""
-                table_lines.append(f"{emoji}{q}{subs_available}{audio_mark}:  {size_str}{dim_str}{scissors}{postfix}")
-                found_quality_keys.add(q)
-            table_block = "\n".join(table_lines)
-        else:
-            # --- Non-YouTube: build quality map from actual formats (VK, PH etc.) ---
-            import re as _re
-            quality_map = {}  # quality_key -> best candidate dict
-
-            def infer_quality_key(f):
-                messages = safe_get_messages(message.chat.id)
-                w = f.get('width')
-                h = f.get('height')
-                if w and h:
-                    return get_quality_by_min_side(w, h)
-                fid = f.get('format_id') or ''
-                # url360 / 240p / 1080p etc.
-                # Case 1: 144p/240p/.. from PH-like ids
-                m = _re.match(r'^(\d{3,4})p$', fid)
-                if m:
-                    try:
-                        return f"{int(m.group(1))}p"
-                    except Exception:
-                        return None
-                # Case 2: url144/url240/... from VK
-                m2 = _re.match(r'^url(\d{3,4})$', fid)
-                if m2:
-                    try:
-                        return f"{int(m2.group(1))}p"
-                    except Exception:
-                        return None
-                # Case 3: generic *_540p_* like on TikTok
-                m3 = _re.search(r'(\d{3,4})p', fid)
-                if m3:
-                    try:
-                        return f"{int(m3.group(1))}p"
-                    except Exception:
-                        return None
-                
-                # Case 4: Universal - check format_note and other fields for any service
-                # Try to extract quality from format_note
-                format_note = f.get('format_note') or ''
-                m4 = _re.search(r'(\d{3,4})p', format_note)
-                if m4:
-                    try:
-                        return f"{int(m4.group(1))}p"
-                    except Exception:
-                        pass
-                
-                # Try to extract from url field
-                url_field = f.get('url') or ''
-                m5 = _re.search(r'(\d{3,4})p', url_field)
-                if m5:
-                    try:
-                        return f"{int(m5.group(1))}p"
-                    except Exception:
-                        pass
-                
-                # Universal fallback: if we have dimensions but no quality key, try to infer from resolution
-                if w and h:
-                    # Use the existing quality mapping function for consistency
-                    return get_quality_by_min_side(w, h)
-                
-                return None
-
-            def is_manifest(f):
-                messages = safe_get_messages(message.chat.id)
-                proto = (f.get('protocol') or '').lower()
-                return 'm3u8' in proto or 'dash' in (f.get('format_note') or '').lower() or f.get('manifest_url') is not None
-
-            # --- Helpers for size estimation when FILESIZE is missing ---
-            def best_audio_kbps() -> int:
-                kbps = 0
-                for af in info.get('formats', []):
-                    if af.get('vcodec') == 'none':
-                        # Prefer tbr, else abr
-                        val = None
-                        if af.get('tbr'):
-                            val = float(af['tbr'])
-                        elif af.get('abr'):
-                            val = float(af['abr'])
-                        if val:
-                            kbps = max(kbps, int(val))
-                return kbps or 128  # default to 128 kbps if unknown
-
-            _audio_kbps = best_audio_kbps()
-
-            def default_video_kbps_for_height(height: int, fps: int | None, vcodec: str | None) -> int:
-                # Baseline by height (rough real-world averages for SDR 16:9)
-                baseline = {
-                    144: 250,
-                    240: 400,
-                    360: 800,
-                    480: 1200,
-                    540: 2000,
-                    576: 2200,
-                    720: 2500,
-                    1080: 4500,
-                    1440: 8000,
-                    2160: 14000,
-                    4320: 40000,
-                }
-                # pick nearest not-greater baseline
-                h_keys = sorted(baseline.keys())
-                chosen = baseline[h_keys[0]]
-                for hk in h_keys:
-                    if height >= hk:
-                        chosen = baseline[hk]
-                # fps adjustment
-                if fps and fps > 30:
-                    chosen = int(chosen * 1.25)
-                # codec efficiency (AV1/VP9 can be ~10% better than AVC)
-                if vcodec and (vcodec.startswith('av01') or 'vp9' in vcodec):
-                    chosen = int(chosen * 0.9)
-                return max(chosen, 200)
-
-            def sibling_video_kbps_for_quality(qk: str) -> int:
-                # Try to find any sibling format with same quality and known tbr/vbr
-                best = 0
-                for sf in info.get('formats', []):
-                    if infer_quality_key(sf) != qk:
-                        continue
-                    val = 0.0
-                    if sf.get('tbr'):
-                        val = float(sf['tbr'])
-                    elif sf.get('vbr'):
-                        val = float(sf['vbr'])
-                    if val:
-                        best = max(best, int(val))
-                return best
-
-            def estimate_size_mb(f, qk: str, filesize_str: str = '') -> int:
-                # 1) Exact sizes
-                if f.get('filesize'):
-                    return int(f['filesize']) // (1024*1024)
-                if f.get('filesize_approx'):
-                    return int(f['filesize_approx']) // (1024*1024)
-                
-                # 2) Try to parse human-readable size strings (like "624KB", "1.4MB")
-                if filesize_str:
-                    try:
-                        import re as _re
-                        # Parse patterns like "624KB", "1.4MB", "2.1GB"
-                        match = _re.match(r'^([\d.]+)\s*(KB|MB|GB)$', filesize_str.strip())
-                        if match:
-                            size_val = float(match.group(1))
-                            unit = match.group(2)
-                            if unit == 'KB':
-                                return max(1, int(size_val / 1024))  # At least 1 MB for any KB
-                            elif unit == 'MB':
-                                return int(size_val)
-                            elif unit == 'GB':
-                                return int(size_val * 1024)
-                    except Exception:
-                        pass
-                
-                duration = info.get('duration')
-                if not duration:
-                    return 0
-                # 3) Use tbr/vbr/abr when available
-                kbps = 0.0
-                if f.get('tbr'):
-                    kbps = float(f['tbr'])
-                elif f.get('vbr'):
-                    kbps = float(f['vbr'])
-                elif f.get('abr'):
-                    kbps = float(f['abr'])
-                # 4) Else use sibling with same quality
-                if not kbps:
-                    kbps = float(sibling_video_kbps_for_quality(qk))
-                # 5) Else heuristic by height/fps/codec
-                if not kbps:
-                    # derive height from qk like '360p'
-                    try:
-                        height = int((qk or '0p').rstrip('p'))
-                    except Exception:
-                        height = f.get('height') or 0
-                    fps = f.get('fps') or 30
-                    vcodec = f.get('vcodec') or ''
-                    kbps = float(default_video_kbps_for_height(int(height or 0), int(fps or 0), vcodec))
-                # add audio kbps if stream is likely video-only (no abr or explicit no audio)
-                if (f.get('acodec') in (None, '', 'none')) or (not f.get('abr')):
-                    kbps += float(_audio_kbps)
-                try:
-                    mb = (kbps * float(duration) * 125) / (1024*1024)
-                    if mb and mb > 0 and mb < 1:
-                        return 1
-                    return int(round(mb))
-                except Exception:
-                    return 0
-
-            for f in info.get('formats', []):
-                # Skip audio-only
-                if f.get('vcodec') == 'none' and (f.get('audio_ext') or '') != 'none':
-                    continue
-
-                # Filter by user's fixed format if set
-                if user_fixed_format:
-                    ext = f.get('ext') or ''
-                    if user_fixed_format == 'mp4' and ext != 'mp4':
-                        continue
-                    if user_fixed_format == 'webm' and ext != 'webm':
-                        continue
-                    if user_fixed_format == 'mkv' and ext == 'mp4':
-                        continue
-                    if user_fixed_format == 'avi' and ext != 'avi':
-                        continue
-                    if user_fixed_format == 'mov' and ext != 'mov':
-                        continue
-                    if user_fixed_format == 'flv' and ext != 'flv':
-                        continue
-                    if user_fixed_format == '3gp' and ext not in ('3gp', '3g2'):
-                        continue
-                    if user_fixed_format == 'ogv' and ext not in ('ogv', 'ogg'):
-                        continue
-                    if user_fixed_format == 'wmv' and ext != 'wmv':
-                        continue
-                    if user_fixed_format == 'asf' and ext != 'asf':
-                        continue
-                
-                # Filter by selected codec
-                vcodec = f.get('vcodec') or ''
-                if sel_codec == 'avc1' and 'avc1' not in vcodec:
-                    continue
-                if sel_codec == 'av01' and not vcodec.startswith('av01'):
-                    continue
-                if sel_codec == 'vp9' and 'vp9' not in vcodec:
-                    continue
-                
-                # Filter by selected extension
-                ext = f.get('ext') or ''
-                target_ext = user_fixed_format if user_fixed_format else sel_ext
-                if target_ext == 'mp4' and ext != 'mp4':
-                    continue
-                if target_ext == 'mkv' and ext == 'mp4':
-                    continue
-                if target_ext == 'webm' and ext != 'webm':
-                    continue
-
-                qk = infer_quality_key(f)
-                if not qk or qk == 'best':
-                    continue
-
-                # derive dimensions when missing (assume 16:9)
-                w_val = f.get('width') or 0
-                h_val = f.get('height') or 0
-                if not h_val:
-                    try:
-                        h_val = int(qk.rstrip('p'))
-                    except Exception:
-                        h_val = 0
-                if not w_val and h_val:
-                    w_val = int(h_val * 16 / 9)
-
-                candidate = {
-                    'w': w_val,
-                    'h': h_val,
-                    'size_mb': estimate_size_mb(f, qk, f.get('filesize_str') or ''),
-                    'format_id': f.get('format_id') or '',
-                    'protocol': f.get('protocol') or '',
-                    'filesize_str': f.get('filesize_str') or '',  # Capture human-readable size like "624KB"
-                }
-
-                prev = quality_map.get(qk)
-                if not prev:
-                    quality_map[qk] = candidate
-                else:
-                    # Prefer entries with known resolution/size; then prefer non-manifest; then larger size
-                    prev_has_dims = bool(prev.get('w')) and bool(prev.get('h'))
-                    curr_has_dims = bool(candidate.get('w')) and bool(candidate.get('h'))
-                    prev_has_size = prev.get('size_mb', 0) > 0
-                    curr_has_size = candidate.get('size_mb', 0) > 0
-                    prev_manifest = is_manifest(prev)
-                    curr_manifest = is_manifest(candidate)
-
-                    def better(a_has_dims, a_has_size, a_manifest, a_size, b_has_dims, b_has_size, b_manifest, b_size):
-                        messages = safe_get_messages(user_id)
-                        # 1) prefer with dimensions
-                        if a_has_dims != b_has_dims:
-                            return a_has_dims
-                        # 2) prefer with size estimation
-                        if a_has_size != b_has_size:
-                            return a_has_size
-                        # 3) prefer non-manifest
-                        if a_manifest != b_manifest:
-                            return not a_manifest
-                        # 4) prefer bigger size
-                        return a_size > b_size
-
-                    if better(curr_has_dims, curr_has_size, curr_manifest, candidate['size_mb'],
-                              prev_has_dims, prev_has_size, prev_manifest, prev.get('size_mb', 0)):
-                        quality_map[qk] = candidate
-            
-            # Universal fallback when no qualities were found for any service
-            if not quality_map:
-                # Try to create default qualities based on available formats
-                video_formats = [f for f in info.get('formats', []) if f.get('vcodec') != 'none']
-                if video_formats:
-                    # Group formats by resolution and create quality keys
-                    resolution_groups = {}
-                    for f in video_formats:
-                        w = f.get('width', 0)
-                        h = f.get('height', 0)
-                        if w and h:
-                            # Find the best quality for this resolution
-                            res_key = f"{w}x{h}"
-                            if res_key not in resolution_groups or (f.get('filesize') or 0) > (resolution_groups[res_key].get('filesize') or 0):
-                                resolution_groups[res_key] = f
-                    
-                    # Convert resolution groups to quality keys
-                    for res_key, f in resolution_groups.items():
-                        w, h = f.get('width', 0), f.get('height', 0)
-                        if w and h:
-                            # Use the existing quality mapping function for consistency
-                            qk = get_quality_by_min_side(w, h)
-                            
-                            if qk not in quality_map:
-                                quality_map[qk] = {
-                                    'w': w,
-                                    'h': h,
-                                    'size_mb': estimate_size_mb(f, qk, f.get('filesize_str') or ''),
-                                    'format_id': f.get('format_id') or '',
-                                    'protocol': f.get('protocol') or '',
-                                    'filesize_str': f.get('filesize_str') or '',
-                                }
-            
-            table_lines = []
-            for quality_key in sorted(quality_map.keys(), key=sort_quality_key):
-                entry = quality_map[quality_key]
-                w, h, size_val = entry['w'], entry['h'], entry['size_mb']
-                found_quality_keys.add(quality_key)
-                size_str = f"{round(size_val/1024, 1)}GB" if size_val and size_val >= 1024 else (f"{size_val}MB" if size_val else '—')
-                dim_str = f" ({w}×{h})" if w and h else ''
-                scissors = ""
-                if get_user_split_size(user_id) and size_val:
-                    video_bytes = size_val * 1024 * 1024
-                    if video_bytes and video_bytes > get_user_split_size(user_id):
-                        n_parts = (video_bytes + get_user_split_size(user_id) - 1) // get_user_split_size(user_id)
-                        scissors = f" ✂️{n_parts}"
-                emoji = "📹"
-                table_lines.append(f"{emoji}{quality_key}:  {size_str}{dim_str}{scissors}")
-            table_block = "\n".join(table_lines)
-
-        # --- Forming caption ---
-        cap = f"<b>{title}</b>\n"
-        
-        # Show fixed format info if set via /args
-        if user_fixed_format:
-                cap += f"\n<b>{safe_get_messages(user_id).ALWAYS_ASK_FORMAT_FIXED_VIA_ARGS_MSG}: {user_fixed_format.upper()}</b>\n"
-        
-        # Audio/subs selection summary line
-        fstate = get_filters(user_id)
-        sel_audio_lang = fstate.get("audio_lang")
-        subs_enabled = is_subs_enabled(user_id)
-        subs_lang = get_user_subs_language(user_id) if subs_enabled else None
-        summary_parts = []
-        if sel_audio_lang:
-            summary_parts.append(f"🗣 {sel_audio_lang}")
-        # Always show chosen subtitle language if subs are enabled
-        if subs_enabled and subs_lang:
-            summary_parts.append(f"💬 {subs_lang}")
-        if summary_parts:
-            cap += "<blockquote>" + " | ".join(summary_parts) + "</blockquote>\n"
-        # --- YouTube expanded block ---
-        is_youtube = ("youtube.com" in url or "youtu.be" in url)
-        if is_youtube:
-            uploader = info.get('uploader') or ''
-            channel_url = info.get('channel_url') or ''
-            view_count = info.get('view_count')
-            like_count = info.get('like_count')
-            channel_follower_count = info.get('channel_follower_count')
-            duration = info.get('duration')
-            upload_date = info.get('upload_date')
-            title_val = info.get('title') or ''
-            # Formatting
-            duration_str = TimeFormatter(duration*1000) if duration else ''
-            upload_date_str = ''
-            if upload_date and len(str(upload_date)) == 8:
-                try:
-                    dt = datetime.strptime(str(upload_date), '%Y%m%d')
-                    upload_date_str = dt.strftime('%d.%m.%Y')
-                except Exception:
-                    upload_date_str = str(upload_date)
-            # Emoji
-            views_str = f'👁 {view_count:,}' if view_count is not None else ''
-            likes_str = f'❤️ {like_count:,}' if like_count is not None else ''
-            subs_str = f'👥 {channel_follower_count:,}' if channel_follower_count is not None else ''
-            # First line: channel and subscribers
-            meta_lines = []
-            if uploader:
-                ch_line = f"📺 <b>{uploader}</b>\n"
-                if subs_str:
-                    ch_line += f"<blockquote>{subs_str}</blockquote>\n"
-                meta_lines.append(ch_line)
-            # Second line: name
-            t_line = ''
-            if title_val:
-                t_line = f"<b>{title_val}</b>"
-            if t_line:
-                meta_lines.append(t_line)
-            # Third line: Date + Duration (in the quote)
-            date_dur_line = ''
-            if upload_date_str:
-                date_dur_line += f"📅 {upload_date_str}"
-            if duration_str:
-                if date_dur_line:
-                    date_dur_line += f"  ⏱️ {duration_str}"
-                else:
-                    date_dur_line = f"⏱️ {duration_str}"
-            if date_dur_line:
-                meta_lines.append(f"<blockquote>{date_dur_line}</blockquote>")
-            # Fourth line: views + likes (in quote)
-            stat_line = ''
-            if views_str:
-                stat_line += views_str
-            if likes_str:
-                if stat_line:
-                    stat_line += f"  {likes_str}"
-                else:
-                    stat_line = likes_str
-            if stat_line:
-                meta_lines.append(f"<blockquote>{stat_line}</blockquote>")
-            # Collect the block
-            meta_block = '\n'.join(meta_lines)
-            cap = meta_block + '\n\n'
-        else:
-            # For non-YouTube: show Uploader, Duration, then Title if present
-            title_ny = info.get('title') or ''
-            uploader_ny = info.get('uploader') or ''
-            duration_ny = info.get('duration')
-            duration_str_ny = TimeFormatter(duration_ny*1000) if duration_ny else ''
-            meta_lines_ny = []
-            if uploader_ny:
-                meta_lines_ny.append(f"📺 <b>{uploader_ny}</b>")
-            if duration_str_ny:
-                meta_lines_ny.append(f"<blockquote>⏱️ {duration_str_ny}</blockquote>")
-            if title_ny:
-                meta_lines_ny.append(f"\n<b>{title_ny}</b>")
-            cap = ('\n'.join(meta_lines_ny) + '\n\n') if meta_lines_ny else ''
-        # --- a table of qualities ---
-        if table_block:
-            cap += f"<blockquote>{table_block}</blockquote>\n"
-        
-        # --- Add subtitles and dubs count info ---
-        subs_count_info = ""
-        dubs_count_info = ""
-        
-        # Check if subtitles are enabled and Always Ask mode is enabled for subs
-        if is_subs_enabled(user_id) and is_subs_always_ask(user_id):
-            try:
-                # Get available subtitles count (single-check/cached within session)
-                from COMMANDS.subtitles_cmd import get_or_compute_subs_langs
-                normal_subs, auto_subs = get_or_compute_subs_langs(user_id, url)
-                total_subs = len(set(normal_subs) | set(auto_subs))
-                if total_subs and total_subs > 0:
-                    subs_count_info = f"{safe_get_messages(user_id).ALWAYS_ASK_SUBTITLES_MSG}: {total_subs} available\n"
-            except Exception as e:
-                logger.error(f"Error getting subtitles count: {e}")
-        
-        # Check if dubs are available
-        fstate = get_filters(user_id)
-        available_dubs = fstate.get("available_dubs", [])
-        if len(available_dubs) > 1:  # More than 1 language means dubs are available
-            dubs_count_info = f"{safe_get_messages(user_id).ALWAYS_ASK_DUBBED_AUDIO_MSG}: {len(available_dubs)} languages"
-        
-        # Add the info to caption - each type independently
-        info_parts = []
-        if subs_count_info:
-            info_parts.append(subs_count_info)
-        if dubs_count_info:
-            info_parts.append(dubs_count_info)
-        
-        if info_parts:
-            cap += f"<blockquote>{''.join(info_parts)}</blockquote>\n"
-        # --- tags ---
-        if tags_text:
-            cap += f"{tags_text}"
-        # --- links at the very bottom ---
-        # if ("youtube.com" in url or "youtu.be" in url):
-            # webpage_url = info.get('webpage_url') or ''
-            # video_url_link = f'<a href="{webpage_url}">[VIDEO]</a>' if webpage_url else ''
-            # channel_url_link = f'<a href="{channel_url}">[CHANNEL]</a>' if channel_url else ''
-            # thumbnail_url = info.get('thumbnail') or ''
-            # thumb_link = f'<a href="{thumbnail_url}">[Thumbnail]</a>' if thumbnail_url else ''
-            # links = '  '.join([x for x in [channel_url_link, thumb_link] if x])
-            # if links:
-                # cap += f"\n{links}"
-        # --- Cutting by the limit ---
-        if len(cap) > 1024:
-            if is_youtube:
-                # We cut off by priority: likes, subscribers, views, date, duration, name, channel
-                # 1. Likes
-                cap1 = cap.replace(likes_str, '') if likes_str else cap
-                if len(cap1) <= 1024:
-                    cap = cap1
-                else:
-                    # 2. Subscribers
-                    cap2 = cap1.replace(subs_str, '') if subs_str else cap1
-                    if len(cap2) <= 1024:
-                        cap = cap2
-                    else:
-                        # 3. Views
-                        cap3 = cap2.replace(views_str, '') if views_str else cap2
-                        if len(cap3) <= 1024:
-                            cap = cap3
-                        else:
-                            # 4. Date
-                            cap4 = cap3.replace(upload_date_str, '') if upload_date_str else cap3
-                            if len(cap4) <= 1024:
-                                cap = cap4
-                            else:
-                                # 5. Duration
-                                cap5 = cap4.replace(duration_str, '') if duration_str else cap4
-                                if len(cap5) <= 1024:
-                                    cap = cap5
-                                else:
-                                    # 6. Name
-                                    cap6 = cap5.replace(title_val, '') if title_val else cap5
-                                    if len(cap6) <= 1024:
-                                        cap = cap6
-                                    else:
-                                        # 7. Channel
-                                        cap7 = cap6.replace(uploader, '') if uploader else cap6
-                                        cap = cap7[:1021] + '...'
-            else:
-                # Simple trim for non-YouTube: cut title first, then uploader, then duration
-                if title_ny and len(cap) > 1024:
-                    cap = cap.replace(f"<b>{title_ny}</b>", "")
-                if uploader_ny and len(cap) > 1024:
-                    cap = cap.replace(f"📺 <b>{uploader_ny}</b>", "")
-                if duration_str_ny and len(cap) > 1024:
-                    cap = cap.replace(f"⏱️ {duration_str_ny}", "")
-                if len(cap) > 1024:
-                    cap = cap[:1021] + '...'
+        menu_data = _build_quality_menu_data_model(
+            message=message,
+            user_id=user_id,
+            url=url,
+            info=info,
+            cached_qualities=cached_qualities,
+            is_playlist=is_playlist,
+            playlist_range=playlist_range,
+            tags_text=tags_text,
+            is_nsfw=is_nsfw,
+            is_private_chat=is_private_chat,
+            send_as_file=send_as_file,
+        )
+        filters_state = menu_data.filters_state
+        sel_codec = menu_data.selected_codec
+        sel_ext = menu_data.selected_ext
+        user_fixed_format = menu_data.user_fixed_format
+        quality_map = menu_data.quality_map
+        found_quality_keys = menu_data.found_quality_keys
+        found_type = menu_data.found_subtitle_type
+        cap = menu_data.cap
         # --- Hint ---
         subs_enabled = is_subs_enabled(user_id)
         auto_mode = get_user_subs_auto_mode(user_id)
