@@ -89,6 +89,14 @@ class CookieTransportContext:
     notify_chat_id: int | str
     log_message: object | None
 
+
+@dataclass(frozen=True)
+class CookieFileContext:
+    user_id: str
+    user_dir: str
+    cookie_filename: str
+    cookie_file_path: str
+
 def generate_task_id(user_id: int, url: str, service: str = None) -> str:
     """
     Generate a unique task ID for tracking state.
@@ -439,8 +447,7 @@ def cookies_from_browser_logic(app, message, request=None):
     send_to_logger(message, safe_get_messages(user_id).COOKIES_BROWSER_REQUESTED_LOG_MSG)
 
     # Path to the User's Directory, E.G. "./users/1234567"
-    user_dir = os.path.join(".", "users", str(user_id))
-    create_directory(user_dir)  # Ensure The User's Folder Exists
+    cookie_context = _ensure_cookie_user_dir(user_id)
 
     # Dictionary with Browsers and Their Paths
     browsers = {
@@ -580,9 +587,8 @@ def browser_choice_callback_logic(app, execution_context, request):
     logger.info(safe_get_messages(user_id).COOKIES_BROWSER_CALLBACK_MSG.format(callback_data=callback_query.data))
     data = request.action_key  # E.G. "Chromium", "Firefox", or "Close"
     # Path to the User's Directory, E.G. "./users/1234567"
-    user_dir = os.path.join(".", "users", str(user_id))
-    create_directory(user_dir)
-    cookie_file = os.path.join(user_dir, "cookie.txt")
+    cookie_context = _ensure_cookie_user_dir(user_id)
+    cookie_file = cookie_context.cookie_file_path
 
     if data == "close":
         try:
@@ -723,12 +729,9 @@ def save_my_cookie(app, message):
             send_to_all(message, safe_get_messages(user_id).COOKIES_ERROR_READING_MSG.format(error=e))
             return
         # If all checks are passed - save the file to the user's folder
-        user_folder = f"./users/{user_id}"
-        create_directory(user_folder)
-        cookie_filename = os.path.basename(Config.COOKIE_FILE_PATH)
-        cookie_file_path = os.path.join(user_folder, cookie_filename)
+        cookie_context = _ensure_cookie_user_dir(user_id)
         import shutil
-        shutil.copyfile(tmp_path, cookie_file_path)
+        shutil.copyfile(tmp_path, cookie_context.cookie_file_path)
     send_to_user(message, safe_get_messages(user_id).COOKIES_FILE_SAVED_MSG)
     send_to_logger(message, safe_get_messages(user_id).COOKIES_FILE_SAVED_USER_LOG_MSG.format(user_id=user_id))
 
@@ -814,8 +817,7 @@ def _handle_cookie_menu_selection(app, *, execution_context, user_id: int, selec
         try:
             cookies_from_browser(app, bridge_message_from_existing(message, "/cookies_from_browser"))
         except FloodWait as e:
-            user_dir = os.path.join("users", str(user_id))
-            os.makedirs(user_dir, exist_ok=True)
+            user_dir = _ensure_cookie_user_dir(user_id).user_dir
             with open(os.path.join(user_dir, "flood_wait.txt"), 'w') as f:
                 f.write(str(e.value))
             _answer_cookie_menu_callback(
@@ -880,8 +882,8 @@ def checking_cookie_file_logic(app, message, request=None):
     - Works via test_youtube_cookies()
     """
     user_id = str(message.chat.id)
-    cookie_filename = os.path.basename(Config.COOKIE_FILE_PATH)
-    file_path = os.path.join("users", user_id, cookie_filename)
+    cookie_context = _build_cookie_file_context(user_id)
+    file_path = cookie_context.cookie_file_path
 
     if os.path.exists(file_path):
         with open(file_path, "r", encoding="utf-8") as cookie:
@@ -955,10 +957,8 @@ def download_cookie_logic(app, message, request=None):
             if service == "youtube":
                 # Handle YouTube cookies directly
                 user_id = str(message.chat.id)
-                user_dir = os.path.join("users", user_id)
-                create_directory(user_dir)
-                cookie_filename = os.path.basename(Config.COOKIE_FILE_PATH)
-                cookie_file_path = os.path.join(user_dir, cookie_filename)
+                cookie_context = _ensure_cookie_user_dir(user_id)
+                cookie_file_path = cookie_context.cookie_file_path
                 
                 # Send initial message
                 send_to_user(message, safe_get_messages(user_id).COOKIES_YOUTUBE_TEST_START_MSG)
@@ -983,10 +983,9 @@ def download_cookie_logic(app, message, request=None):
             elif service in ["instagram", "twitter", "tiktok", "facebook", "own", "from_browser", "vk"]:
                 _handle_cookie_menu_selection(
                     app,
+                    execution_context=build_message_execution_context(message),
                     user_id=int(user_id),
                     selection_key=service,
-                    message=message,
-                    callback_query=None,
                 )
                 return
     except Exception as e:
@@ -1105,6 +1104,37 @@ def _download_content(url: str, timeout: int = 30, user_id: int | None = None, a
         except Exception:
             pass
 
+
+def _build_cookie_file_context(user_id: int | str) -> CookieFileContext:
+    user_id_str = str(user_id)
+    user_dir = os.path.join("users", user_id_str)
+    cookie_filename = os.path.basename(Config.COOKIE_FILE_PATH)
+    return CookieFileContext(
+        user_id=user_id_str,
+        user_dir=user_dir,
+        cookie_filename=cookie_filename,
+        cookie_file_path=os.path.join(user_dir, cookie_filename),
+    )
+
+
+def _ensure_cookie_user_dir(user_id: int | str) -> CookieFileContext:
+    context = _build_cookie_file_context(user_id)
+    create_directory(context.user_dir)
+    return context
+
+
+def _write_cookie_file(cookie_context: CookieFileContext, content: bytes | str, *, binary: bool) -> None:
+    create_directory(cookie_context.user_dir)
+    mode = "wb" if binary else "w"
+    kwargs = {} if binary else {"encoding": "utf-8"}
+    with open(cookie_context.cookie_file_path, mode, **kwargs) as cookie_file:
+        cookie_file.write(content)
+
+
+def _remove_cookie_file_if_present(cookie_context: CookieFileContext) -> None:
+    if os.path.exists(cookie_context.cookie_file_path):
+        os.remove(cookie_context.cookie_file_path)
+
 def download_and_save_cookie(app, execution_context, url, service):
     """
     Download and save cookies for the specified service.
@@ -1117,9 +1147,12 @@ def download_and_save_cookie(app, execution_context, url, service):
     """
     callback_query = execution_context.callback_query
     source_message = execution_context.source_message
-    if callback_query is None or source_message is None:
-        raise ValueError("Cookie download requires callback execution context and source message")
-    user_id = str(callback_query.from_user.id)
+    if source_message is None:
+        raise ValueError("Cookie download requires source message context")
+    if callback_query is not None:
+        user_id = str(callback_query.from_user.id)
+    else:
+        user_id = str(source_message.chat.id)
 
     # Validate config
     if not url:
@@ -1142,12 +1175,8 @@ def download_and_save_cookie(app, execution_context, url, service):
                 send_to_logger(source_message, safe_get_messages(user_id).COOKIES_SERVICE_FILE_TOO_LARGE_LOG_MSG.format(service=service.capitalize(), size=content_size))
                 return
             # Save to user folder
-            user_dir = os.path.join("users", user_id)
-            create_directory(user_dir)
-            cookie_filename = os.path.basename(Config.COOKIE_FILE_PATH)
-            file_path = os.path.join(user_dir, cookie_filename)
-            with open(file_path, "wb") as cf:
-                cf.write(content)
+            cookie_context = _ensure_cookie_user_dir(user_id)
+            _write_cookie_file(cookie_context, content, binary=True)
             send_to_user(source_message, safe_get_messages(user_id).COOKIES_FILE_DOWNLOADED_MSG.format(service=service.capitalize()))
             send_to_logger(source_message, safe_get_messages(user_id).COOKIES_SERVICE_FILE_DOWNLOADED_LOG_MSG.format(service=service.capitalize(), user_id=user_id))
         else:
@@ -1210,12 +1239,8 @@ def save_as_cookie_file_logic(app, message, request=None):
 
     if final_cookie:
         send_to_all(message, safe_get_messages(user_id).COOKIES_USER_PROVIDED_MSG)
-        user_dir = os.path.join("users", user_id)
-        create_directory(user_dir)
-        cookie_filename = os.path.basename(Config.COOKIE_FILE_PATH)
-        file_path = os.path.join(user_dir, cookie_filename)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(final_cookie)
+        cookie_context = _ensure_cookie_user_dir(user_id)
+        _write_cookie_file(cookie_context, final_cookie, binary=False)
         send_to_user(message, safe_get_messages(user_id).COOKIES_SUCCESSFULLY_UPDATED_MSG.format(final_cookie=final_cookie))
         send_to_logger(message, safe_get_messages(user_id).COOKIES_FILE_UPDATED_LOG_MSG.format(user_id=user_id))
     else:
@@ -1608,10 +1633,8 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
         return False
     
     # Create user folder
-    user_dir = os.path.join("users", user_id)
-    create_directory(user_dir)
-    cookie_filename = os.path.basename(Config.COOKIE_FILE_PATH)
-    cookie_file_path = os.path.join(user_dir, cookie_filename)
+    cookie_context = _ensure_cookie_user_dir(user_id)
+    cookie_file_path = cookie_context.cookie_file_path
     
     # Send initial message and store message ID for updates
     initial_msg = None
@@ -1711,8 +1734,7 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
                 continue
             
             # Save cookies to a temporary file
-            with open(cookie_file_path, "wb") as cf:
-                cf.write(content)
+            _write_cookie_file(cookie_context, content, binary=True)
             
             # Update message about testing
             update_message(safe_get_messages(user_id).COOKIES_DOWNLOADING_TESTING_MSG.format(attempt=attempt_number, total=len(indices)), user_id)
@@ -1732,14 +1754,12 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
             else:
                 logger.warning(LoggerMsg.COOKIES_YOUTUBE_FROM_SOURCE_FAILED_VALIDATION_LOG_MSG.format(source_index=idx + 1))
                 # Remove non-working cookies
-                if os.path.exists(cookie_file_path):
-                    os.remove(cookie_file_path)
+                _remove_cookie_file_if_present(cookie_context)
                     
         except Exception as e:
             logger.error(LoggerMsg.COOKIES_YOUTUBE_DOWNLOAD_EXCEPTION_LOG_MSG.format(e=e))
             # Remove the file in case of an error
-            if os.path.exists(cookie_file_path):
-                os.remove(cookie_file_path)
+            _remove_cookie_file_if_present(cookie_context)
             continue
     
     # If no source worked
@@ -1811,10 +1831,8 @@ def ensure_working_youtube_cookies(user_id: int) -> bool:
     
     try:
         logger.info(LoggerMsg.COOKIES_YOUTUBE_STARTING_ENSURE_LOG_MSG.format(user_id=user_id))
-        user_dir = os.path.join("users", str(user_id))
-        create_directory(user_dir)
-        cookie_filename = os.path.basename(Config.COOKIE_FILE_PATH)
-        cookie_file_path = os.path.join(user_dir, cookie_filename)
+    cookie_context = _ensure_cookie_user_dir(user_id)
+    cookie_file_path = cookie_context.cookie_file_path
         
         # Check existing cookies
         if os.path.exists(cookie_file_path):
@@ -1833,8 +1851,7 @@ def ensure_working_youtube_cookies(user_id: int) -> bool:
         if not cookie_urls:
             logger.warning(LoggerMsg.COOKIES_YOUTUBE_NO_SOURCES_CONFIGURED_LOG_MSG.format(user_id=user_id))
             # Remove non-working cookies
-            if os.path.exists(cookie_file_path):
-                os.remove(cookie_file_path)
+            _remove_cookie_file_if_present(cookie_context)
             # Finish the task unsuccessfully
             finish_cookie_task(task_id, False, cookie_file_path)
             return False
@@ -1883,8 +1900,7 @@ def ensure_working_youtube_cookies(user_id: int) -> bool:
                     continue
                 
                 # Save cookies
-                with open(cookie_file_path, "wb") as cf:
-                    cf.write(content)
+                _write_cookie_file(cookie_context, content, binary=True)
                 
                 # Validate cookies
                 if test_youtube_cookies(cookie_file_path, user_id=user_id):
@@ -1896,20 +1912,17 @@ def ensure_working_youtube_cookies(user_id: int) -> bool:
                 else:
                     logger.warning(LoggerMsg.COOKIES_YOUTUBE_SOURCE_FAILED_VALIDATION_LOG_MSG.format(source_index=idx + 1, user_id=user_id))
                     # Remove non-working cookies
-                    if os.path.exists(cookie_file_path):
-                        os.remove(cookie_file_path)
+                    _remove_cookie_file_if_present(cookie_context)
                         
             except Exception as e:
                 logger.error(LoggerMsg.COOKIES_YOUTUBE_PROCESSING_ERROR_LOG_MSG.format(source_index=idx + 1, user_id=user_id, e=e))
                 # Remove the file on error
-                if os.path.exists(cookie_file_path):
-                    os.remove(cookie_file_path)
+                _remove_cookie_file_if_present(cookie_context)
                 continue
     
         # If no source worked
         logger.warning(LoggerMsg.COOKIES_YOUTUBE_ALL_SOURCES_FAILED_REMOVING_LOG_MSG.format(user_id=user_id))
-        if os.path.exists(cookie_file_path):
-            os.remove(cookie_file_path)
+        _remove_cookie_file_if_present(cookie_context)
         logger.info(LoggerMsg.COOKIES_YOUTUBE_FINISHED_NO_WORKING_LOG_MSG.format(user_id=user_id))
         # Finish task unsuccessfully
         finish_cookie_task(task_id, False, cookie_file_path)
@@ -2104,10 +2117,8 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
             logger.info(f"Reset checked cookie sources for user {user_id} to allow retry in future")
             return None
         
-        user_dir = os.path.join("users", str(user_id))
-        create_directory(user_dir)
-        cookie_filename = os.path.basename(Config.COOKIE_FILE_PATH)
-        cookie_file_path = os.path.join(user_dir, cookie_filename)
+        cookie_context = _ensure_cookie_user_dir(user_id)
+        cookie_file_path = cookie_context.cookie_file_path
         
         # Determine the attempt order for unchecked sources only
         indices = unchecked_indices.copy()
@@ -2158,8 +2169,7 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
                     continue
                 
                 # Save cookies
-                with open(cookie_file_path, "wb") as cf:
-                    cf.write(content)
+                _write_cookie_file(cookie_context, content, binary=True)
                 
                 # Validate cookies
                 if test_youtube_cookies(cookie_file_path, user_id=user_id):
@@ -2193,14 +2203,12 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
                 else:
                     logger.warning(LoggerMsg.COOKIES_YOUTUBE_RETRY_SOURCE_FAILED_VALIDATION_LOG_MSG.format(source_index=idx + 1, user_id=user_id))
                     # Remove non-working cookies
-                    if os.path.exists(cookie_file_path):
-                        os.remove(cookie_file_path)
+                    _remove_cookie_file_if_present(cookie_context)
                         
             except Exception as e:
                 logger.error(LoggerMsg.COOKIES_YOUTUBE_RETRY_PROCESSING_ERROR_LOG_MSG.format(source_index=idx + 1, user_id=user_id, e=e))
                 # Remove the file on error
-                if os.path.exists(cookie_file_path):
-                    os.remove(cookie_file_path)
+                _remove_cookie_file_if_present(cookie_context)
                 continue
         
         # If all sources failed
@@ -2313,10 +2321,8 @@ def try_download_with_cookie_fallback(user_id: int, url: str, download_func, *ar
     
     logger.info(f"Trying cookie fallback for non-YouTube URL: {url}, service: {service_name}")
     
-    user_dir = os.path.join("users", str(user_id))
-    create_directory(user_dir)
-    cookie_filename = os.path.basename(Config.COOKIE_FILE_PATH)
-    user_cookie_path = os.path.join(user_dir, cookie_filename)
+        cookie_context = _ensure_cookie_user_dir(user_id)
+        user_cookie_path = cookie_context.cookie_file_path
     
     # Cookie attempt list
     cookie_attempts = []
@@ -2350,8 +2356,7 @@ def try_download_with_cookie_fallback(user_id: int, url: str, download_func, *ar
                     ok, status, content, err = _download_content(cookie_source, timeout=30, user_id=user_id)
                     if ok and content and len(content) <= 100 * 1024:
                         cookie_file_path = user_cookie_path
-                        with open(cookie_file_path, "wb") as cf:
-                            cf.write(content)
+                        _write_cookie_file(cookie_context, content, binary=True)
                         logger.info(f"Downloaded {service_name} cookies for {url}")
                     else:
                         logger.warning(f"Failed to download {service_name} cookies: status={status}, error={err}")
@@ -2563,8 +2568,8 @@ def try_non_youtube_cookie_fallback(user_id: int, url: str, download_func, *args
     
     try:
         # 1) Try user cookies
-        user_dir = os.path.join("users", str(user_id))
-        user_cookie_path = os.path.join(user_dir, "cookie.txt")
+        cookie_context = _ensure_cookie_user_dir(user_id)
+        user_cookie_path = cookie_context.cookie_file_path
         
         if os.path.exists(user_cookie_path):
             logger.info(f"Trying user cookies for non-YouTube URL: {url}")
@@ -2586,7 +2591,7 @@ def try_non_youtube_cookie_fallback(user_id: int, url: str, download_func, *args
                     ok, status, content, err = _download_content(service_cookie_url, timeout=30, user_id=user_id)
                     if ok and content:
                         # Save cookies to a temporary file
-                        temp_cookie_path = os.path.join(user_dir, f"temp_{service_name}_cookie.txt")
+                        temp_cookie_path = os.path.join(cookie_context.user_dir, f"temp_{service_name}_cookie.txt")
                         with open(temp_cookie_path, "wb") as f:
                             f.write(content)
                         

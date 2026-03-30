@@ -89,6 +89,13 @@ class ArgsTextInputContext:
     state: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ArgsStorageContext:
+    user_id: int
+    user_dir: str
+    args_file: str
+
+
 def _build_args_callback_context(execution_context) -> ArgsCallbackContext:
     callback_query = execution_context.callback_query
     source_message = execution_context.source_message or callback_query.message
@@ -161,6 +168,60 @@ def _log_args_input_error(message, error_msg: str) -> None:
     from HELPERS.logger import log_error_to_channel
 
     log_error_to_channel(message, error_msg)
+
+
+def _build_args_storage_context(user_id: int) -> ArgsStorageContext:
+    user_dir = os.path.join("users", str(user_id))
+    return ArgsStorageContext(
+        user_id=user_id,
+        user_dir=user_dir,
+        args_file=os.path.join(user_dir, ARGS_FILE),
+    )
+
+
+def _load_user_args_state(user_id: int) -> tuple[ArgsStorageContext, Dict[str, Any]]:
+    storage = _build_args_storage_context(user_id)
+    if not os.path.exists(storage.args_file):
+        return storage, {}
+    try:
+        with open(storage.args_file, 'r', encoding='utf-8') as f:
+            return storage, json.load(f)
+    except Exception as e:
+        logger.error(LoggerMsg.ARGS_ERROR_READING_USER_ARGS_LOG_MSG.format(user_id=user_id, error=e))
+        return storage, {}
+
+
+def _persist_user_args_state(storage: ArgsStorageContext, args_state: Dict[str, Any]) -> bool:
+    try:
+        os.makedirs(storage.user_dir, exist_ok=True)
+        with open(storage.args_file, 'w', encoding='utf-8') as f:
+            json.dump(args_state, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        logger.error(LoggerMsg.ARGS_ERROR_SAVING_USER_ARGS_LOG_MSG.format(user_id=storage.user_id, error=e))
+        return False
+
+
+def _apply_args_boolean_pair_consistency(args_state: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(args_state)
+    paired_flags = [
+        ("check_certificate", "no_check_certificates"),
+        ("live_from_start", "no_live_from_start"),
+        ("force_ipv4", "force_ipv6"),
+    ]
+    for positive_key, negative_key in paired_flags:
+        if normalized.get(positive_key):
+            normalized[negative_key] = False
+        elif normalized.get(negative_key):
+            normalized[positive_key] = False
+    return normalized
+
+
+def _update_user_arg_value(user_id: int, param_name: str, value: Any) -> bool:
+    storage, args_state = _load_user_args_state(user_id)
+    args_state[param_name] = value
+    args_state = _apply_args_boolean_pair_consistency(args_state)
+    return _persist_user_args_state(storage, args_state)
 
 def clear_input_state_timer(user_id: int, thread_id: int = None):
     messages = get_messages_instance(user_id)
@@ -598,32 +659,14 @@ def validate_input(value: str, param_name: str, user_id: int = None) -> tuple[bo
 
 def get_user_args(user_id: int) -> Dict[str, Any]:
     """Get user's saved args settings"""
-    user_dir = os.path.join("users", str(user_id))
-    args_file = os.path.join(user_dir, ARGS_FILE)
-    
-    if not os.path.exists(args_file):
-        return {}
-    
-    try:
-        with open(args_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(LoggerMsg.ARGS_ERROR_READING_USER_ARGS_LOG_MSG.format(user_id=user_id, error=e))
-        return {}
+    _, args_state = _load_user_args_state(user_id)
+    return args_state
 
 def save_user_args(user_id: int, args: Dict[str, Any]) -> bool:
     """Save user's args settings"""
-    try:
-        user_dir = os.path.join("users", str(user_id))
-        os.makedirs(user_dir, exist_ok=True)
-        
-        args_file = os.path.join(user_dir, ARGS_FILE)
-        with open(args_file, 'w', encoding='utf-8') as f:
-            json.dump(args, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        logger.error(LoggerMsg.ARGS_ERROR_SAVING_USER_ARGS_LOG_MSG.format(user_id=user_id, error=e))
-        return False
+    storage = _build_args_storage_context(user_id)
+    normalized_args = _apply_args_boolean_pair_consistency(args)
+    return _persist_user_args_state(storage, normalized_args)
 
 def get_args_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Generate main args menu keyboard with grouped parameters"""
@@ -1264,9 +1307,7 @@ def args_command_logic(app, message, request=None):
         return  # is_user_in_channel already sends subscription message
     
     # Create user directory after subscription check
-    user_dir = os.path.join("users", str(invoker_id))
-    if not os.path.exists(user_dir):
-        os.makedirs(user_dir, exist_ok=True)
+    os.makedirs(_build_args_storage_context(invoker_id).user_dir, exist_ok=True)
     
     keyboard = get_args_menu_keyboard(invoker_id)
     
@@ -1443,26 +1484,7 @@ def args_callback_logic(app, execution_context, request):
 
             user_args = get_user_args(user_id)
             current_value = user_args.get(param_name, YTDLP_PARAMS[param_name].get("default", False))
-            user_args[param_name] = value
-            try:
-                if param_name in ("check_certificate", "no_check_certificates"):
-                    opposite = "no_check_certificates" if param_name == "check_certificate" else "check_certificate"
-                    user_args[opposite] = (not value)
-            except Exception:
-                pass
-            try:
-                if param_name in ("live_from_start", "no_live_from_start"):
-                    opposite = "no_live_from_start" if param_name == "live_from_start" else "live_from_start"
-                    user_args[opposite] = (not value)
-            except Exception:
-                pass
-            try:
-                if param_name in ("force_ipv4", "force_ipv6"):
-                    opposite = "force_ipv6" if param_name == "force_ipv4" else "force_ipv4"
-                    user_args[opposite] = (not value)
-            except Exception:
-                pass
-            save_user_args(user_id, user_args)
+            _update_user_arg_value(user_id, param_name, value)
 
             if current_value != value:
                 keyboard = get_args_menu_keyboard(user_id)
@@ -1505,8 +1527,7 @@ def args_callback_logic(app, execution_context, request):
 
             user_args = get_user_args(user_id)
             current_value = user_args.get(param_name, YTDLP_PARAMS[param_name].get("default", ""))
-            user_args[param_name] = value
-            save_user_args(user_id, user_args)
+            _update_user_arg_value(user_id, param_name, value)
 
             if current_value != value:
                 keyboard = get_select_menu_keyboard(param_name, value, user_id)
@@ -1563,9 +1584,7 @@ def handle_args_text_input(app, execution_context, request=None):
                 _log_args_input_error(context.source_message, error_msg)
                 return
 
-            user_args = get_user_args(context.owner_id)
-            user_args[param_name] = context.text
-            save_user_args(context.owner_id, user_args)
+            _update_user_arg_value(context.owner_id, param_name, context.text)
 
             _clear_args_input_state(context.chat_id, context.owner_id, context.thread_id)
             safe_send_message(
@@ -1587,9 +1606,7 @@ def handle_args_text_input(app, execution_context, request=None):
                     _log_args_input_error(context.source_message, error_msg)
                     return
 
-                user_args = get_user_args(context.owner_id)
-                user_args[param_name] = context.text
-                save_user_args(context.owner_id, user_args)
+                _update_user_arg_value(context.owner_id, param_name, context.text)
 
                 _clear_args_input_state(context.chat_id, context.owner_id, context.thread_id)
                 safe_send_message(
@@ -1621,9 +1638,7 @@ def handle_args_text_input(app, execution_context, request=None):
                     _log_args_input_error(context.source_message, error_msg)
                     return
 
-                user_args = get_user_args(context.owner_id)
-                user_args[param_name] = value
-                save_user_args(context.owner_id, user_args)
+                _update_user_arg_value(context.owner_id, param_name, value)
 
                 _clear_args_input_state(context.chat_id, context.owner_id, context.thread_id)
                 safe_send_message(
@@ -1647,9 +1662,7 @@ def handle_args_text_input(app, execution_context, request=None):
                         )
                         return
 
-                    user_args = get_user_args(context.owner_id)
-                    user_args[param_name] = value
-                    save_user_args(context.owner_id, user_args)
+                    _update_user_arg_value(context.owner_id, param_name, value)
 
                     _clear_args_input_state(context.chat_id, context.owner_id, context.thread_id)
                     safe_send_message(
@@ -1741,21 +1754,7 @@ def args_import_handler(app, message):
             )
             return
         
-        # Apply mutual exclusivity for paired booleans
-        if "check_certificate" in parsed_args and parsed_args["check_certificate"]:
-            parsed_args["no_check_certificates"] = False
-        elif "no_check_certificates" in parsed_args and parsed_args["no_check_certificates"]:
-            parsed_args["check_certificate"] = False
-            
-        if "live_from_start" in parsed_args and parsed_args["live_from_start"]:
-            parsed_args["no_live_from_start"] = False
-        elif "no_live_from_start" in parsed_args and parsed_args["no_live_from_start"]:
-            parsed_args["live_from_start"] = False
-            
-        if "force_ipv4" in parsed_args and parsed_args["force_ipv4"]:
-            parsed_args["force_ipv6"] = False
-        elif "force_ipv6" in parsed_args and parsed_args["force_ipv6"]:
-            parsed_args["force_ipv4"] = False
+        parsed_args = _apply_args_boolean_pair_consistency(parsed_args)
         
         # Save imported settings
         if save_user_args(invoker_id, parsed_args):
