@@ -4,6 +4,7 @@ import hashlib
 import re
 from datetime import datetime
 import json
+from dataclasses import dataclass
 from pyrogram import filters, enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyParameters, WebAppInfo
@@ -317,6 +318,128 @@ def _dispatch_gallery_fallback(
         runtime_task=runtime_task,
     )
     return image_command(app, fake_msg)
+
+
+@dataclass(frozen=True)
+class GalleryFallbackTransitionPlan:
+    user_id: int
+    url: str
+    video_start_with: int
+    video_end_with: int
+    original_chat_id: int
+    message_thread_id: int | None
+    fallback_text: str
+    runtime_task: RuntimeTask
+
+
+@dataclass(frozen=True)
+class AlwaysAskSourceContext:
+    original_message: object
+    url: str
+    url_text: str
+
+
+def _emit_gallery_fallback_transition_start(callback_query, plan: GalleryFallbackTransitionPlan) -> None:
+    safe_callback_answer(callback_query, "🔄 Switching to gallery-dl...")
+    try:
+        callback_query.message.delete()
+        logger.info(f"Deleted fallback gallery-dl message for user {plan.user_id}")
+    except Exception as e:
+        logger.warning(f"Failed to delete fallback gallery-dl message: {e}")
+
+
+def _emit_gallery_fallback_transition_error(callback_query, error: Exception) -> None:
+    logger.error(f"Error in fallback_gallery_dl_callback: {error}")
+    safe_callback_answer(callback_query, "❌ Error switching to gallery-dl", show_alert=True)
+
+
+def _build_gallery_fallback_transition_plan(
+    execution_context,
+    request,
+) -> GalleryFallbackTransitionPlan:
+    callback_query = execution_context.callback_query
+    if callback_query is None:
+        raise ValueError("Gallery fallback selection requires callback execution context")
+
+    user_id = request.user_id
+    url_data = get_original_data_from_callback("fallback_gallery_dl", request.action_key)
+    url_parts = url_data.split("|")
+    url = url_parts[0]
+
+    if len(url_parts) >= 3:
+        video_start_with = int(url_parts[1])
+        video_end_with = int(url_parts[2])
+        logger.info(
+            "[FALLBACK DEBUG] Extracted range from callback data: %s-%s",
+            video_start_with,
+            video_end_with,
+        )
+    else:
+        video_start_with = 1
+        video_end_with = 1
+        logger.info("[FALLBACK DEBUG] No range in callback data, using default: 1-1")
+
+    if len(url_parts) >= 4:
+        original_chat_id = int(url_parts[3])
+    else:
+        original_chat_id = execution_context.chat_id or callback_query.message.chat.id
+
+    if video_start_with != 1 or video_end_with != 1:
+        fallback_text = f"/img {video_start_with}-{video_end_with} {url}"
+        logger.info(
+            "[FALLBACK DEBUG] Creating fallback command with range: %s-%s",
+            video_start_with,
+            video_end_with,
+        )
+    else:
+        fallback_text = f"/img {url}"
+        logger.info("[FALLBACK DEBUG] Creating fallback command without range")
+
+    fallback_branch = gallery_fallback_branch(
+        None,
+        origin="always_ask_menu",
+        reason="explicit_callback_gallery_fallback",
+    )
+    runtime_task = make_runtime_task(
+        user_id=user_id,
+        source_message_id=execution_context.source_message_id,
+        url=url,
+        tags_text="",
+        video_count=max(1, video_end_with - video_start_with + 1),
+        video_start_with=video_start_with,
+        proc_msg_id=None,
+        branch_selection_result=fallback_branch,
+    )
+
+    return GalleryFallbackTransitionPlan(
+        user_id=user_id,
+        url=url,
+        video_start_with=video_start_with,
+        video_end_with=video_end_with,
+        original_chat_id=original_chat_id,
+        message_thread_id=execution_context.message_thread_id,
+        fallback_text=fallback_text,
+        runtime_task=runtime_task,
+    )
+
+
+def _build_always_ask_source_context(execution_context) -> AlwaysAskSourceContext | None:
+    source_message = execution_context.source_message
+    if source_message is None:
+        return None
+
+    original_message = getattr(source_message, "reply_to_message", None)
+    if original_message is None:
+        return None
+
+    url_text = original_message.text or (original_message.caption or "")
+    match = re.search(r'https?://[^\s\*#]+', url_text)
+    url = match.group(0) if match else url_text
+    return AlwaysAskSourceContext(
+        original_message=original_message,
+        url=url,
+        url_text=url_text,
+    )
 
 # Proxy functionality is now handled by COMMANDS.proxy_cmd
 logger.info(LoggerMsg.ALWAYS_ASK_IMPORTED_LOG_MSG.format(app_available=app is not None))
@@ -851,7 +974,10 @@ def ask_filter_callback(app, callback_query):
         )
 
 
-def ask_filter_callback_logic(app, callback_query, filter_request):
+def ask_filter_callback_logic(app, execution_context, filter_request):
+    callback_query = execution_context.callback_query
+    if callback_query is None:
+        raise ValueError("Ask filter callback logic requires callback execution context")
     messages = safe_get_messages(callback_query.from_user.id)
     from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -859,24 +985,20 @@ def ask_filter_callback_logic(app, callback_query, filter_request):
     kind = filter_request.filter_kind
     value = filter_request.filter_value
     logger.info(LoggerMsg.ALWAYS_ASK_PARSED_LOG_MSG.format(kind=kind, value=value))
+    source_context = _build_always_ask_source_context(execution_context)
 
     # --- SUBS handlers must run BEFORE generic filter rebuild ---
     if kind == "subs" and value == "open":
-        original_message = callback_query.message.reply_to_message
-        if not original_message:
-            callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if source_context is None:
+            safe_callback_answer(callback_query, safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             return
-        url_text = original_message.text or (original_message.caption or "")
-        import re as _re
-        m = _re.search(r'https?://[^\s\*#]+', url_text)
-        url = m.group(0) if m else url_text
         try:
             from COMMANDS.subtitles_cmd import get_or_compute_subs_langs
-            normal, auto = get_or_compute_subs_langs(user_id, url)
-            check_subs_availability(url, user_id, return_type=True)
+            normal, auto = get_or_compute_subs_langs(user_id, source_context.url)
+            check_subs_availability(source_context.url, user_id, return_type=True)
             langs = sorted(set(normal) | set(auto))
         except Exception:
-            normal, auto = load_subs_langs_cache(user_id, url)
+            normal, auto = load_subs_langs_cache(user_id, source_context.url)
             langs = sorted(set(normal) | set(auto))
         if not langs:
             safe_callback_answer(callback_query, safe_get_messages(user_id).NO_SUBTITLES_DETECTED_MSG, show_alert=True)
@@ -890,43 +1012,40 @@ def ask_filter_callback_logic(app, callback_query, filter_request):
         return
     if kind == "subs_page":
         page = int(value)
-        original_message = callback_query.message.reply_to_message
-        if not original_message:
-            callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if source_context is None:
+            safe_callback_answer(callback_query, safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             return
-        url_text = original_message.text or (original_message.caption or "")
-        import re as _re
-        m = _re.search(r'https?://[^\s\*#]+', url_text)
-        url = m.group(0) if m else url_text
-        n_cached, a_cached = load_subs_langs_cache(user_id, url)
+        n_cached, a_cached = load_subs_langs_cache(user_id, source_context.url)
         if n_cached or a_cached:
             normal, auto = n_cached, a_cached
         else:
-            normal = _subs_check_cache.get(f"{url}_{user_id}_normal_langs") or []
-            auto = _subs_check_cache.get(f"{url}_{user_id}_auto_langs") or []
+            normal = _subs_check_cache.get(f"{source_context.url}_{user_id}_normal_langs") or []
+            auto = _subs_check_cache.get(f"{source_context.url}_{user_id}_auto_langs") or []
         langs = sorted(set(normal) | set(auto))
         kb = get_language_keyboard_always_ask(page=page, user_id=user_id, langs_override=langs, per_page_rows=8, normal_langs=normal, auto_langs=auto)
         try:
             callback_query.edit_message_reply_markup(reply_markup=kb)
         except Exception:
             pass
-        callback_query.answer(safe_get_messages(user_id).PAGE_NUMBER_MSG.format(page=page + 1))
+        safe_callback_answer(callback_query, safe_get_messages(user_id).PAGE_NUMBER_MSG.format(page=page + 1))
         return
     if kind == "subs" and value in ("back", "close"):
         if value == "back":
-            original_message = callback_query.message.reply_to_message
-            if original_message:
-                url_text = original_message.text or (original_message.caption or "")
-                import re as _re
-                m = _re.search(r'https?://[^\s\*#]+', url_text)
-                url = m.group(0) if m else url_text
-                ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
+            if source_context is not None:
+                ask_quality_menu(
+                    app,
+                    source_context.original_message,
+                    source_context.url,
+                    [],
+                    playlist_start_index=1,
+                    cb=callback_query,
+                )
             return
         try:
             safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
         except Exception:
             app.edit_message_reply_markup(chat_id=callback_query.message.chat.id, message_id=callback_query.message.id, reply_markup=None)
-        callback_query.answer(safe_get_messages(user_id).SUBTITLE_MENU_CLOSED_MSG)
+        safe_callback_answer(callback_query, safe_get_messages(user_id).SUBTITLE_MENU_CLOSED_MSG)
         return
     if kind == "subs_lang":
         try:
@@ -934,31 +1053,18 @@ def ask_filter_callback_logic(app, callback_query, filter_request):
             save_user_subs_auto_mode(user_id, False)
         except Exception:
             pass
-        original_message = callback_query.message.reply_to_message
-        if original_message:
-            url_text = original_message.text or (original_message.caption or "")
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-        try:
-            callback_query.answer(safe_get_messages(user_id).SUBTITLE_LANGUAGE_SET_MSG.format(value=value))
-        except Exception:
-            pass
+        if source_context is not None:
+            ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
+        safe_callback_answer(callback_query, safe_get_messages(user_id).SUBTITLE_LANGUAGE_SET_MSG.format(value=value))
         return
     if kind == "dubs" and value == "open":
-        original_message = callback_query.message.reply_to_message
-        if not original_message:
-            callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if source_context is None:
+            safe_callback_answer(callback_query, safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             return
-        url_text = original_message.text or (original_message.caption or "")
-        import re as _re
-        m = _re.search(r'https?://[^\s\*#]+', url_text)
-        url = m.group(0) if m else url_text
         fstate = get_filters(user_id)
         langs = fstate.get("available_dubs", [])
         if not langs or len(langs) <= 1:
-            callback_query.answer(safe_get_messages(user_id).NO_ALTERNATIVE_AUDIO_LANGUAGES_MSG, show_alert=True)
+            safe_callback_answer(callback_query, safe_get_messages(user_id).NO_ALTERNATIVE_AUDIO_LANGUAGES_MSG, show_alert=True)
             return
         rows, row = [], []
         for i, lang in enumerate(sorted(langs)):
@@ -975,37 +1081,18 @@ def ask_filter_callback_logic(app, callback_query, filter_request):
             callback_query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
         except Exception:
             pass
-        try:
-            callback_query.answer(safe_get_messages(user_id).CHOOSE_AUDIO_LANGUAGE_MSG)
-        except Exception:
-            pass
+        safe_callback_answer(callback_query, safe_get_messages(user_id).CHOOSE_AUDIO_LANGUAGE_MSG)
         return
     if kind == "audio_lang":
         set_filter(user_id, kind, value)
-        original_message = callback_query.message.reply_to_message
-        if original_message:
-            url_text = original_message.text or (original_message.caption or "")
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-        try:
-            callback_query.answer(safe_get_messages(user_id).AUDIO_SET_MSG.format(value=value))
-        except Exception:
-            pass
+        if source_context is not None:
+            ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
+        safe_callback_answer(callback_query, safe_get_messages(user_id).AUDIO_SET_MSG.format(value=value))
         return
     if kind == "dubs" and value in ("back", "close"):
-        original_message = callback_query.message.reply_to_message
-        if original_message:
-            url_text = original_message.text or (original_message.caption or "")
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-        try:
-            callback_query.answer(safe_get_messages(user_id).FILTERS_UPDATED_MSG)
-        except Exception:
-            pass
+        if source_context is not None:
+            ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
+        safe_callback_answer(callback_query, safe_get_messages(user_id).FILTERS_UPDATED_MSG)
         return
     if kind in ("codec", "ext"):
         set_filter(user_id, kind, value)
@@ -1019,22 +1106,11 @@ def ask_filter_callback_logic(app, callback_query, filter_request):
         if value == "off":
             set_filter(user_id, "codec", "avc1")
             set_filter(user_id, "ext", "mp4")
-    original_message = callback_query.message.reply_to_message
-    if original_message:
-        url_text = original_message.text or (original_message.caption or "")
-        import re as _re
-        m = _re.search(r'https?://[^\s\*#]+', url_text)
-        url = m.group(0) if m else url_text
-        ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-        try:
-            callback_query.answer(safe_get_messages(user_id).FILTERS_UPDATED_MSG)
-        except Exception:
-            pass
+    if source_context is not None:
+        ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
+        safe_callback_answer(callback_query, safe_get_messages(user_id).FILTERS_UPDATED_MSG)
         return
-    try:
-        callback_query.answer(safe_get_messages(user_id).FILTERS_UPDATED_MSG)
-    except Exception:
-        pass
+    safe_callback_answer(callback_query, safe_get_messages(user_id).FILTERS_UPDATED_MSG)
 
 def get_available_formats_from_cache(user_id, url, download_dir=None):
     """Get available codecs and formats from ask_formats.json cache"""
@@ -1374,6 +1450,8 @@ def askq_callback(app, callback_query):
     logger.info(f"{LoggerMsg.ALWAYS_ASK_CALLBACK_LOG_MSG}: {callback_query.data}")
     user_id = callback_query.from_user.id
     callback_message = getattr(callback_query, "message", None)
+    execution_context = build_callback_execution_context(callback_query)
+    source_context = _build_always_ask_source_context(execution_context)
 
     def _delete_callback_message():
         if callback_message and getattr(callback_message, "chat", None) and getattr(callback_message, "id", None):
@@ -1436,21 +1514,13 @@ def askq_callback(app, callback_query):
         
     # Handle LINK button - get direct link with BV+BA/BEST format
     if data == "link":
-        # Get original URL from the reply message
-        original_message = callback_query.message.reply_to_message
-        if not original_message:
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if source_context is None:
+            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             return
-            
-        url_text = original_message.text or (original_message.caption or "")
-        import re as _re
-        m = _re.search(r'https?://[^\s\*#]+', url_text)
-        url = m.group(0) if m else url_text
-        
-        try:
-            callback_query.answer(safe_get_messages(user_id).ALWAYS_ASK_GETTING_DIRECT_LINK_MSG)
-        except Exception:
-            pass
+        original_message = source_context.original_message
+        url = source_context.url
+
+        safe_callback_answer(callback_query, safe_get_messages(user_id).ALWAYS_ASK_GETTING_DIRECT_LINK_MSG)
         
         # Import link function with proxy support
         from HELPERS.proxy_link_helper import get_direct_link_with_proxy
@@ -1538,21 +1608,13 @@ def askq_callback(app, callback_query):
 
     # Handle LIST button - get available formats
     if data == "list":
-        # Get original URL from the reply message
-        original_message = callback_query.message.reply_to_message
-        if not original_message:
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if source_context is None:
+            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             return
-            
-        url_text = original_message.text or (original_message.caption or "")
-        import re as _re
-        m = _re.search(r'https?://[^\s\*#]+', url_text)
-        url = m.group(0) if m else url_text
-        
-        try:
-            callback_query.answer(safe_get_messages(user_id).ALWAYS_ASK_GETTING_FORMATS_MSG)
-        except Exception:
-            pass
+        original_message = source_context.original_message
+        url = source_context.url
+
+        safe_callback_answer(callback_query, safe_get_messages(user_id).ALWAYS_ASK_GETTING_FORMATS_MSG)
         
         # Import list function
         from COMMANDS.list_cmd import run_ytdlp_list
@@ -1662,12 +1724,12 @@ def askq_callback(app, callback_query):
 
     # ---- IMAGE fallback: process via gallery-dl (/img) ----
     if data == "image":
-        original_message = callback_query.message.reply_to_message
-        if not original_message:
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if source_context is None:
+            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             return
+        original_message = source_context.original_message
         # STRICT: use the full original message text
-        url_text = original_message.text or (original_message.caption or "")
+        url_text = source_context.url_text
         logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_ORIGINAL_MESSAGE_TEXT_LOG_MSG}: {original_message.text}")
         logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_ORIGINAL_MESSAGE_CAPTION_LOG_MSG}: {original_message.caption}")
         logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_URL_TEXT_LOG_MSG}: {url_text}")
@@ -1688,10 +1750,7 @@ def askq_callback(app, callback_query):
             start_range = 1
             end_range = 1
             logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_NO_RANGE_FOUND_LOG_MSG}: {url}")
-        try:
-            callback_query.answer(safe_get_messages(user_id).ALWAYS_ASK_STARTING_GALLERY_DL_MSG)
-        except Exception:
-            pass
+        safe_callback_answer(callback_query, safe_get_messages(user_id).ALWAYS_ASK_STARTING_GALLERY_DL_MSG)
         try:
             # Check if content is NSFW for fallback - same as original function
             from HELPERS.porn import is_porn
@@ -2143,34 +2202,23 @@ def askq_callback(app, callback_query):
         except Exception as e:
             logger.warning(f"Failed to delete Other menu message: {e}")
         
-        callback_query.answer(f"{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_FORMAT_MSG} {format_id}...")
+        safe_callback_answer(callback_query, f"{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_FORMAT_MSG} {format_id}...")
         logger.info(f"Starting download process for format_id: {format_id}")
-        
-        original_message = callback_query.message.reply_to_message
-        if not original_message:
+
+        if source_context is None:
             logger.error("Original message not found")
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             return
-        
-        url = None
-        if callback_query.message.caption_entities:
-            for entity in callback_query.message.caption_entities:
-                if entity.type == enums.MessageEntityType.TEXT_LINK and entity.url:
-                    url = entity.url
-                    break
-        if not url and callback_query.message.reply_to_message:
-            url_match = re.search(r'https?://[^\s\*#]+', callback_query.message.reply_to_message.text)
-            if url_match:
-                url = url_match.group(0)
-        
+        original_message = source_context.original_message
+        url = source_context.url
         logger.info(f"Extracted URL: {url}")
         if not url:
             logger.error("URL not found in message")
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_URL_NOT_FOUND_MSG, show_alert=True)
+            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_URL_NOT_FOUND_MSG, show_alert=True)
             return
         
         # Extract tags from the user's source message
-        original_text = original_message.text or original_message.caption or ""
+        original_text = source_context.url_text
         _, _, _, _, tags, tags_text, _ = extract_url_range_tags(original_text)
         logger.info(f"Extracted tags: {tags_text}")
         
@@ -2246,32 +2294,21 @@ def askq_callback(app, callback_query):
     # Handle manual quality selection
     if data.startswith("manual_"):
         quality = data.replace("manual_", "")
-        callback_query.answer(f"{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_QUALITY_MSG} {quality}...")
-        
-        original_message = callback_message.reply_to_message if callback_message else None
-        if not original_message:
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        safe_callback_answer(callback_query, f"{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_QUALITY_MSG} {quality}...")
+
+        if source_context is None:
+            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
             _delete_callback_message()
             return
-        
-        url = None
-        if callback_message and callback_message.caption_entities:
-            for entity in callback_message.caption_entities:
-                if entity.type == enums.MessageEntityType.TEXT_LINK and entity.url:
-                    url = entity.url
-                    break
-        if not url and callback_message and callback_message.reply_to_message:
-            url_match = re.search(r'https?://[^\s\*#]+', callback_message.reply_to_message.text)
-            if url_match:
-                url = url_match.group(0)
-        
+        original_message = source_context.original_message
+        url = source_context.url
         if not url:
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_URL_NOT_FOUND_MSG, show_alert=True)
+            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_URL_NOT_FOUND_MSG, show_alert=True)
             _delete_callback_message()
             return
         
         # New method: always extract tags from the user's source message
-        original_text = original_message.text or original_message.caption or ""
+        original_text = source_context.url_text
         _, _, _, _, tags, tags_text, _ = extract_url_range_tags(original_text)
         
         _delete_callback_message()
@@ -2398,29 +2435,20 @@ def askq_callback(app, callback_query):
             )
         return
 
-    original_message = callback_message.reply_to_message if callback_message else None
-    if not original_message:
-        callback_query.answer(safe_get_messages(user_id).ALWAYS_ASK_ERROR_ORIGINAL_MESSAGE_NOT_FOUND_DETAILED_MSG, show_alert=True)
+    if source_context is None:
+        safe_callback_answer(callback_query, safe_get_messages(user_id).ALWAYS_ASK_ERROR_ORIGINAL_MESSAGE_NOT_FOUND_DETAILED_MSG, show_alert=True)
         _delete_callback_message()
         return
 
-    url = None
-    if callback_message and callback_message.caption_entities:
-        for entity in callback_message.caption_entities:
-            if entity.type == enums.MessageEntityType.TEXT_LINK and entity.url:
-                url = entity.url
-                break
-    if not url and callback_message and callback_message.reply_to_message:
-        url_match = re.search(r'https?://[^\s\*#]+', callback_message.reply_to_message.text)
-        if url_match:
-            url = url_match.group(0)
+    original_message = source_context.original_message
+    url = source_context.url
     if not url:
-        callback_query.answer(safe_get_messages(user_id).ALWAYS_ASK_ERROR_ORIGINAL_URL_NOT_FOUND_MSG, show_alert=True)
+        safe_callback_answer(callback_query, safe_get_messages(user_id).ALWAYS_ASK_ERROR_ORIGINAL_URL_NOT_FOUND_MSG, show_alert=True)
         _delete_callback_message()
         return
 
     # We extract tags from the initial message of the user
-    original_text = original_message.text or original_message.caption or ""
+    original_text = source_context.url_text
     _, _, _, _, tags, tags_text, _ = extract_url_range_tags(original_text)
 
     _delete_callback_message()
@@ -2999,105 +3027,59 @@ def fallback_gallery_dl_callback(app, callback_query):
     )
 
 
-def fallback_gallery_dl_callback_logic(app, callback_query, request):
+def fallback_gallery_dl_callback_logic(app, execution_context, request):
     """Handle fallback to gallery-dl when yt-dlp fails"""
-    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     try:
-        user_id = callback_query.from_user.id
-        data_parts = request.action_key.split("|")
-        url_hash = data_parts[1]  # Extract URL or URL hash from callback data
-        
-        # Get original URL data from callback
-        url_data = get_original_data_from_callback("fallback_gallery_dl", request.action_key)
-        url_parts = url_data.split("|")
-        url = url_parts[0]
-        
-        # Extract range from URL data if available
-        if len(url_parts) >= 3:
-            video_start_with = int(url_parts[1])
-            video_end_with = int(url_parts[2])
-            logger.info(f"[FALLBACK DEBUG] Extracted range from callback data: {video_start_with}-{video_end_with}")
-        else:
-            video_start_with = 1
-            video_end_with = 1
-            logger.info(f"[FALLBACK DEBUG] No range in callback data, using default: 1-1")
-        
-        # Extract chat_id from URL data if available
-        if len(url_parts) >= 4:
-            original_chat_id = int(url_parts[3])
-        else:
-            original_chat_id = callback_query.message.chat.id
-        
-        logger.info(f"Fallback to gallery-dl requested for user {user_id}: {url} (range: {video_start_with}-{video_end_with})")
-        
-        # Answer callback query
-        callback_query.answer("🔄 Switching to gallery-dl...")
-        
-        # Delete the fallback message after clicking the button
-        try:
-            callback_query.message.delete()
-            logger.info(f"Deleted fallback gallery-dl message for user {user_id}")
-        except Exception as e:
-            logger.warning(f"Failed to delete fallback gallery-dl message: {e}")
-        
-        # Import gallery-dl command
-        from COMMANDS.image_cmd import image_command
-        from HELPERS.safe_messeger import fake_message
-        
-        # Create fallback command with range if available
-        if video_start_with and video_end_with and (video_start_with != 1 or video_end_with != 1):
-            # Convert *1*20 format to 1-20 format for gallery-dl
-            fallback_text = f"/img {video_start_with}-{video_end_with} {url}"
-            logger.info(f"[FALLBACK DEBUG] Creating fallback command with range: {video_start_with}-{video_end_with}")
-        else:
-            fallback_text = f"/img {url}"
-            logger.info(f"[FALLBACK DEBUG] Creating fallback command without range")
-        
-        # Preserve message_thread_id from the original message
-        message_thread_id = getattr(callback_query.message, 'message_thread_id', None)
-        fallback_branch = gallery_fallback_branch(
-            None,
-            origin="always_ask_menu",
-            reason="explicit_callback_gallery_fallback",
+        callback_query = execution_context.callback_query
+        if callback_query is None:
+            raise ValueError("Gallery fallback callback logic requires callback execution context")
+
+        plan = _build_gallery_fallback_transition_plan(execution_context, request)
+        logger.info(
+            "Fallback to gallery-dl requested for user %s: %s (range: %s-%s)",
+            plan.user_id,
+            plan.url,
+            plan.video_start_with,
+            plan.video_end_with,
         )
-        fallback_task = make_runtime_task(
-            user_id=user_id,
-            source_message_id=getattr(callback_query.message, "id", None),
-            url=url,
-            tags_text="",
-            video_count=max(1, video_end_with - video_start_with + 1),
-            video_start_with=video_start_with,
-            proc_msg_id=None,
-            branch_selection_result=fallback_branch,
+        _emit_gallery_fallback_transition_start(callback_query, plan)
+
+        logger.info(
+            "[FALLBACK] fallback_task.user_id=%s, message_thread_id=%s, callback_query.message.chat.id=%s, callback_query.message.message_thread_id=%s",
+            plan.runtime_task.user_id,
+            plan.message_thread_id,
+            callback_query.message.chat.id,
+            getattr(callback_query.message, "message_thread_id", None),
         )
-        logger.info(f"[FALLBACK] fallback_task.user_id={fallback_task.user_id}, message_thread_id={message_thread_id}, callback_query.message.chat.id={callback_query.message.chat.id}, callback_query.message.message_thread_id={getattr(callback_query.message, 'message_thread_id', None)}")
-        
-        # Execute gallery-dl command
-        logger.info(f"About to execute image_command for user {user_id} with fake_msg: {fallback_text}")
+        logger.info(
+            "About to execute image_command for user %s with fake_msg: %s",
+            plan.user_id,
+            plan.fallback_text,
+        )
         fallback_result = _dispatch_gallery_fallback(
             app,
-            user_id=user_id,
-            fallback_text=fallback_text,
-            original_chat_id=original_chat_id,
-            message_thread_id=message_thread_id,
+            user_id=plan.user_id,
+            fallback_text=plan.fallback_text,
+            original_chat_id=plan.original_chat_id,
+            message_thread_id=plan.message_thread_id,
             original_message=callback_query.message,
-            runtime_task=fallback_task,
+            runtime_task=plan.runtime_task,
         )
         logger.info(
             "Gallery-dl callback fallback result for user %s: outcome=%s success=%s",
-            user_id,
+            plan.user_id,
             fallback_result.outcome_kind if is_gallery_command_result(fallback_result) else None,
             did_gallery_command_succeed(fallback_result) if is_gallery_command_result(fallback_result) else None,
         )
-        
-        logger.info(f"Gallery-dl fallback executed for user {user_id}: {fallback_text}")
-        
+
+        logger.info(
+            "Gallery-dl fallback executed for user %s: %s",
+            plan.user_id,
+            plan.fallback_text,
+        )
+
     except Exception as e:
-        logger.error(f"Error in fallback_gallery_dl_callback: {e}")
-        try:
-            callback_query.answer("❌ Error switching to gallery-dl", show_alert=True)
-        except:
-            pass
+        _emit_gallery_fallback_transition_error(callback_query, e)
 
 ###########################
 
@@ -6191,7 +6173,19 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
         log_error_to_channel(message, safe_get_messages(user_id).ALWAYS_ASK_MENU_ERROR_LOG_MSG.format(url=url, error=safe_get_messages(user_id).ALWAYS_ASK_ERROR_RETRIEVING_VIDEO_INFO_SHORT_MSG), url)
         return
 
-def askq_callback_logic(app, callback_query, data, original_message, url, tags_text, available_langs, proc_msg=None):
+def askq_callback_logic(
+    app,
+    execution_context,
+    data,
+    original_message,
+    url,
+    tags_text,
+    available_langs,
+    proc_msg=None,
+):
+    callback_query = execution_context.callback_query
+    if callback_query is None:
+        raise ValueError("Ask quality callback logic requires callback execution context")
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     tags = tags_text.split() if tags_text else []

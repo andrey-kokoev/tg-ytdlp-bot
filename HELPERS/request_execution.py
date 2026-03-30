@@ -419,11 +419,10 @@ def handle_ask_quality_selection_request(
     proc_msg=None,
 ) -> None:
     from DOWN_AND_UP.always_ask_menu import askq_callback_logic
-    callback_query = execution_context.callback_query
 
     askq_callback_logic(
         app,
-        callback_query,
+        execution_context,
         request.selection_token,
         original_message,
         url,
@@ -439,11 +438,10 @@ def handle_ask_filter_selection_request(
     request: AskFilterSelectionRequested,
 ) -> None:
     from DOWN_AND_UP.always_ask_menu import ask_filter_callback_logic
-    callback_query = execution_context.callback_query
 
     ask_filter_callback_logic(
         app,
-        callback_query,
+        execution_context,
         request,
     )
 
@@ -575,7 +573,7 @@ def handle_gallery_fallback_selection_request(
 ) -> None:
     from DOWN_AND_UP.always_ask_menu import fallback_gallery_dl_callback_logic
 
-    fallback_gallery_dl_callback_logic(app, execution_context.callback_query, request)
+    fallback_gallery_dl_callback_logic(app, execution_context, request)
 
 
 def handle_cookie_menu_request(

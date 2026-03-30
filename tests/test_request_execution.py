@@ -421,7 +421,7 @@ def test_handle_ask_quality_selection_request_routes_request_to_callback_runtime
 
     def fake_askq_callback_logic(
         app,
-        callback_query,
+        execution_context,
         data,
         original_message,
         url,
@@ -431,7 +431,7 @@ def test_handle_ask_quality_selection_request_routes_request_to_callback_runtime
     ):
         captured["askq_call"] = {
             "app": app,
-            "callback_query": callback_query,
+            "execution_context": execution_context,
             "data": data,
             "original_message": original_message,
             "url": url,
@@ -480,7 +480,7 @@ def test_handle_ask_quality_selection_request_routes_request_to_callback_runtime
 
     assert captured["askq_call"] == {
         "app": app,
-        "callback_query": callback_query,
+        "execution_context": execution_context,
         "data": "360p",
         "original_message": original_message,
         "url": "https://youtube.com/watch?v=abc",
@@ -493,10 +493,10 @@ def test_handle_ask_quality_selection_request_routes_request_to_callback_runtime
 def test_handle_ask_filter_selection_request_routes_request_to_callback_runtime(monkeypatch):
     captured = {}
 
-    def fake_ask_filter_callback_logic(app, callback_query, request):
+    def fake_ask_filter_callback_logic(app, execution_context, request):
         captured["askf_call"] = {
             "app": app,
-            "callback_query": callback_query,
+            "execution_context": execution_context,
             "request": request,
         }
 
@@ -534,7 +534,7 @@ def test_handle_ask_filter_selection_request_routes_request_to_callback_runtime(
 
     assert captured["askf_call"] == {
         "app": app,
-        "callback_query": callback_query,
+        "execution_context": execution_context,
         "request": request,
     }
 
@@ -3278,10 +3278,10 @@ def test_handle_check_porn_command_request_routes_request_to_check_porn_runtime(
 def test_handle_gallery_fallback_selection_request_routes_request_to_gallery_callback_runtime(monkeypatch):
     captured = {}
 
-    def fake_fallback_gallery_dl_callback_logic(app, callback_query, request=None):
+    def fake_fallback_gallery_dl_callback_logic(app, execution_context, request=None):
         captured["gallery_fallback_call"] = {
             "app": app,
-            "callback_query": callback_query,
+            "execution_context": execution_context,
             "request": request,
         }
 
@@ -3311,6 +3311,6 @@ def test_handle_gallery_fallback_selection_request_routes_request_to_gallery_cal
 
     assert captured["gallery_fallback_call"] == {
         "app": app,
-        "callback_query": callback_query,
+        "execution_context": execution_context,
         "request": request,
     }
