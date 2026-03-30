@@ -168,6 +168,280 @@ def _resolve_audio_task_inputs(
     )
 
 
+def _is_nsfw_audio_delivery(url: str, user_forced_nsfw: bool) -> bool:
+    from HELPERS.porn import is_porn
+
+    detected_nsfw = is_porn(url, "", "", None)
+    is_nsfw = detected_nsfw or user_forced_nsfw
+    logger.info(
+        f"[FALLBACK] is_porn check for {url}: {detected_nsfw}, "
+        f"user_forced_nsfw: {user_forced_nsfw}, final is_nsfw: {is_nsfw}"
+    )
+    return is_nsfw
+
+
+def _send_paid_audio_media(
+    *,
+    user_id: int,
+    audio_file: str,
+    telegram_thumb: str | None,
+    message,
+):
+    from pyrogram.types import InputPaidMediaAudio
+
+    paid_audio = InputPaidMediaAudio(
+        media=audio_file,
+        thumb=telegram_thumb if telegram_thumb and os.path.exists(telegram_thumb) else None,
+    )
+    return app.send_paid_media(
+        chat_id=user_id,
+        media=[paid_audio],
+        star_count=LimitsConfig.NSFW_STAR_COST,
+        payload=str(Config.STAR_RECEIVER),
+        reply_parameters=ReplyParameters(message_id=message.id),
+    )
+
+
+def _send_regular_audio_media(
+    *,
+    user_id: int,
+    audio_file: str,
+    caption_with_link: str,
+    telegram_thumb: str | None,
+    message,
+    file_ext: str,
+):
+    if file_ext in {".mp3", ".m4a"}:
+        kwargs = {
+            "chat_id": user_id,
+            "audio": audio_file,
+            "caption": caption_with_link,
+            "reply_parameters": ReplyParameters(message_id=message.id),
+        }
+        if telegram_thumb and os.path.exists(telegram_thumb):
+            kwargs["thumb"] = telegram_thumb
+            logger.info(f"Audio sent with Telegram thumbnail: {telegram_thumb}")
+        else:
+            logger.info("Audio sent without thumbnail")
+        return app.send_audio(**kwargs)
+    logger.info(f"Audio sent as document (format: {file_ext})")
+    return app.send_document(
+        chat_id=user_id,
+        document=audio_file,
+        caption=caption_with_link,
+        reply_parameters=ReplyParameters(message_id=message.id),
+    )
+
+
+def _send_audio_to_user(
+    *,
+    user_id: int,
+    audio_file: str,
+    caption_with_link: str,
+    telegram_thumb: str | None,
+    message,
+    file_ext: str,
+    is_paid: bool,
+):
+    if is_paid:
+        try:
+            audio_msg = _send_paid_audio_media(
+                user_id=user_id,
+                audio_file=audio_file,
+                telegram_thumb=telegram_thumb,
+                message=message,
+            )
+            logger.info("Paid NSFW audio sent to user")
+            return audio_msg
+        except Exception as e:
+            logger.error(f"Failed to send paid audio, falling back to regular: {e}")
+    return _send_regular_audio_media(
+        user_id=user_id,
+        audio_file=audio_file,
+        caption_with_link=caption_with_link,
+        telegram_thumb=telegram_thumb,
+        message=message,
+        file_ext=file_ext,
+    )
+
+
+def _route_uploaded_audio_to_logs(
+    *,
+    message,
+    user_id: int,
+    audio_msg,
+    audio_file: str,
+    caption_with_link: str,
+    telegram_thumb: str | None,
+    url: str,
+    user_forced_nsfw: bool,
+):
+    is_nsfw = _is_nsfw_audio_delivery(url, user_forced_nsfw)
+    is_private_chat = getattr(message.chat, "type", None) == enums.ChatType.PRIVATE
+    is_paid = is_nsfw and is_private_chat
+    result = {"forwarded_msg": None, "is_nsfw": is_nsfw, "is_paid": is_paid}
+
+    if is_paid:
+        log_channel_paid = get_log_channel("video", paid=True)
+        try:
+            safe_forward_messages(log_channel_paid, user_id, [audio_msg.id])
+            logger.info("down_and_audio: NSFW audio paid copy sent to PAID channel")
+        except Exception as e:
+            logger.error(f"down_and_audio: failed to send paid copy to PAID channel: {e}")
+
+        log_channel_nsfw = get_log_channel("video", nsfw=True)
+        try:
+            app.send_audio(
+                chat_id=log_channel_nsfw,
+                audio=audio_file,
+                caption=caption_with_link,
+                reply_parameters=ReplyParameters(message_id=message.id),
+                thumb=telegram_thumb if telegram_thumb and os.path.exists(telegram_thumb) else None,
+            )
+            logger.info("down_and_audio: NSFW audio open copy sent to NSFW channel for history")
+        except Exception as e:
+            logger.error(f"down_and_audio: failed to send open copy to NSFW channel: {e}")
+
+        logger.info(
+            "down_and_audio: NSFW audio sent to user (paid), PAID channel "
+            "(paid copy), and NSFW channel (open copy), not cached"
+        )
+        return result
+
+    if is_nsfw:
+        log_channel = get_log_channel("video", nsfw=True)
+        result["forwarded_msg"] = safe_forward_messages(log_channel, user_id, [audio_msg.id])
+        logger.info("down_and_audio: NSFW audio sent to NSFW channel, not cached")
+        result["forwarded_msg"] = None
+        return result
+
+    log_channel = get_log_channel("video")
+    result["forwarded_msg"] = safe_forward_messages(log_channel, user_id, [audio_msg.id])
+    return result
+
+
+def _cache_audio_delivery(
+    *,
+    forwarded_msg,
+    is_nsfw: bool,
+    quality_key,
+    is_playlist: bool,
+    original_playlist_index: int,
+    url: str,
+    message,
+    user_id: int,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+) -> None:
+    if not quality_key or not forwarded_msg or is_nsfw:
+        if is_nsfw:
+            logger.info(f"down_and_audio: skipping cache for NSFW content (url={url})")
+        return
+
+    msg_ids = [m.id for m in forwarded_msg] if isinstance(forwarded_msg, list) else [forwarded_msg.id]
+    if is_playlist:
+        logger.info(
+            f"down_and_audio: saving to playlist cache: index={original_playlist_index}, msg_ids={msg_ids}"
+        )
+        save_to_playlist_cache(
+            get_clean_playlist_url(url),
+            quality_key,
+            [original_playlist_index],
+            msg_ids,
+            original_text=message.text or message.caption or "",
+            video_urls_dict=None,
+        )
+        cached_check = get_cached_playlist_videos(
+            get_clean_playlist_url(url), quality_key, [original_playlist_index]
+        )
+        logger.info(f"Checking the cache immediately after writing: {cached_check}")
+        playlist_indices.append(original_playlist_index)
+        playlist_msg_ids.extend(msg_ids)
+        return
+
+    logger.info(f"down_and_audio: saving to video cache: msg_ids={msg_ids}")
+    save_to_video_cache(
+        url,
+        quality_key,
+        msg_ids,
+        original_text=message.text or message.caption or "",
+        user_id=user_id,
+    )
+
+
+def _finalize_completed_audio_outcome(
+    *,
+    user_id: int,
+    proc_msg_id: int,
+    message,
+    outcome,
+    task_context: RuntimeTask | None,
+):
+    credits_msg = safe_get_messages(user_id).CREDITS_MSG
+    task_context, success_msg = attach_and_render_terminal_outcome(
+        user_id=user_id,
+        outcome=outcome,
+        task_context=task_context,
+        formatter=lambda messages, rendered_outcome: format_audio_terminal_status(
+            messages,
+            rendered_outcome,
+            include_credits=not bool(getattr(Config, "HIDE_CREDITS_MSG", False)),
+            credits_msg=credits_msg,
+        ),
+    )
+    try:
+        safe_edit_message_text(user_id, proc_msg_id, success_msg)
+    except Exception as e:
+        logger.error(f"Error updating final status: {e}")
+    send_to_logger(message, success_msg + format_playlist_error_summary_suffix(outcome))
+    return task_context
+
+
+def _cleanup_successful_audio_download_dir(user_id: int) -> None:
+    try:
+        from DOWN_AND_UP.always_ask_menu import get_user_download_dir
+
+        download_dir = get_user_download_dir(user_id)
+        if download_dir and os.path.exists(download_dir):
+            logger.info(f"Cleaning up download subdirectory after successful audio upload: {download_dir}")
+            import shutil
+
+            shutil.rmtree(download_dir)
+            logger.info(f"Successfully removed download subdirectory: {download_dir}")
+    except Exception as cleanup_error:
+        logger.error(f"Error cleaning up download subdirectory for user {user_id}: {cleanup_error}")
+
+
+def _send_playlist_audio_terminal_status(
+    *,
+    app,
+    user_id: int,
+    reply_to_message_id: int,
+    message,
+    outcome,
+    requested_indices: list,
+    quality_key,
+):
+    send_playlist_cache_status(
+        app=app,
+        user_id=user_id,
+        reply_to_message_id=reply_to_message_id,
+        text=safe_get_messages(user_id).PLAYLIST_SENT_MSG.format(
+            sent=outcome.total_sent_count,
+            total=len(requested_indices),
+        ),
+    )
+    send_to_logger(
+        message,
+        safe_get_messages(user_id).PLAYLIST_AUDIO_SENT_LOG_MSG.format(
+            sent=outcome.total_sent_count,
+            total=len(requested_indices),
+            quality=quality_key,
+            user_id=user_id,
+        ) + format_playlist_error_summary_suffix(outcome),
+    )
+
+
 def _try_remote_audio_youtube_cookie_sources(
     *,
     user_id: int,
@@ -2073,164 +2347,41 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     else:
                         logger.warning("Failed to create Telegram thumbnail")
                 
-                # Determine if this is NSFW content in private chat (paid media)
-                from HELPERS.porn import is_porn
-                is_nsfw = is_porn(url, "", "", None) or user_forced_nsfw
-                logger.info(f"[FALLBACK] is_porn check for {url}: {is_porn(url, '', '', None)}, user_forced_nsfw: {user_forced_nsfw}, final is_nsfw: {is_nsfw}")
+                is_nsfw = _is_nsfw_audio_delivery(url, user_forced_nsfw)
                 is_private_chat = getattr(message.chat, "type", None) == enums.ChatType.PRIVATE
                 is_paid = is_nsfw and is_private_chat
-                
-                # Determine file extension to decide how to send it
                 file_ext = os.path.splitext(audio_file)[1].lower()
-                
-                # Send audio with appropriate method based on content type and file format
-                if is_paid:
-                    # Send paid audio for NSFW content in private chats
-                    try:
-                        from pyrogram.types import InputPaidMediaAudio
-                        from CONFIG.limits import LimitsConfig
-                        
-                        paid_audio = InputPaidMediaAudio(
-                            media=audio_file,
-                            thumb=telegram_thumb if telegram_thumb and os.path.exists(telegram_thumb) else None
-                        )
-                        
-                        audio_msg = app.send_paid_media(
-                            chat_id=user_id,
-                            media=[paid_audio],
-                            star_count=LimitsConfig.NSFW_STAR_COST,
-                            payload=str(Config.STAR_RECEIVER),
-                            reply_parameters=ReplyParameters(message_id=message.id),
-                        )
-                        logger.info("Paid NSFW audio sent to user")
-                    except Exception as e:
-                        logger.error(f"Failed to send paid audio, falling back to regular: {e}")
-                        # Fallback to regular audio or document
-                        if file_ext == '.mp3' or file_ext == '.m4a':
-                            # Send as audio for supported formats
-                            if telegram_thumb and os.path.exists(telegram_thumb):
-                                audio_msg = app.send_audio(
-                                    chat_id=user_id, 
-                                    audio=audio_file, 
-                                    caption=caption_with_link, 
-                                    reply_parameters=ReplyParameters(message_id=message.id),
-                                    thumb=telegram_thumb
-                                )
-                            else:
-                                audio_msg = app.send_audio(
-                                    chat_id=user_id, 
-                                    audio=audio_file, 
-                                    caption=caption_with_link, 
-                                    reply_parameters=ReplyParameters(message_id=message.id)
-                                )
-                        else:
-                            # Send as document for unsupported audio formats
-                            audio_msg = app.send_document(
-                                chat_id=user_id, 
-                                document=audio_file, 
-                                caption=caption_with_link, 
-                                reply_parameters=ReplyParameters(message_id=message.id)
-                            )
-                else:
-                    # Send regular audio for non-NSFW content or group chats
-                    if file_ext == '.mp3' or file_ext == '.m4a':
-                        # Send as audio for supported formats
-                        if telegram_thumb and os.path.exists(telegram_thumb):
-                            audio_msg = app.send_audio(
-                                chat_id=user_id, 
-                                audio=audio_file, 
-                                caption=caption_with_link, 
-                                reply_parameters=ReplyParameters(message_id=message.id),
-                                thumb=telegram_thumb
-                            )
-                            logger.info(f"Audio sent with Telegram thumbnail: {telegram_thumb}")
-                        else:
-                            audio_msg = app.send_audio(
-                                chat_id=user_id, 
-                                audio=audio_file, 
-                                caption=caption_with_link, 
-                                reply_parameters=ReplyParameters(message_id=message.id)
-                            )
-                            logger.info("Audio sent without thumbnail")
-                    else:
-                        # Send as document for unsupported audio formats
-                        audio_msg = app.send_document(
-                            chat_id=user_id, 
-                            document=audio_file, 
-                            caption=caption_with_link, 
-                            reply_parameters=ReplyParameters(message_id=message.id)
-                        )
-                        logger.info(f"Audio sent as document (format: {file_ext})")
-                
-                # Use already determined content type
-                
-                # Handle different content types according to new logic
-                if is_paid:
-                    # For NSFW content in private chat, paid audio already sent to user
-                    # We need to send paid copy to LOGS_PAID_ID and open copy to LOGS_NSWF_ID for history
-                    
-                    # Send paid copy to LOGS_PAID_ID
-                    log_channel_paid = get_log_channel("video", paid=True)
-                    try:
-                        # Forward the paid audio to LOGS_PAID_ID
-                        safe_forward_messages(log_channel_paid, user_id, [audio_msg.id])
-                        logger.info(f"down_and_audio: NSFW audio paid copy sent to PAID channel")
-                    except Exception as e:
-                        logger.error(f"down_and_audio: failed to send paid copy to PAID channel: {e}")
-                    
-                    # Send open copy to LOGS_NSWF_ID for history
-                    log_channel_nsfw = get_log_channel("video", nsfw=True)
-                    try:
-                        # Create open copy for history (without stars)
-                        open_audio_msg = app.send_audio(
-                            chat_id=log_channel_nsfw,
-                            audio=audio_file,
-                            caption=caption_with_link,
-                            reply_parameters=ReplyParameters(message_id=message.id),
-                            thumb=telegram_thumb if telegram_thumb and os.path.exists(telegram_thumb) else None
-                        )
-                        logger.info(f"down_and_audio: NSFW audio open copy sent to NSFW channel for history")
-                    except Exception as e:
-                        logger.error(f"down_and_audio: failed to send open copy to NSFW channel: {e}")
-                    
-                    # Don't cache NSFW content
-                    logger.info(f"down_and_audio: NSFW audio sent to user (paid), PAID channel (paid copy), and NSFW channel (open copy), not cached")
-                    forwarded_msg = None
-                    
-                elif is_nsfw:
-                    # NSFW content in groups -> LOGS_NSWF_ID only
-                    log_channel = get_log_channel("video", nsfw=True)
-                    forwarded_msg = safe_forward_messages(log_channel, user_id, [audio_msg.id])
-                    # Don't cache NSFW content
-                    logger.info(f"down_and_audio: NSFW audio sent to NSFW channel, not cached")
-                    forwarded_msg = None
-                else:
-                    # Regular content -> LOGS_VIDEO_ID and cache
-                    log_channel = get_log_channel("video")
-                    forwarded_msg = safe_forward_messages(log_channel, user_id, [audio_msg.id])
-                
-                # Save to cache after sending audio (only for non-NSFW content)
-                if quality_key and forwarded_msg and not is_nsfw:
-                    if isinstance(forwarded_msg, list):
-                        msg_ids = [m.id for m in forwarded_msg]
-                    else:
-                        msg_ids = [forwarded_msg.id]
-                    
-                    if is_playlist:
-                        # For playlists, save to playlist cache with index
-                        current_video_index = original_playlist_index
-                        logger.info(f"down_and_audio: saving to playlist cache: index={current_video_index}, msg_ids={msg_ids}")
-                        save_to_playlist_cache(get_clean_playlist_url(url), quality_key, [current_video_index], msg_ids, original_text=message.text or message.caption or "", video_urls_dict=None)
-                        cached_check = get_cached_playlist_videos(get_clean_playlist_url(url), quality_key, [current_video_index])
-                        logger.info(f"Checking the cache immediately after writing: {cached_check}")
-                        playlist_indices.append(current_video_index)
-                        playlist_msg_ids.extend(msg_ids)  # We use msg_ids instead of forwarded_msgs
-                    else:
-                        # For single audios, save to regular cache
-                        logger.info(f"down_and_audio: saving to video cache: msg_ids={msg_ids}")
-                        save_to_video_cache(url, quality_key, msg_ids, original_text=message.text or message.caption or "", user_id=user_id)
-                elif is_nsfw:
-                    logger.info(f"down_and_audio: skipping cache for NSFW content (url={url})")
+                audio_msg = _send_audio_to_user(
+                    user_id=user_id,
+                    audio_file=audio_file,
+                    caption_with_link=caption_with_link,
+                    telegram_thumb=telegram_thumb,
+                    message=message,
+                    file_ext=file_ext,
+                    is_paid=is_paid,
+                )
+                route_result = _route_uploaded_audio_to_logs(
+                    message=message,
+                    user_id=user_id,
+                    audio_msg=audio_msg,
+                    audio_file=audio_file,
+                    caption_with_link=caption_with_link,
+                    telegram_thumb=telegram_thumb,
+                    url=url,
+                    user_forced_nsfw=user_forced_nsfw,
+                )
+                _cache_audio_delivery(
+                    forwarded_msg=route_result["forwarded_msg"],
+                    is_nsfw=route_result["is_nsfw"],
+                    quality_key=quality_key,
+                    is_playlist=is_playlist,
+                    original_playlist_index=original_playlist_index,
+                    url=url,
+                    message=message,
+                    user_id=user_id,
+                    playlist_indices=playlist_indices,
+                    playlist_msg_ids=playlist_msg_ids,
+                )
             except Exception as send_error:
                 logger.error(f"Error sending audio: {send_error}")
                 _send_audio_failure(
@@ -2269,56 +2420,24 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     outcome,
                     playlist_error_summary=error_summary,
                 )
-        credits_msg = safe_get_messages(user_id).CREDITS_MSG
-        task_context, success_msg = attach_and_render_terminal_outcome(
+        task_context = _finalize_completed_audio_outcome(
             user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            message=message,
             outcome=outcome,
             task_context=task_context,
-            formatter=lambda messages, rendered_outcome: format_audio_terminal_status(
-                messages,
-                rendered_outcome,
-                include_credits=not bool(getattr(Config, "HIDE_CREDITS_MSG", False)),
-                credits_msg=credits_msg,
-            ),
         )
-            
-        try:
-            safe_edit_message_text(user_id, proc_msg_id, success_msg)
-        except Exception as e:
-            logger.error(f"Error updating final status: {e}")
-
-        send_to_logger(message, success_msg + format_playlist_error_summary_suffix(outcome))
-        
-        # Clean up download subdirectory after successful upload
-        try:
-            from DOWN_AND_UP.always_ask_menu import get_user_download_dir
-            download_dir = get_user_download_dir(user_id)
-            if download_dir and os.path.exists(download_dir):
-                logger.info(f"Cleaning up download subdirectory after successful audio upload: {download_dir}")
-                import shutil
-                shutil.rmtree(download_dir)
-                logger.info(f"Successfully removed download subdirectory: {download_dir}")
-        except Exception as cleanup_error:
-            logger.error(f"Error cleaning up download subdirectory for user {user_id}: {cleanup_error}")
+        _cleanup_successful_audio_download_dir(user_id)
 
         if is_playlist and quality_key:
-            send_playlist_cache_status(
+            _send_playlist_audio_terminal_status(
                 app=app,
                 user_id=user_id,
                 reply_to_message_id=message.id,
-                text=safe_get_messages(user_id).PLAYLIST_SENT_MSG.format(
-                    sent=outcome.total_sent_count,
-                    total=len(requested_indices),
-                ),
-            )
-            send_to_logger(
-                message,
-                safe_get_messages(user_id).PLAYLIST_AUDIO_SENT_LOG_MSG.format(
-                    sent=outcome.total_sent_count,
-                    total=len(requested_indices),
-                    quality=quality_key,
-                    user_id=user_id,
-                ) + format_playlist_error_summary_suffix(outcome),
+                message=message,
+                outcome=outcome,
+                requested_indices=requested_indices,
+                quality_key=quality_key,
             )
 
     except Exception as e:
