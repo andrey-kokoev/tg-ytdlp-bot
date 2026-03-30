@@ -53,6 +53,8 @@
 | Command | Description | Example |
 |---------|-------------|---------|
 | `/subs` | Configure subtitles | `/subs en auto` |
+| `/sub` | Download subtitle file only | `/sub https://youtube.com/watch?v=...` |
+| `/sub --text-only` | Download subtitle text as plain `.txt` | `/sub --text-only https://youtube.com/watch?v=...` |
 
 ### Cookie Commands
 
@@ -112,7 +114,15 @@ For more information about advanced features, see the [Advanced Features documen
 /subs off       # Disable subtitles
 /subs ru        # Russian subtitles
 /subs en auto   # English with auto-translate
+/sub https://youtube.com/watch?v=...   # Download subtitle file only
+/sub --text-only https://youtube.com/watch?v=...   # Download subtitle text only
 ```
+
+Notes:
+- `/sub` uses your current `/subs` language setting.
+- `/sub` is currently YouTube-only.
+- `/sub` currently supports one video URL at a time.
+- `/sub --text-only` strips timestamps/cues and sends plain text as a `.txt` file.
 
 ### Cookie Services
 ```bash

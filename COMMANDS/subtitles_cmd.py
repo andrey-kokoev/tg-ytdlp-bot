@@ -12,6 +12,7 @@ from HELPERS.logger import logger, send_to_logger
 from HELPERS.limitter import is_user_in_channel
 from HELPERS.safe_messeger import safe_forward_messages
 from DOWN_AND_UP.yt_dlp_hook import get_video_formats
+from URL_PARSERS.tags import extract_url_range_tags, save_user_tags
 from URL_PARSERS.youtube import is_youtube_url
 from HELPERS.pot_helper import add_pot_to_ytdl_opts
 import math
@@ -46,6 +47,39 @@ def clear_subs_cache_for(user_id: int, url: str) -> int:
     except Exception as e:
         logger.debug(f"clear_subs_cache_for error: {e}")
         return 0
+
+
+def subtitles_to_plain_text(subs_path: str) -> str | None:
+    if not subs_path or not os.path.exists(subs_path):
+        return None
+
+    with open(subs_path, "r", encoding="utf-8", errors="replace") as handle:
+        lines = handle.readlines()
+
+    text_lines: list[str] = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.isdigit():
+            continue
+        if re.search(r"\d{1,2}:\d{2}:\d{2}[,.:]\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,.:]\d{1,3}", line):
+            continue
+        if line.startswith("WEBVTT"):
+            continue
+        if line.startswith("NOTE ") or line == "NOTE":
+            continue
+        if line.startswith("Kind:") or line.startswith("Language:"):
+            continue
+        cleaned = re.sub(r"<[^>]+>", "", line)
+        if cleaned:
+            text_lines.append(cleaned)
+
+    base, _ = os.path.splitext(subs_path)
+    text_path = base + ".txt"
+    with open(text_path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(text_lines).strip() + "\n")
+    return text_path
 
 def get_or_compute_subs_langs(user_id: int, url: str):
     """Return (normal_langs, auto_langs) for URL, preferring per-session cache.
@@ -338,15 +372,6 @@ def subs_command(app, message):
             send_to_logger(message, safe_get_messages(user_id).SUBS_ALWAYS_ASK_ENABLED_LOG_MSG.format(arg=arg))
             return
         
-        # /subs ru (language code)
-        elif arg in LANGUAGES:
-            save_user_subs_language(user_id, arg)
-            lang_info = LANGUAGES[arg]
-            from HELPERS.safe_messeger import safe_send_message
-            safe_send_message(user_id, safe_get_messages(user_id).SUBS_LANGUAGE_SET_MSG.format(flag=lang_info['flag'], name=lang_info['name']), message=message)
-            send_to_logger(message, safe_get_messages(user_id).SUBS_LANGUAGE_SET_LOG_MSG.format(arg=arg))
-            return
-        
         # /subs ru auto (language + auto mode)
         elif len(parts) >= 3 and parts[2].lower() == "auto" and arg in LANGUAGES:
             save_user_subs_language(user_id, arg)
@@ -355,6 +380,15 @@ def subs_command(app, message):
             from HELPERS.safe_messeger import safe_send_message
             safe_send_message(user_id, safe_get_messages(user_id).SUBS_LANGUAGE_AUTO_SET_MSG.format(flag=lang_info['flag'], name=lang_info['name']), message=message)
             send_to_logger(message, safe_get_messages(user_id).SUBS_LANGUAGE_AUTO_SET_LOG_MSG.format(arg=arg))
+            return
+
+        # /subs ru (language code)
+        elif arg in LANGUAGES:
+            save_user_subs_language(user_id, arg)
+            lang_info = LANGUAGES[arg]
+            from HELPERS.safe_messeger import safe_send_message
+            safe_send_message(user_id, safe_get_messages(user_id).SUBS_LANGUAGE_SET_MSG.format(flag=lang_info['flag'], name=lang_info['name']), message=message)
+            send_to_logger(message, safe_get_messages(user_id).SUBS_LANGUAGE_SET_LOG_MSG.format(arg=arg))
             return
         
         # Invalid argument
@@ -404,6 +438,71 @@ def subs_command(app, message):
         message=message
     )
     send_to_logger(message, safe_get_messages(user_id).SUBS_MENU_OPENED_LOG_MSG)
+
+
+@app.on_message(filters.command(["sub", "subtitle"]) & filters.private)
+@background_handler(label="subtitle_download_command")
+def subtitle_download_command(app, message):
+    user_id = message.chat.id
+    if int(user_id) not in Config.ADMIN and not is_user_in_channel(app, message):
+        return
+
+    text = message.text or message.caption or ""
+    text_only = False
+    if "--text-only" in text:
+        text_only = True
+        text = re.sub(r"\s*--text-only\b", "", text).strip()
+    url, video_start_with, video_end_with, playlist_name, tags, _, tag_error = extract_url_range_tags(text)
+    if tag_error:
+        wrong, example = tag_error
+        from HELPERS.safe_messeger import safe_send_message
+        safe_send_message(
+            user_id,
+            safe_get_messages(user_id).OTHER_TAG_ERROR_MSG.format(wrong=wrong, example=example),
+            reply_parameters=ReplyParameters(message_id=message.id),
+        )
+        return
+
+    if not url:
+        from HELPERS.safe_messeger import safe_send_message
+        safe_send_message(
+            user_id,
+            (
+                "Use <code>/sub URL</code> to download subtitles only.\n\n"
+                "Examples:\n"
+                "<code>/sub https://www.youtube.com/watch?v=dQw4w9WgXcQ</code>\n"
+                "<code>/sub --text-only https://www.youtube.com/watch?v=dQw4w9WgXcQ</code>\n"
+                "Choose subtitle language first with <code>/subs en auto</code>."
+            ),
+            parse_mode=enums.ParseMode.HTML,
+            reply_parameters=ReplyParameters(message_id=message.id),
+        )
+        return
+
+    video_count = abs(video_end_with - video_start_with) + 1
+    if video_count > 1:
+        from HELPERS.safe_messeger import safe_send_message
+        safe_send_message(
+            user_id,
+            "Subtitle-only download currently supports one video URL at a time.",
+            reply_parameters=ReplyParameters(message_id=message.id),
+        )
+        return
+
+    save_user_tags(user_id, tags)
+    normal_langs, auto_langs = get_or_compute_subs_langs(user_id, url)
+    available_langs = sorted(set((normal_langs or []) + (auto_langs or [])))
+    download_subtitles_only(
+        app,
+        message,
+        url,
+        tags,
+        available_langs,
+        playlist_name=playlist_name,
+        video_count=video_count,
+        video_start_with=video_start_with,
+        text_only=text_only,
+    )
 
 
 @app.on_callback_query(filters.regex(r"^subs_page\|"))
@@ -1390,7 +1489,17 @@ def download_subtitles_ytdlp(url, user_id, video_dir, available_langs):
     return None
 
 
-def download_subtitles_only(app, message, url, tags, available_langs, playlist_name=None, video_count=1, video_start_with=1):
+def download_subtitles_only(
+    app,
+    message,
+    url,
+    tags,
+    available_langs,
+    playlist_name=None,
+    video_count=1,
+    video_start_with=1,
+    text_only=False,
+):
     messages = safe_get_messages(message.chat.id)
     """
     Downloads and sends only a subtitle file without a video
@@ -1434,7 +1543,11 @@ def download_subtitles_only(app, message, url, tags, available_langs, playlist_n
         
         # Send message about download start
         from HELPERS.safe_messeger import safe_send_message
-        status_msg = safe_send_message(user_id, safe_get_messages(user_id).SUBS_DOWNLOADING_MSG, reply_parameters=ReplyParameters(message_id=message.id))
+        status_msg = safe_send_message(
+            user_id,
+            "💬 Downloading subtitle text..." if text_only else safe_get_messages(user_id).SUBS_DOWNLOADING_MSG,
+            reply_parameters=ReplyParameters(message_id=message.id),
+        )
         
         # Download subtitles
         subs_path = download_subtitles_ytdlp(url, user_id, user_dir, available_langs)
@@ -1467,11 +1580,26 @@ def download_subtitles_only(app, message, url, tags, available_langs, playlist_n
                     type='AUTO/TRANSerated' if auto_mode else 'Manual',
                     tags=f"\n<b>Tags:</b> {' '.join(tags)}" if tags else ""
                 )
+
+                document_path = subs_path
+                if text_only:
+                    text_path = subtitles_to_plain_text(subs_path)
+                    if not text_path or not os.path.exists(text_path):
+                        raise RuntimeError("Failed to convert subtitles to plain text")
+                    document_path = text_path
+                    tags_line = f"\n<b>Tags:</b> {' '.join(tags)}" if tags else ""
+                    caption = (
+                        f"📝 <b>Subtitle text</b>\n"
+                        f"<b>Video:</b> {title}\n"
+                        f"<b>Language:</b> {subs_lang}\n"
+                        f"<b>Type:</b> {'AUTO/TRANSerated' if auto_mode else 'Manual'}"
+                        f"{tags_line}"
+                    )
                 
                 # Send subtitle file
                 sent_msg = app.send_document(
                     chat_id=user_id,
-                    document=subs_path,
+                    document=document_path,
                     caption=caption,
                     reply_parameters=ReplyParameters(message_id=message.id),
                     parse_mode=enums.ParseMode.HTML
@@ -1479,12 +1607,17 @@ def download_subtitles_only(app, message, url, tags, available_langs, playlist_n
                 # We send this message to the log channel
                 from HELPERS.logger import get_log_channel
                 safe_forward_messages(get_log_channel("video"), user_id, [sent_msg.id])
-                send_to_logger(message, safe_get_messages(user_id).SUBS_SENT_MSG)
+                send_to_logger(message, "💬 Subtitle text file sent to user." if text_only else safe_get_messages(user_id).SUBS_SENT_MSG)
                 # Remove temporary file
                 try:
                     os.remove(subs_path)
                 except Exception as e:
                     logger.error(f"Error deleting temporary subtitle file: {e}")
+                if text_only:
+                    try:
+                        os.remove(document_path)
+                    except Exception as e:
+                        logger.error(f"Error deleting temporary subtitle text file: {e}")
                 
                 # Delete status message
                 try:
