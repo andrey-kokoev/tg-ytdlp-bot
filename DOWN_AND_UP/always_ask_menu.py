@@ -392,6 +392,12 @@ class QualityMenuRenderPlan:
     is_nsfw: bool
 
 
+@dataclass(frozen=True)
+class QualityMenuComposition:
+    text: str
+    keyboard_rows: list
+
+
 def _emit_gallery_fallback_transition_start(callback_query, plan: GalleryFallbackTransitionPlan) -> None:
     safe_callback_answer(callback_query, "🔄 Switching to gallery-dl...")
     try:
@@ -4345,6 +4351,151 @@ def _build_quality_menu_render_plan(
     )
 
 
+def _group_buttons_smart(buttons: list, *, log_prefix: str | None = None) -> list:
+    rows = []
+    if not buttons:
+        return rows
+    total_buttons = len(buttons)
+    if total_buttons % 3 == 0:
+        for i in range(0, total_buttons, 3):
+            row = buttons[i:i + 3]
+            rows.append(row)
+            if log_prefix:
+                logger.info(f"{log_prefix}: {[btn.text for btn in row]}")
+    elif total_buttons % 3 == 1 and total_buttons > 1:
+        for i in range(0, total_buttons - 4, 3):
+            row = buttons[i:i + 3]
+            rows.append(row)
+            if log_prefix:
+                logger.info(f"{log_prefix}: {[btn.text for btn in row]}")
+        rows.append(buttons[-4:-2])
+        rows.append(buttons[-2:])
+        if log_prefix:
+            logger.info(f"{log_prefix}: {[btn.text for btn in buttons[-4:-2]]}")
+            logger.info(f"{log_prefix}: {[btn.text for btn in buttons[-2:]]}")
+    else:
+        for i in range(0, total_buttons, 3):
+            row = buttons[i:i + 3]
+            rows.append(row)
+            if log_prefix:
+                logger.info(f"{log_prefix}: {[btn.text for btn in row]}")
+    return rows
+
+
+def _compose_quality_menu(
+    *,
+    user_id: int,
+    url: str,
+    cap: str,
+    buttons: list,
+    action_buttons: list,
+    filter_rows: list,
+    found_quality_keys,
+    is_nsfw: bool,
+    is_private_chat: bool,
+    show_repost_hint: bool,
+    cached_qualities,
+    subs_hint: str,
+    subs_warn: str,
+    filters_state,
+) -> QualityMenuComposition:
+    if not found_quality_keys:
+        cap += f"\n{safe_get_messages(user_id).QUALITIES_NOT_AUTO_DETECTED_NOTE}\n"
+
+    keyboard_rows = []
+    keyboard_rows.extend(filter_rows)
+    keyboard_rows.extend(_group_buttons_smart(buttons))
+
+    logger.info(f"{safe_get_messages(user_id).ALWAYS_ASK_SMART_GROUPING_MSG} {len(action_buttons)} action buttons for user {user_id}")
+    keyboard_rows.extend(
+        _group_buttons_smart(
+            action_buttons,
+            log_prefix=safe_get_messages(user_id).ALWAYS_ASK_ADDED_ACTION_BUTTON_ROW_3_MSG,
+        )
+    )
+
+    bottom_buttons = (
+        [
+            InlineKeyboardButton(
+                safe_get_messages(user_id).BACK_BUTTON_TEXT,
+                callback_data="askf|toggle|off",
+            ),
+            InlineKeyboardButton(
+                safe_get_messages(user_id).CLOSE_BUTTON_TEXT,
+                callback_data="askq|close",
+            ),
+        ]
+        if bool(filters_state.get("visible", False))
+        else [
+            InlineKeyboardButton(
+                safe_get_messages(user_id).CLOSE_BUTTON_TEXT,
+                callback_data="askq|close",
+            )
+        ]
+    )
+    if keyboard_rows and len(keyboard_rows[-1]) < 3 and len(bottom_buttons) <= (3 - len(keyboard_rows[-1])):
+        keyboard_rows[-1].extend(bottom_buttons)
+        logger.info(
+            f"{safe_get_messages(user_id).ALWAYS_ASK_ADDED_BOTTOM_BUTTONS_TO_EXISTING_ROW_MSG}: "
+            f"{[btn.text for btn in bottom_buttons]}"
+        )
+    else:
+        keyboard_rows.append(bottom_buttons)
+        logger.info(
+            f"{safe_get_messages(user_id).ALWAYS_ASK_CREATED_NEW_BOTTOM_ROW_MSG}: "
+            f"{[btn.text for btn in bottom_buttons]}"
+        )
+
+    logger.info(f"Final keyboard structure for user {user_id}: {len(keyboard_rows)} rows")
+    for i, row in enumerate(keyboard_rows):
+        logger.info(f"Row {i}: {[btn.text for btn in row]}")
+
+    used_emojis = set()
+    for button_group in (action_buttons, buttons):
+        for button in button_group:
+            if hasattr(button, "text") and button.text:
+                first_char = button.text[0]
+                if ord(first_char) > 127:
+                    used_emojis.add(first_char)
+    for row in filter_rows:
+        for button in row:
+            if hasattr(button, "text") and button.text:
+                first_char = button.text[0]
+                if ord(first_char) > 127:
+                    used_emojis.add(first_char)
+    logger.info(f"Detected emojis in menu for user {user_id}: {sorted(used_emojis)}")
+
+    dynamic_hints = [safe_get_messages(user_id).ALWAYS_ASK_CHANGE_VIDEO_EXT_MSG]
+    if is_nsfw and is_private_chat:
+        dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_NSFW_PAID_MSG)
+    else:
+        dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_CHOOSE_DOWNLOAD_QUALITY_MSG)
+    if show_repost_hint and cached_qualities and "🚀" in used_emojis:
+        dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_INSTANT_REPOST_MSG)
+    if is_youtube_url(url) and "👁" in used_emojis:
+        dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_WATCH_VIDEO_MSG)
+    if "🔗" in used_emojis:
+        dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_GET_DIRECT_LINK_MSG)
+    if "📃" in used_emojis:
+        dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_SHOW_AVAILABLE_FORMATS_MSG)
+    if not found_quality_keys and "🖼" in used_emojis:
+        dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_DOWNLOAD_IMAGE_MSG)
+    if "🎧" in used_emojis:
+        dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_EXTRACT_AUDIO_MSG)
+    if subs_hint:
+        dynamic_hints.append(subs_hint.strip())
+    if subs_warn:
+        dynamic_hints.append(subs_warn.strip())
+    if get_filters(user_id).get("has_dubs") and "🗣" in used_emojis:
+        dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_CHOOSE_AUDIO_LANGUAGE_MSG)
+
+    dynamic_hint_text = "<pre language=\"info\">" + "\n".join(dynamic_hints) + "</pre>"
+    logger.info(f"Final dynamic hints for user {user_id}: {dynamic_hints}")
+    cap = re.sub(r'<pre language="info">.*?</pre>', '', cap, flags=re.DOTALL)
+    cap += f"{dynamic_hint_text}\n"
+    return QualityMenuComposition(text=cap, keyboard_rows=keyboard_rows)
+
+
 def _emit_quality_menu_render_plan(app, message, *, cb, proc_msg, user_id: int, render_plan: QualityMenuRenderPlan) -> None:
     if cb is not None and getattr(cb, "message", None):
         try:
@@ -6167,54 +6318,17 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
         other_label = f"{safe_get_messages(user_id).ALWAYS_ASK_OTHER_LABEL_MSG}" if not is_nsfw else f"{safe_get_messages(user_id).ALWAYS_ASK_OTHER_LABEL_MSG}"
         buttons.append(InlineKeyboardButton(other_label, callback_data=f"askq|other_qualities"))
         
-        if not found_quality_keys:
-            # Add explanation when automatic quality detection fails
-            autodiscovery_note = safe_get_messages(user_id).QUALITIES_NOT_AUTO_DETECTED_NOTE
-            cap += f"\n{autodiscovery_note}\n"
-
-        # --- Form rows of 3 buttons ---
-        keyboard_rows = []
-        # Add filter rows first
         filter_rows, filter_action_buttons = build_filter_rows(user_id, url, is_private_chat)
-        keyboard_rows.extend(filter_rows)
-        
-        # Collect all action buttons to group them by 3 in a row
         action_buttons = []
-        
-        # Add filter action buttons (DUBS, SUBS)
         action_buttons.extend(filter_action_buttons)
-        
-        # Add LINK button - always available
         logger.info(f"Adding LINK button for user {user_id}")
         action_buttons.append(InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_LINK_BUTTON_MSG, callback_data="askq|link"))
-        # Add LIST button - always available
         action_buttons.append(InlineKeyboardButton(safe_get_messages(user_id).LIST_BUTTON_TEXT, callback_data="askq|list"))
-        # Add IMAGE button only if qualities were NOT auto-detected
         if not found_quality_keys:
-            action_buttons.append(InlineKeyboardButton(safe_get_messages(user_id).IMAGE_BUTTON_TEXT, callback_data="askq|image"))        
-        # Add Quick Embed button for supported services (but not for ranges)
+            action_buttons.append(InlineKeyboardButton(safe_get_messages(user_id).IMAGE_BUTTON_TEXT, callback_data="askq|image"))
         if (is_instagram_url(url) or is_twitter_url(url) or is_reddit_url(url)) and not is_playlist_with_range(original_text):
             action_buttons.append(InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_EMBED_BUTTON_MSG, callback_data="askq|quick_embed"))
-        
-        # Smart grouping of quality buttons - prefer 3 per row, then 2, avoid single buttons
-        if buttons:
-            total_quality_buttons = len(buttons)
-            if total_quality_buttons % 3 == 0:
-                # Perfect grouping by 3
-                for i in range(0, total_quality_buttons, 3):
-                    keyboard_rows.append(buttons[i:i+3])
-            elif total_quality_buttons % 3 == 1 and total_quality_buttons > 1:
-                # Group by 3, then make last two rows with 2 buttons each
-                for i in range(0, total_quality_buttons - 4, 3):
-                    keyboard_rows.append(buttons[i:i+3])
-                # Last two rows with 2 buttons each
-                keyboard_rows.append(buttons[-4:-2])
-                keyboard_rows.append(buttons[-2:])
-            else:
-                # Group by 3, last group might be 1 or 2
-                for i in range(0, total_quality_buttons, 3):
-                    keyboard_rows.append(buttons[i:i+3])
-        
+
         # Add WATCH button for YouTube links - always add to action_buttons for consistent placement
         try:
             if is_youtube_url(url):
@@ -6252,157 +6366,25 @@ def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, d
             
             if need_subs:
                 action_buttons.append(InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_SUB_ONLY_BUTTON_MSG, callback_data="askq|subs_only"))
-        
-        # Smart grouping of action buttons - prefer 3 buttons per row, then 2, avoid single buttons
-        logger.info(f"{safe_get_messages(user_id).ALWAYS_ASK_SMART_GROUPING_MSG} {len(action_buttons)} action buttons for user {user_id}")
-        if action_buttons:
-            # Calculate optimal grouping
-            total_buttons = len(action_buttons)
-            if total_buttons % 3 == 0:
-                # Perfect grouping by 3
-                for i in range(0, total_buttons, 3):
-                    row = action_buttons[i:i+3]
-                    keyboard_rows.append(row)
-                    logger.info(f"{safe_get_messages(user_id).ALWAYS_ASK_ADDED_ACTION_BUTTON_ROW_3_MSG}: {[btn.text for btn in row]}")
-            elif total_buttons % 3 == 1 and total_buttons > 1:
-                # Group by 3, then take 2 from last group to make 2+2
-                for i in range(0, total_buttons - 4, 3):
-                    row = action_buttons[i:i+3]
-                    keyboard_rows.append(row)
-                    logger.info(f"{safe_get_messages(user_id).ALWAYS_ASK_ADDED_ACTION_BUTTON_ROW_3_MSG}: {[btn.text for btn in row]}")
-                # Last two rows with 2 buttons each
-                keyboard_rows.append(action_buttons[-4:-2])
-                keyboard_rows.append(action_buttons[-2:])
-                logger.info(f"{safe_get_messages(user_id).ALWAYS_ASK_ADDED_ACTION_BUTTON_ROWS_2_2_MSG}: {[btn.text for btn in action_buttons[-4:-2]]}, {[btn.text for btn in action_buttons[-2:]]}")
-            else:
-                # Group by 3, last group might be 1 or 2
-                for i in range(0, total_buttons, 3):
-                    row = action_buttons[i:i+3]
-                    keyboard_rows.append(row)
-                    logger.info(f"Added action button row: {[btn.text for btn in row]}")
-        
-        # Smart grouping for bottom row - try to combine with action buttons if possible
-        bottom_buttons = []
-        if bool(filters_state.get('visible', False)):
-            bottom_buttons = [InlineKeyboardButton(safe_get_messages(user_id).BACK_BUTTON_TEXT, callback_data="askf|toggle|off"), InlineKeyboardButton(safe_get_messages(user_id).CLOSE_BUTTON_TEXT, callback_data="askq|close")]
-        else:
-            bottom_buttons = [InlineKeyboardButton(safe_get_messages(user_id).CLOSE_BUTTON_TEXT, callback_data="askq|close")]
-        
-        # Try to add bottom buttons to last action row if it has space
-        if keyboard_rows and len(keyboard_rows[-1]) < 3 and len(bottom_buttons) <= (3 - len(keyboard_rows[-1])):
-            # Add to existing row
-            keyboard_rows[-1].extend(bottom_buttons)
-            logger.info(f"{safe_get_messages(user_id).ALWAYS_ASK_ADDED_BOTTOM_BUTTONS_TO_EXISTING_ROW_MSG}: {[btn.text for btn in bottom_buttons]}")
-        else:
-            # Create new row
-            keyboard_rows.append(bottom_buttons)
-            logger.info(f"{safe_get_messages(user_id).ALWAYS_ASK_CREATED_NEW_BOTTOM_ROW_MSG}: {[btn.text for btn in bottom_buttons]}")
-        
-        # Log final keyboard structure
-        logger.info(f"Final keyboard structure for user {user_id}: {len(keyboard_rows)} rows")
-        for i, row in enumerate(keyboard_rows):
-            logger.info(f"Row {i}: {[btn.text for btn in row]}")
-        
-        # Now that we have all action_buttons, create dynamic hints
-        # Extract emojis from all buttons to determine which hints to show
-        used_emojis = set()
-        
-        # Check action_buttons
-        for button in action_buttons:
-            if hasattr(button, 'text') and button.text:
-                text = button.text
-                if text and len(text) > 0:
-                    first_char = text[0]
-                    if ord(first_char) > 127:  # Simple emoji detection
-                        used_emojis.add(first_char)
-        
-        # Check quality buttons
-        for button in buttons:
-            if hasattr(button, 'text') and button.text:
-                text = button.text
-                if text and len(text) > 0:
-                    first_char = text[0]
-                    if ord(first_char) > 127:  # Simple emoji detection
-                        used_emojis.add(first_char)
-        
-        # Check filter buttons
-        for row in filter_rows:
-            for button in row:
-                if hasattr(button, 'text') and button.text:
-                    text = button.text
-                    if text and len(text) > 0:
-                        first_char = text[0]
-                        if ord(first_char) > 127:  # Simple emoji detection
-                            used_emojis.add(first_char)
-        
-        # Log detected emojis for debugging
-        logger.info(f"Detected emojis in menu for user {user_id}: {sorted(used_emojis)}")
-        
-        # Create dynamic hints based on actually used emojis
-        dynamic_hints = []
-        
-        # Always show format change hint (📼) - this is always available
-        dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_CHANGE_VIDEO_EXT_MSG)
-        
-        # Quality hint (📹) - always sh
-        # own unless NSFW
-        if is_nsfw and is_private_chat:
-            dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_NSFW_PAID_MSG)
-        else:
-            dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_CHOOSE_DOWNLOAD_QUALITY_MSG)
-        
-        # Repost hint (🚀) - only if show_repost_hint is True AND there are cached qualities
-        # Also check if any button has rocket emoji (including Other button)
-        has_rocket_button = "🚀" in used_emojis
-        if show_repost_hint and cached_qualities and has_rocket_button:
-            dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_INSTANT_REPOST_MSG)
-        
-        # Watch hint (👁) - only for YouTube and if button is present
-        if is_youtube_url(url) and "👁" in used_emojis:
-            dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_WATCH_VIDEO_MSG)
-        
-        # Link hint (🔗) - always present
-        if "🔗" in used_emojis:
-            dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_GET_DIRECT_LINK_MSG)
-        
-        # List hint (📃) - always present
-        if "📃" in used_emojis:
-            dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_SHOW_AVAILABLE_FORMATS_MSG)
-        
-        # Image hint (🖼) - only if no quality keys found and button is present
-        if not found_quality_keys and "🖼" in used_emojis:
-            dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_DOWNLOAD_IMAGE_MSG)
-        
-        # Audio hint (🎧) - if audio button is present
-        if "🎧" in used_emojis:
-            dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_EXTRACT_AUDIO_MSG)
-        
-        # Subs hints
-        if subs_hint:
-            dynamic_hints.append(subs_hint.strip())
-        if subs_warn:
-            dynamic_hints.append(subs_warn.strip())
-        
-        # Dubs hint (🗣) - only if available and button is present
-        if get_filters(user_id).get("has_dubs") and "🗣" in used_emojis:
-            dynamic_hints.append(safe_get_messages(user_id).ALWAYS_ASK_CHOOSE_AUDIO_LANGUAGE_MSG)
-        
-        # Replace the old hint in cap with dynamic one
-        dynamic_hint_text = "<pre language=\"info\">" + "\n".join(dynamic_hints) + "</pre>"
-        
-        # Log final hints for debugging
-        logger.info(f"Final dynamic hints for user {user_id}: {dynamic_hints}")
-        
-        # Find and replace the old hint in cap
-        import re
-        # Remove old hint block
-        cap = re.sub(r'<pre language="info">.*?</pre>', '', cap, flags=re.DOTALL)
-        # Add new dynamic hint with reduced spacing
-        cap += f"{dynamic_hint_text}\n"
-        
+        composition = _compose_quality_menu(
+            user_id=user_id,
+            url=url,
+            cap=cap,
+            buttons=buttons,
+            action_buttons=action_buttons,
+            filter_rows=filter_rows,
+            found_quality_keys=found_quality_keys,
+            is_nsfw=is_nsfw,
+            is_private_chat=is_private_chat,
+            show_repost_hint=show_repost_hint,
+            cached_qualities=cached_qualities,
+            subs_hint=subs_hint,
+            subs_warn=subs_warn,
+            filters_state=filters_state,
+        )
         render_plan = _build_quality_menu_render_plan(
-            text=cap,
-            keyboard_rows=keyboard_rows,
+            text=composition.text,
+            keyboard_rows=composition.keyboard_rows,
             thumb_path=thumb_path,
             is_playlist=is_playlist,
             is_nsfw=is_nsfw,
