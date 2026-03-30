@@ -35,6 +35,8 @@
 | **Video URL** | Download video (auto-detect) | `https://youtube.com/watch?v=...` |
 | `/vid` | Download video | `/vid https://youtube.com/watch?v=...` |
 | `/audio` | Download audio only | `/audio https://youtube.com/watch?v=...` |
+| `/aconcat` | Concatenate playlist range into one audio file | `/aconcat reverse 1-11 https://youtube.com/playlist?list=...` |
+| `/arename` | Resend last audio concat output with a new name | `/arename "My Final Mix"` |
 | `/link` | Get direct video links | `/link 720 https://youtube.com/watch?v=...` |
 | `/img` | Download images | `/img https://instagram.com/p/...` |
 
@@ -118,6 +120,22 @@ For more information about advanced features, see the [Advanced Features documen
 /cookie tiktok   # TikTok cookies
 /cookie x        # Twitter/X cookies
 ```
+
+### Audio Concat
+```bash
+/aconcat https://youtube.com/playlist?list=PL123*2*5
+/aconcat reverse https://youtube.com/playlist?list=PL123*2*5
+/aconcat 2-5 https://youtube.com/playlist?list=PL123
+/aconcat reverse name "My Mix" 1-11 https://youtube.com/playlist?list=PL123
+/arename "My Final Mix"
+```
+
+Notes:
+- `/aconcat` currently supports playlist ranges only.
+- At least 2 playlist items are required.
+- `reverse` flips the selected range before concatenation.
+- `name "..."` or `title "..."` overrides the output filename and displayed title.
+- `/arename` works on your most recent `/aconcat` result.
 
 ### Language Settings
 ```bash
