@@ -377,6 +377,12 @@ class AlwaysAskMenuFailureDecision:
     runtime_task: RuntimeTask | None = None
 
 
+@dataclass(frozen=True)
+class CachedQualitiesMenuPlan:
+    text: str
+    reply_markup: InlineKeyboardMarkup
+
+
 def _emit_gallery_fallback_transition_start(callback_query, plan: GalleryFallbackTransitionPlan) -> None:
     safe_callback_answer(callback_query, "🔄 Switching to gallery-dl...")
     try:
@@ -3999,24 +4005,42 @@ def sort_quality_key(quality_key):
             return 0  # for unknown formats
 
 def create_cached_qualities_menu(app, message, url, tags, proc_msg, user_id, original_text, is_playlist, playlist_range):
+    """Build a quality menu from cached data when fresh data cannot be fetched."""
+    try:
+        menu_plan = _build_cached_qualities_menu_plan(
+            message,
+            url=url,
+            tags=tags,
+            user_id=user_id,
+            original_text=original_text,
+            is_playlist=is_playlist,
+            playlist_range=playlist_range,
+        )
+        if menu_plan is None:
+            return False
+        return _emit_cached_qualities_menu(
+            app,
+            message,
+            proc_msg=proc_msg,
+            user_id=user_id,
+            menu_plan=menu_plan,
+        )
+    except Exception as e:
+        logger.error(f"Error creating cached qualities menu: {e}")
+        return False
+
+
+def _build_cached_qualities_menu_plan(
+    message,
+    *,
+    url: str,
+    tags,
+    user_id: int,
+    original_text: str,
+    is_playlist: bool,
+    playlist_range,
+) -> CachedQualitiesMenuPlan | None:
     messages = safe_get_messages(user_id)
-    """
-    Build a quality menu from cached data when fresh data cannot be fetched.
-    
-    Args:
-        app: Application instance
-        message: User message
-        url: Video URL
-        tags: Tags
-        proc_msg: Processing message
-        user_id: User ID
-        original_text: Original message text
-        is_playlist: Whether this is a playlist
-        playlist_range: Playlist range
-        
-    Returns:
-        bool: True if the menu was created, False if no cached data exists
-    """
     from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     try:
         logger.info(f"Attempting to create menu from cached qualities for user {user_id}")
@@ -4051,7 +4075,7 @@ def create_cached_qualities_menu(app, message, url, tags, proc_msg, user_id, ori
         
         if not cached_qualities:
             logger.info(f"No cached qualities found for user {user_id}")
-            return False
+            return None
         
         logger.info(f"Found cached qualities for user {user_id}: {list(cached_qualities)}")
         
@@ -4220,42 +4244,76 @@ def create_cached_qualities_menu(app, message, url, tags, proc_msg, user_id, ori
         keyboard_rows.append([InlineKeyboardButton(safe_get_messages(user_id).CLOSE_BUTTON_TEXT, callback_data="askq|close")])
         
         keyboard = InlineKeyboardMarkup(keyboard_rows)
-        
-        # Send the menu
-        try:
-            if proc_msg:
-                try:
-                    result = app.edit_message_text(chat_id=user_id, message_id=proc_msg.id, text=cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-                    if result is None:
-                        app.send_message(user_id, cap, reply_parameters=ReplyParameters(message_id=message.id), parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-                except Exception as edit_error:
-                    if "MESSAGE_ID_INVALID" in str(edit_error):
-                        logger.warning(f"Message ID invalid, sending new message: {edit_error}")
-                        app.send_message(user_id, cap, reply_parameters=ReplyParameters(message_id=message.id), parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-                    elif "BUTTON_TYPE_INVALID" in str(edit_error):
-                        logger.warning(f"Button type invalid, sending without keyboard: {edit_error}")
-                        app.send_message(user_id, cap, reply_parameters=ReplyParameters(message_id=message.id), parse_mode=enums.ParseMode.HTML)
-                    else:
-                        raise edit_error
-            else:
-                try:
-                    app.send_message(user_id, cap, reply_parameters=ReplyParameters(message_id=message.id), parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-                except Exception as send_error:
-                    if "BUTTON_TYPE_INVALID" in str(send_error):
-                        logger.warning(f"Button type invalid, sending without keyboard: {send_error}")
-                        app.send_message(user_id, cap, reply_parameters=ReplyParameters(message_id=message.id), parse_mode=enums.ParseMode.HTML)
-                    else:
-                        raise send_error
-            
-            logger.info(f"Successfully created cached qualities menu for user {user_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error sending cached qualities menu: {e}")
-            return False
+        return CachedQualitiesMenuPlan(text=cap, reply_markup=keyboard)
             
     except Exception as e:
-        logger.error(f"Error creating cached qualities menu: {e}")
+        logger.error(f"Error building cached qualities menu: {e}")
+        return None
+
+
+def _emit_cached_qualities_menu(app, message, *, proc_msg, user_id: int, menu_plan: CachedQualitiesMenuPlan) -> bool:
+    try:
+        if proc_msg:
+            try:
+                result = app.edit_message_text(
+                    chat_id=user_id,
+                    message_id=proc_msg.id,
+                    text=menu_plan.text,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=menu_plan.reply_markup,
+                )
+                if result is None:
+                    app.send_message(
+                        user_id,
+                        menu_plan.text,
+                        reply_parameters=ReplyParameters(message_id=message.id),
+                        parse_mode=enums.ParseMode.HTML,
+                        reply_markup=menu_plan.reply_markup,
+                    )
+            except Exception as edit_error:
+                if "MESSAGE_ID_INVALID" in str(edit_error):
+                    logger.warning(f"Message ID invalid, sending new message: {edit_error}")
+                    app.send_message(
+                        user_id,
+                        menu_plan.text,
+                        reply_parameters=ReplyParameters(message_id=message.id),
+                        parse_mode=enums.ParseMode.HTML,
+                        reply_markup=menu_plan.reply_markup,
+                    )
+                elif "BUTTON_TYPE_INVALID" in str(edit_error):
+                    logger.warning(f"Button type invalid, sending without keyboard: {edit_error}")
+                    app.send_message(
+                        user_id,
+                        menu_plan.text,
+                        reply_parameters=ReplyParameters(message_id=message.id),
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                else:
+                    raise
+        else:
+            try:
+                app.send_message(
+                    user_id,
+                    menu_plan.text,
+                    reply_parameters=ReplyParameters(message_id=message.id),
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=menu_plan.reply_markup,
+                )
+            except Exception as send_error:
+                if "BUTTON_TYPE_INVALID" in str(send_error):
+                    logger.warning(f"Button type invalid, sending without keyboard: {send_error}")
+                    app.send_message(
+                        user_id,
+                        menu_plan.text,
+                        reply_parameters=ReplyParameters(message_id=message.id),
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                else:
+                    raise
+        logger.info(f"Successfully created cached qualities menu for user {user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error sending cached qualities menu: {e}")
         return False
 
 
