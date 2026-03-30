@@ -163,6 +163,31 @@ def _send_description_document(
         parse_mode=enums.ParseMode.HTML,
     )
 
+
+def _is_timeout_error(exc: Exception) -> bool:
+    return "Request timed out" in str(exc) or isinstance(exc, TimeoutError)
+
+
+def _send_with_timeout_fallback(
+    *,
+    primary_send,
+    fallback_send,
+    attempts: int,
+    timeout_log_text: str,
+):
+    attempts_left = attempts
+    while True:
+        try:
+            return primary_send()
+        except Exception as exc:
+            if not _is_timeout_error(exc):
+                raise
+            attempts_left -= 1
+            if attempts_left <= 0:
+                logger.warning(timeout_log_text)
+                return fallback_send()
+            time.sleep(2)
+
 # Get app instance for decorators
 app = get_app()
 
@@ -502,22 +527,12 @@ def send_videos(
                 logger.info(safe_get_messages(user_id).SENDER_USER_SEND_AS_FILE_ENABLED_MSG.format(user_id=user_id))
                 video_msg = _fallback_send_document(cap)
             else:
-                # First attempt with full caption, limited number of timeout retries
-                attempts_left = 3
-                while True:
-                    try:
-                        video_msg = _try_send_video(cap)
-                        break
-                    except Exception as e:
-                        if "Request timed out" in str(e) or isinstance(e, TimeoutError):
-                            attempts_left -= 1
-                            if attempts_left and attempts_left <= 0:
-                                logger.warning(safe_get_messages(user_id).SENDER_SEND_VIDEO_TIMED_OUT_MSG)
-                                video_msg = _fallback_send_document(cap)
-                                break
-                            time.sleep(2)
-                            continue
-                        raise
+                video_msg = _send_with_timeout_fallback(
+                    primary_send=lambda: _try_send_video(cap),
+                    fallback_send=lambda: _fallback_send_document(cap),
+                    attempts=3,
+                    timeout_log_text=safe_get_messages(user_id).SENDER_SEND_VIDEO_TIMED_OUT_MSG,
+                )
         except Exception as e:
             if "MEDIA_CAPTION_TOO_LONG" in str(e):
                 logger.info(safe_get_messages(user_id).SENDER_CAPTION_TOO_LONG_MSG)
@@ -532,22 +547,12 @@ def send_videos(
                         # If send_as_file is enabled, always use document
                         video_msg = _fallback_send_document(minimal_cap)
                     else:
-                        # Try with a shorter caption, with limited timeout retries
-                        attempts_left = 2
-                        while True:
-                            try:
-                                video_msg = _try_send_video(minimal_cap)
-                                break
-                            except Exception as e2:
-                                if "Request timed out" in str(e2) or isinstance(e2, TimeoutError):
-                                    attempts_left -= 1
-                                    if attempts_left and attempts_left <= 0:
-                                        logger.warning(safe_get_messages(user_id).SENDER_SEND_VIDEO_MINIMAL_CAPTION_TIMED_OUT_MSG)
-                                        video_msg = _fallback_send_document(minimal_cap)
-                                        break
-                                    time.sleep(2)
-                                    continue
-                                raise
+                        video_msg = _send_with_timeout_fallback(
+                            primary_send=lambda: _try_send_video(minimal_cap),
+                            fallback_send=lambda: _fallback_send_document(minimal_cap),
+                            attempts=2,
+                            timeout_log_text=safe_get_messages(user_id).SENDER_SEND_VIDEO_MINIMAL_CAPTION_TIMED_OUT_MSG,
+                        )
                 except Exception as e:
                     logger.error(safe_get_messages(user_id).SENDER_ERROR_SENDING_VIDEO_MINIMAL_CAPTION_MSG.format(error=e))
                     # Final fallback: no caption; use document on timeout
@@ -557,7 +562,7 @@ def send_videos(
                         else:
                             video_msg = _try_send_video("")
                     except Exception as e3:
-                        if "Request timed out" in str(e3) or isinstance(e3, TimeoutError):
+                        if _is_timeout_error(e3):
                             video_msg = _fallback_send_document("")
                         else:
                             raise
