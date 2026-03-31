@@ -20,13 +20,20 @@ class DBWriteEvent:
     timestamp: float = time.time()
 
 
-def emit_db_event(path: str, operation: str, payload: Any) -> None:
-    """Send a DB write event to the stats collector."""
+def _with_stats_collector(action_name: str, callback) -> None:
     try:
         collector = get_stats_collector()
-        collector.handle_db_event(path, operation, payload)
+        callback(collector)
     except Exception as exc:
-        logger.debug(f"[stats] failed to handle db event {operation} {path}: {exc}")
+        logger.debug(f"[stats] failed to {action_name}: {exc}")
+
+
+def emit_db_event(path: str, operation: str, payload: Any) -> None:
+    """Send a DB write event to the stats collector."""
+    _with_stats_collector(
+        f"handle db event {operation} {path}",
+        lambda collector: collector.handle_db_event(path, operation, payload),
+    )
 
 
 def emit_download_event(
@@ -38,17 +45,16 @@ def emit_download_event(
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Record a download with optional metadata."""
-    try:
-        collector = get_stats_collector()
-        collector.record_download(
+    _with_stats_collector(
+        f"record download event for {user_id}",
+        lambda collector: collector.record_download(
             user_id=user_id,
             url=url,
             title=title,
             timestamp=timestamp,
             metadata=metadata,
-        )
-    except Exception as exc:
-        logger.debug(f"[stats] failed to record download event for {user_id}: {exc}")
+        ),
+    )
 
 
 def capture_message_context(message) -> None:
@@ -82,17 +88,16 @@ def update_download_progress(
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Update download progress for the user's active session."""
-    try:
-        collector = get_stats_collector()
-        collector.update_download_progress(
+    _with_stats_collector(
+        f"update download progress for {user_id}",
+        lambda collector: collector.update_download_progress(
             user_id=user_id,
             progress=progress,
             url=url,
             title=title,
             metadata=metadata,
-        )
-    except Exception as exc:
-        logger.debug(f"[stats] failed to update download progress for {user_id}: {exc}")
+        ),
+    )
 
 
 class StatsAwareDBAdapter:
