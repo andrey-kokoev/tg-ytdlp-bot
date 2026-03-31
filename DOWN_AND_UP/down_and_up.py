@@ -282,6 +282,14 @@ class DownloadCleanupPlan:
     stop_animation: bool = True
 
 
+@dataclass(frozen=True)
+class DownloadCacheWritebackPlan:
+    mode: str
+    should_save: bool = False
+    summary_quality_key: str | None = None
+    skip_log_text: str | None = None
+
+
 def _build_download_terminal_plan(
     *,
     user_id: int,
@@ -506,6 +514,65 @@ def _execute_download_cleanup_plan(
             stop_anim.set()
         except Exception:
             pass
+
+
+def _build_download_cache_writeback_plan(
+    *,
+    user_id: int,
+    is_playlist: bool,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    safe_quality_key: str | None,
+    found_type,
+) -> DownloadCacheWritebackPlan:
+    if not is_playlist or not playlist_indices or not playlist_msg_ids:
+        return DownloadCacheWritebackPlan(mode="skip", should_save=False)
+
+    subs_enabled = is_subs_enabled(user_id)
+    auto_mode = get_user_subs_auto_mode(user_id)
+    need_subs = determine_need_subs(subs_enabled, found_type, user_id)
+    if need_subs:
+        return DownloadCacheWritebackPlan(
+            mode="skip_subtitles",
+            should_save=False,
+            summary_quality_key=safe_quality_key,
+            skip_log_text="Video with subtitles (subs.txt found) is not cached!",
+        )
+
+    return DownloadCacheWritebackPlan(
+        mode="save_playlist",
+        should_save=True,
+        summary_quality_key=safe_quality_key,
+        skip_log_text=f"[SUMMARY] Playlist cache writeback enabled (quality {safe_quality_key}, auto_mode={auto_mode})",
+    )
+
+
+def _execute_download_cache_writeback_plan(
+    *,
+    user_id: int,
+    plan: DownloadCacheWritebackPlan,
+    url: str,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    playlist_video_urls,
+    message,
+) -> None:
+    if not plan.should_save:
+        if plan.skip_log_text:
+            logger.info(plan.skip_log_text)
+    else:
+        save_to_playlist_cache(
+            get_clean_playlist_url(url),
+            plan.summary_quality_key,
+            playlist_indices,
+            playlist_msg_ids,
+            original_text=message.text or message.caption or "",
+            video_urls_dict=playlist_video_urls if playlist_video_urls else None,
+        )
+
+    cached_check = get_cached_playlist_videos(get_clean_playlist_url(url), plan.summary_quality_key, playlist_indices)
+    summary = "\n".join([f"Index {idx}: msg_id={cached_check.get(idx, '-')}" for idx in playlist_indices])
+    logger.info(f"[SUMMARY] Playlist cache (quality {plan.summary_quality_key}):\n{summary}")
 
 
 def _is_nsfw_video_delivery(url: str, user_forced_nsfw: bool) -> bool:
@@ -4296,19 +4363,21 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
             stop_anim=stop_anim,
         )
 
-        # --- ADDED: summary of cache after cycle ---
-        if is_playlist and playlist_indices and playlist_msg_ids:
-            #found_type = check_subs_availability(url, user_id, safe_quality_key, return_type=True)
-            subs_enabled = is_subs_enabled(user_id)
-            auto_mode = get_user_subs_auto_mode(user_id)
-            need_subs = determine_need_subs(subs_enabled, found_type, user_id)
-            if not need_subs:
-                # Pass all unique video URLs for additional caching
-                save_to_playlist_cache(get_clean_playlist_url(url), safe_quality_key, playlist_indices, playlist_msg_ids, original_text=message.text or message.caption or "", video_urls_dict=playlist_video_urls if playlist_video_urls else None)
-            else:
-                logger.info("Video with subtitles (subs.txt found) is not cached!")
-            cached_check = get_cached_playlist_videos(get_clean_playlist_url(url), safe_quality_key, playlist_indices)
-            summary = "\n".join([f"Index {idx}: msg_id={cached_check.get(idx, '-')}" for idx in playlist_indices])
-            logger.info(f"[SUMMARY] Playlist cache (quality {safe_quality_key}):\n{summary}")
+        _execute_download_cache_writeback_plan(
+            user_id=user_id,
+            plan=_build_download_cache_writeback_plan(
+                user_id=user_id,
+                is_playlist=is_playlist,
+                playlist_indices=playlist_indices,
+                playlist_msg_ids=playlist_msg_ids,
+                safe_quality_key=safe_quality_key,
+                found_type=found_type,
+            ),
+            url=url,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            playlist_video_urls=playlist_video_urls if playlist_video_urls else None,
+            message=message,
+        )
 
 #########################################
