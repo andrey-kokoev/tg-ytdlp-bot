@@ -41,6 +41,15 @@ class MediaInfoCommandContext:
     command_parts: list[str]
 
 
+@dataclass(frozen=True)
+class MediaInfoCallbackResultPlan:
+    mode: str
+    enabled: bool | None = None
+    answer_text: str | None = None
+    edit_text: str | None = None
+    log_text: str | None = None
+
+
 def _build_mediainfo_command_context(message) -> MediaInfoCommandContext:
     return MediaInfoCommandContext(
         user_id=message.chat.id,
@@ -87,6 +96,61 @@ def _answer_mediainfo_callback(callback_query, text: str | None = None) -> None:
 
 def _edit_mediainfo_callback_message(callback_query, text: str) -> None:
     safe_edit_message_text(callback_query.message.chat.id, callback_query.message.id, text)
+
+
+def _build_mediainfo_callback_result_plan(user_id: int, selection_key: str) -> MediaInfoCallbackResultPlan:
+    messages = safe_get_messages(user_id)
+    if selection_key == "close":
+        return MediaInfoCallbackResultPlan(
+            mode="close",
+            answer_text=messages.MEDIAINFO_MENU_CLOSED_MSG,
+            log_text=messages.MEDIAINFO_MENU_CLOSED_LOG_MSG,
+        )
+    if selection_key == "on":
+        return MediaInfoCallbackResultPlan(
+            mode="apply",
+            enabled=True,
+            answer_text=messages.MEDIAINFO_ENABLED_CALLBACK_MSG,
+            edit_text=messages.MEDIAINFO_ENABLED_CONFIRM_MSG,
+            log_text=messages.MEDIAINFO_ENABLED_LOG_MSG,
+        )
+    if selection_key == "off":
+        return MediaInfoCallbackResultPlan(
+            mode="apply",
+            enabled=False,
+            answer_text=messages.MEDIAINFO_DISABLED_CALLBACK_MSG,
+            edit_text=messages.MEDIAINFO_DISABLED_MSG,
+            log_text=messages.MEDIAINFO_DISABLED_LOG_MSG,
+        )
+    return MediaInfoCallbackResultPlan(mode="noop")
+
+
+def _execute_mediainfo_callback_result_plan(app, execution_context, callback_query, user_id: int, plan: MediaInfoCallbackResultPlan) -> None:
+    if plan.mode == "close":
+        close_request = build_close_message_request(
+            build_telegram_callback_envelope(callback_query),
+            close_scope="mediainfo_option",
+        )
+        handle_close_message_request(
+            app,
+            execution_context,
+            close_request,
+            answer_text=plan.answer_text,
+            log_text=plan.log_text,
+        )
+        return
+
+    if plan.mode == "apply" and plan.enabled is not None:
+        _write_mediainfo_setting(user_id, plan.enabled)
+        if plan.edit_text:
+            _edit_mediainfo_callback_message(callback_query, plan.edit_text)
+        if plan.log_text:
+            send_to_logger(callback_query.message, plan.log_text)
+        if plan.answer_text:
+            try:
+                _answer_mediainfo_callback(callback_query, plan.answer_text)
+            except Exception:
+                pass
 
 @app.on_message(filters.command("mediainfo") & filters.private)
 # @reply_with_keyboard
@@ -155,38 +219,14 @@ def mediainfo_option_callback_logic(app, execution_context, request):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     logger.info(messages.MEDIAINFO_CALLBACK_MSG.format(callback_data=callback_query.data))
-    data = request.selection_key
-    if data == "close":
-        close_request = build_close_message_request(
-            build_telegram_callback_envelope(callback_query),
-            close_scope="mediainfo_option",
-        )
-        handle_close_message_request(
-            app,
-            execution_context,
-            close_request,
-            answer_text=safe_get_messages(user_id).MEDIAINFO_MENU_CLOSED_MSG,
-            log_text=safe_get_messages(user_id).MEDIAINFO_MENU_CLOSED_LOG_MSG,
-        )
-        return
-    if data == "on":
-        _write_mediainfo_setting(user_id, True)
-        _edit_mediainfo_callback_message(callback_query, messages.MEDIAINFO_ENABLED_CONFIRM_MSG)
-        send_to_logger(callback_query.message, messages.MEDIAINFO_ENABLED_LOG_MSG)
-        try:
-            _answer_mediainfo_callback(callback_query, messages.MEDIAINFO_ENABLED_CALLBACK_MSG)
-        except Exception:
-            pass
-        return
-    if data == "off":
-        _write_mediainfo_setting(user_id, False)
-        _edit_mediainfo_callback_message(callback_query, messages.MEDIAINFO_DISABLED_MSG)
-        send_to_logger(callback_query.message, messages.MEDIAINFO_DISABLED_LOG_MSG)
-        try:
-            _answer_mediainfo_callback(callback_query, messages.MEDIAINFO_DISABLED_CALLBACK_MSG)
-        except Exception:
-            pass
-        return
+    plan = _build_mediainfo_callback_result_plan(user_id, request.selection_key)
+    _execute_mediainfo_callback_result_plan(
+        app,
+        execution_context,
+        callback_query,
+        user_id,
+        plan,
+    )
 
 
 def is_mediainfo_enabled(user_id):
