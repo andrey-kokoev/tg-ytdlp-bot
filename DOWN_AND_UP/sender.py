@@ -303,6 +303,53 @@ def _build_sender_caption_fallback_plan(
         timeout_log_text=delivery_plan.timeout_log_text,
     )
 
+
+def _execute_sender_caption_fallback(
+    *,
+    sender_context: SenderExecutionContext,
+    is_spoiler: bool,
+    send_as_file: bool,
+    user_id: int,
+    timeout_attempts: int,
+    minimal_caption: str,
+    send_video_fn,
+    send_document_fn,
+) -> object:
+    caption_fallback_plan = _build_sender_caption_fallback_plan(
+        sender_context=sender_context,
+        is_spoiler=is_spoiler,
+        send_as_file=send_as_file,
+        caption_too_long=True,
+        timeout_attempts=timeout_attempts,
+    )
+    if caption_fallback_plan.send_as_document:
+        return send_document_fn(minimal_caption)
+    try:
+        return _send_with_timeout_fallback(
+            primary_send=lambda: send_video_fn(minimal_caption),
+            fallback_send=lambda: send_document_fn(minimal_caption),
+            attempts=caption_fallback_plan.timeout_attempts,
+            timeout_log_text=caption_fallback_plan.timeout_log_text
+            or safe_get_messages(user_id).SENDER_SEND_VIDEO_MINIMAL_CAPTION_TIMED_OUT_MSG,
+        )
+    except Exception as e:
+        logger.error(safe_get_messages(user_id).SENDER_ERROR_SENDING_VIDEO_MINIMAL_CAPTION_MSG.format(error=e))
+        final_plan = _build_sender_caption_fallback_plan(
+            sender_context=sender_context,
+            is_spoiler=is_spoiler,
+            send_as_file=send_as_file,
+            caption_too_long=True,
+            timeout_attempts=1,
+        )
+        if final_plan.send_as_document:
+            return send_document_fn("")
+        try:
+            return send_video_fn("")
+        except Exception as e3:
+            if _is_timeout_error(e3):
+                return send_document_fn("")
+            raise
+
 # Get app instance for decorators
 app = get_app()
 
@@ -676,46 +723,16 @@ def send_videos(
                 if title_html:
                     minimal_cap += title_html + '\n\n'
                 minimal_cap += link_block
-                
-                try:
-                    caption_fallback_plan = _build_sender_caption_fallback_plan(
-                        sender_context=sender_context,
-                        is_spoiler=is_spoiler,
-                        send_as_file=send_as_file,
-                        caption_too_long=True,
-                        timeout_attempts=2,
-                    )
-                    if caption_fallback_plan.send_as_document:
-                        # If send_as_file is enabled, always use document
-                        video_msg = _fallback_send_document(minimal_cap)
-                    else:
-                        video_msg = _send_with_timeout_fallback(
-                            primary_send=lambda: _try_send_video(minimal_cap),
-                            fallback_send=lambda: _fallback_send_document(minimal_cap),
-                            attempts=caption_fallback_plan.timeout_attempts,
-                            timeout_log_text=caption_fallback_plan.timeout_log_text
-                            or safe_get_messages(user_id).SENDER_SEND_VIDEO_MINIMAL_CAPTION_TIMED_OUT_MSG,
-                        )
-                except Exception as e:
-                    logger.error(safe_get_messages(user_id).SENDER_ERROR_SENDING_VIDEO_MINIMAL_CAPTION_MSG.format(error=e))
-                    # Final fallback: no caption; use document on timeout
-                    try:
-                        final_plan = _build_sender_caption_fallback_plan(
-                            sender_context=sender_context,
-                            is_spoiler=is_spoiler,
-                            send_as_file=send_as_file,
-                            caption_too_long=True,
-                            timeout_attempts=1,
-                        )
-                        if final_plan.send_as_document:
-                            video_msg = _fallback_send_document("")
-                        else:
-                            video_msg = _try_send_video("")
-                    except Exception as e3:
-                        if _is_timeout_error(e3):
-                            video_msg = _fallback_send_document("")
-                        else:
-                            raise
+                video_msg = _execute_sender_caption_fallback(
+                    sender_context=sender_context,
+                    is_spoiler=is_spoiler,
+                    send_as_file=send_as_file,
+                    user_id=user_id,
+                    timeout_attempts=2,
+                    minimal_caption=minimal_cap,
+                    send_video_fn=_try_send_video,
+                    send_document_fn=_fallback_send_document,
+                )
             else:
                 # If the error is not related to the length of the caption, log it and pass it further
                 from HELPERS.logger import send_error_to_user
