@@ -101,6 +101,21 @@ def _attempt_format_cookie_recovery(
     return None
 
 
+def _execute_format_proxy_fallback(
+    *,
+    ytdl_opts: dict,
+    url: str,
+    user_id: int,
+    extract_info_operation,
+):
+    from HELPERS.proxy_helper import try_with_proxy_fallback
+
+    result = try_with_proxy_fallback(ytdl_opts, url, user_id, extract_info_operation)
+    if result is None:
+        return {'error': 'Failed to extract video information with all available proxies'}
+    return result
+
+
 def _try_restore_youtube_cookie_source(
     *,
     user_id: int,
@@ -490,11 +505,12 @@ def get_video_formats(url, user_id=None, playlist_start_index=1, cookies_already
             logger.error(f"Error extracting info for {url}: {e}")
             raise e
     
-    from HELPERS.proxy_helper import try_with_proxy_fallback
-    result = try_with_proxy_fallback(ytdl_opts, url, user_id, extract_info_operation)
-    if result is None:
-        return {'error': 'Failed to extract video information with all available proxies'}
-    return result
+    return _execute_format_proxy_fallback(
+        ytdl_opts=ytdl_opts,
+        url=url,
+        user_id=user_id,
+        extract_info_operation=extract_info_operation,
+    )
 
 
 # YT-DLP HOOK
