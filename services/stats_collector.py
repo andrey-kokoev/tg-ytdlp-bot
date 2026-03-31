@@ -258,14 +258,22 @@ class TelegramProfileFetcher:
     def ttl(self) -> int:
         return self._ttl
 
-    def get_profile(self, user_id: int, force_refresh: bool = False) -> Optional[ProfileInfo]:
-        if not self._token:
-            return None
+    def _get_cached_profile(self, user_id: int, *, force_refresh: bool = False) -> Optional[ProfileInfo]:
         now = time.time()
         with self._lock:
             cached = self._cache.get(user_id)
             if cached and not force_refresh and (now - cached.last_refresh_ts) < self._ttl:
                 return cached
+        return None
+
+    def _store_profile(self, user_id: int, profile: ProfileInfo) -> None:
+        with self._lock:
+            self._cache[user_id] = profile
+
+    def get_profile(self, user_id: int, force_refresh: bool = False) -> Optional[ProfileInfo]:
+        if not self._token:
+            return None
+        cached = self._get_cached_profile(user_id, force_refresh=force_refresh)
         try:
             url = f"https://api.telegram.org/bot{self._token}/getChat"
             resp = self._session.get(url, params={"chat_id": user_id}, timeout=10)
@@ -285,8 +293,7 @@ class TelegramProfileFetcher:
         age_guess = _guess_age_from_text(data.get("bio"))
         if age_guess:
             profile.age = age_guess
-        with self._lock:
-            self._cache[user_id] = profile
+        self._store_profile(user_id, profile)
         return profile
 
     def batch_fetch_profiles(self, user_ids: List[int], max_workers: int = 5) -> Dict[int, ProfileInfo]:
