@@ -300,6 +300,49 @@ class UploadRoutingPlan:
     forward_channel_kind: str | None = None
 
 
+@dataclass(frozen=True)
+class ManualForwardRecoveryPlan:
+    mode: str
+    should_retry_manual: bool
+    should_use_recovery_route: bool
+    should_cache: bool
+
+
+def _build_manual_forward_recovery_plan(
+    *,
+    is_playlist: bool,
+    already_forwarded_to_log: bool,
+    should_retry_manual: bool,
+) -> ManualForwardRecoveryPlan:
+    if is_playlist:
+        return ManualForwardRecoveryPlan(
+            mode="playlist_skip",
+            should_retry_manual=False,
+            should_use_recovery_route=False,
+            should_cache=False,
+        )
+    if already_forwarded_to_log:
+        return ManualForwardRecoveryPlan(
+            mode="already_forwarded_skip",
+            should_retry_manual=False,
+            should_use_recovery_route=False,
+            should_cache=False,
+        )
+    if not should_retry_manual:
+        return ManualForwardRecoveryPlan(
+            mode="non_retryable_skip",
+            should_retry_manual=False,
+            should_use_recovery_route=False,
+            should_cache=False,
+        )
+    return ManualForwardRecoveryPlan(
+        mode="retry",
+        should_retry_manual=True,
+        should_use_recovery_route=True,
+        should_cache=True,
+    )
+
+
 def _build_upload_routing_plan(
     *,
     message,
@@ -4195,14 +4238,12 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                     )
                             else:
                                 # If forwarding failed, try to forward manually and get log channel IDs
-                                # For playlists, skip manual forward if we already tried to forward (to avoid duplicates)
-                                if is_playlist:
-                                    logger.info("down_and_up: forwarding failed for playlist video, but skipping manual forward to avoid duplicates")
-                                elif 'already_forwarded_to_log' in locals() and already_forwarded_to_log:
-                                    logger.info("down_and_up: already forwarded to log; skipping manual forward duplicate")
-                                elif not should_retry_manual:
-                                    logger.info("down_and_up: upload routing is non-retryable; skipping manual forward")
-                                else:
+                                recovery_plan = _build_manual_forward_recovery_plan(
+                                    is_playlist=is_playlist,
+                                    already_forwarded_to_log=already_forwarded_to_log,
+                                    should_retry_manual=should_retry_manual,
+                                )
+                                if recovery_plan.should_use_recovery_route:
                                     logger.info(f"down_and_up: forwarding failed, trying manual forward for video: {video_msg.id}")
                                     try:
                                         manual_route_result = _route_uploaded_video_to_logs(
@@ -4254,6 +4295,10 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                             logger.error("Manual forward also failed, cannot cache video")
                                     except Exception as e:
                                         logger.error(f"Error in manual forward: {e}")
+                                else:
+                                    logger.info(
+                                        f"down_and_up: manual forward skipped ({recovery_plan.mode})"
+                                    )
                         except Exception as e:
                             # Check if error is related to quality_key - if so, ignore it completely
                             if "'quality_key'" in str(e):
@@ -4273,55 +4318,64 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 logger.error(f"Error forwarding video to logger: {e}")
                             # Try to forward manually even after error
                             try:
-                                # Safe quality_key for error recovery (already defined at function start)
-                                
-                                recovery_route_result = _route_uploaded_video_to_logs(
-                                    message=message,
-                                    user_id=user_id,
-                                    video_msg=video_msg,
-                                    url=url,
-                                    user_forced_nsfw=user_forced_nsfw,
-                                    already_forwarded_to_log=already_forwarded_to_log,
+                                recovery_plan = _build_manual_forward_recovery_plan(
                                     is_playlist=False,
-                                    is_split_item=bool(caption_lst and len(caption_lst) > 1),
-                                    video_path=after_rename_abs_path,
-                                    caption_text='' if force_no_title else original_video_title,
-                                    duration=duration,
-                                    width=width,
-                                    height=height,
-                                    thumb_path=thumb_dir,
+                                    already_forwarded_to_log=already_forwarded_to_log,
+                                    should_retry_manual=should_retry_manual,
                                 )
-                                forwarded_msgs = recovery_route_result["forwarded_msgs"]
-                                already_forwarded_to_log = recovery_route_result["already_forwarded_to_log"]
-                                is_nsfw = recovery_route_result["is_nsfw"]
-                                if forwarded_msgs:
-                                    logger.info(f"down_and_up: manual forward after error successful, got IDs: {[m.id for m in forwarded_msgs]}")
-                                    if is_playlist:
-                                        _cache_playlist_video_delivery(
-                                            current_video_index=current_index,
-                                            forwarded_msgs=forwarded_msgs,
-                                            url=url,
-                                            safe_quality_key=safe_quality_key,
-                                            message=message,
-                                            playlist_video_urls=playlist_video_urls,
-                                            playlist_indices=playlist_indices,
-                                            playlist_msg_ids=playlist_msg_ids,
-                                            user_id=user_id,
-                                            found_type=found_type,
-                                        )
+                                if recovery_plan.should_use_recovery_route:
+                                    # Safe quality_key for error recovery (already defined at function start)
+                                    recovery_route_result = _route_uploaded_video_to_logs(
+                                        message=message,
+                                        user_id=user_id,
+                                        video_msg=video_msg,
+                                        url=url,
+                                        user_forced_nsfw=user_forced_nsfw,
+                                        already_forwarded_to_log=already_forwarded_to_log,
+                                        is_playlist=False,
+                                        is_split_item=bool(caption_lst and len(caption_lst) > 1),
+                                        video_path=after_rename_abs_path,
+                                        caption_text='' if force_no_title else original_video_title,
+                                        duration=duration,
+                                        width=width,
+                                        height=height,
+                                        thumb_path=thumb_dir,
+                                    )
+                                    forwarded_msgs = recovery_route_result["forwarded_msgs"]
+                                    already_forwarded_to_log = recovery_route_result["already_forwarded_to_log"]
+                                    is_nsfw = recovery_route_result["is_nsfw"]
+                                    if forwarded_msgs:
+                                        logger.info(f"down_and_up: manual forward after error successful, got IDs: {[m.id for m in forwarded_msgs]}")
+                                        if is_playlist:
+                                            _cache_playlist_video_delivery(
+                                                current_video_index=current_index,
+                                                forwarded_msgs=forwarded_msgs,
+                                                url=url,
+                                                safe_quality_key=safe_quality_key,
+                                                message=message,
+                                                playlist_video_urls=playlist_video_urls,
+                                                playlist_indices=playlist_indices,
+                                                playlist_msg_ids=playlist_msg_ids,
+                                                user_id=user_id,
+                                                found_type=found_type,
+                                            )
+                                        else:
+                                            _cache_single_video_delivery(
+                                                forwarded_msgs=forwarded_msgs,
+                                                url=url,
+                                                safe_quality_key=safe_quality_key,
+                                                message=message,
+                                                user_id=user_id,
+                                                is_nsfw=is_nsfw,
+                                                need_subs=need_subs,
+                                                log_suffix=" (error recovery)",
+                                            )
                                     else:
-                                        _cache_single_video_delivery(
-                                            forwarded_msgs=forwarded_msgs,
-                                            url=url,
-                                            safe_quality_key=safe_quality_key,
-                                            message=message,
-                                            user_id=user_id,
-                                            is_nsfw=is_nsfw,
-                                            need_subs=need_subs,
-                                            log_suffix=" (error recovery)",
-                                        )
+                                        logger.error("Manual forward after error also failed, cannot cache video")
                                 else:
-                                    logger.error("Manual forward after error also failed, cannot cache video")
+                                    logger.info(
+                                        f"down_and_up: manual forward after error skipped ({recovery_plan.mode})"
+                                    )
                             except Exception as e2:
                                 # Check if error is related to quality_key - if so, ignore it completely
                                 if "'quality_key'" in str(e2):
