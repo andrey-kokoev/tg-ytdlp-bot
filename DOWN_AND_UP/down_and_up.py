@@ -324,6 +324,14 @@ class SplitUploadCompletionPlan:
     should_log_skip: bool = False
 
 
+@dataclass(frozen=True)
+class NonSplitUploadCompletionPlan:
+    mode: str
+    should_send_success: bool
+    should_send_mediainfo: bool
+    should_cleanup_media: bool
+
+
 def _build_split_quality_key_recovery_plan(
     *,
     split_msg_ids: list,
@@ -412,6 +420,42 @@ def _execute_split_upload_completion_plan(
     logger.info(f"down_and_up: sending final success message for split video: {success_msg}")
     safe_edit_message_text(user_id, proc_msg_id, success_msg)
     send_to_logger(message, safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG)
+
+
+def _build_non_split_upload_completion_plan() -> NonSplitUploadCompletionPlan:
+    return NonSplitUploadCompletionPlan(
+        mode="final",
+        should_send_success=True,
+        should_send_mediainfo=True,
+        should_cleanup_media=True,
+    )
+
+
+def _execute_non_split_upload_completion_plan(
+    *,
+    plan: NonSplitUploadCompletionPlan,
+    message,
+    user_id: int,
+    proc_msg_id: int,
+    info_text: str,
+    full_bar: str,
+    duration: int,
+    after_rename_abs_path: str,
+    thumb_dir: str | None,
+) -> None:
+    if plan.should_send_success:
+        safe_edit_message_text(
+            user_id,
+            proc_msg_id,
+            f"{info_text}\n{full_bar}   100.0%\n<b>{safe_get_messages(user_id).DOWN_UP_VIDEO_DURATION_MSG}</b> <i>{TimeFormatter(duration * 1000)}</i>\n{safe_get_messages(user_id).DOWN_UP_ONE_FILE_UPLOADED_MSG}",
+        )
+    if plan.should_send_mediainfo:
+        send_mediainfo_if_enabled(user_id, after_rename_abs_path, message)
+    if plan.should_cleanup_media:
+        if os.path.exists(after_rename_abs_path):
+            os.remove(after_rename_abs_path)
+        if thumb_dir and os.path.exists(thumb_dir):
+            os.remove(thumb_dir)
 
 
 def _build_manual_forward_recovery_plan(
@@ -4499,15 +4543,17 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 # end-of-task subs cache clearing handled in unified success branches below
                                 else:
                                     logger.error(f"Error in manual forward after error: {e2}")
-                        safe_edit_message_text(user_id, proc_msg_id,
-                            f"{info_text}\n{full_bar}   100.0%\n<b>{safe_get_messages(user_id).DOWN_UP_VIDEO_DURATION_MSG}</b> <i>{TimeFormatter(duration * 1000)}</i>\n{safe_get_messages(user_id).DOWN_UP_ONE_FILE_UPLOADED_MSG}")
-                        send_mediainfo_if_enabled(user_id, after_rename_abs_path, message)
-                        
-                        # Clean up video file and thumbnail
-                        if os.path.exists(after_rename_abs_path):
-                            os.remove(after_rename_abs_path)
-                        if thumb_dir and os.path.exists(thumb_dir):
-                            os.remove(thumb_dir)
+                        _execute_non_split_upload_completion_plan(
+                            plan=_build_non_split_upload_completion_plan(),
+                            message=message,
+                            user_id=user_id,
+                            proc_msg_id=proc_msg_id,
+                            info_text=info_text,
+                            full_bar=full_bar,
+                            duration=duration,
+                            after_rename_abs_path=after_rename_abs_path,
+                            thumb_dir=thumb_dir,
+                        )
                         pass
                     except Exception as e:
                         logger.error(f"Error sending video: {e}")
