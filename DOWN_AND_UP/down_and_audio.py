@@ -75,7 +75,12 @@ from DOWN_AND_UP.terminal_outcome_result import (
     upload_terminal_outcome,
 )
 from DOWN_AND_UP.runtime_task import RuntimeTask, ensure_runtime_task
-from DOWN_AND_UP.task_plan_executor import execute_recovery_plan
+from DOWN_AND_UP.task_plan_executor import (
+    execute_recovery_plan,
+    execute_completion_plan,
+    execute_plan,
+    PlanCategory,
+)
 from DOWN_AND_UP.task_terminal_flow import attach_and_render_terminal_outcome
 from DOWN_AND_UP.playlist_flow import build_requested_indices, send_playlist_cache_status
 from DOWN_AND_UP.retry_flow import (
@@ -447,6 +452,54 @@ def _build_audio_completion_plan(
     )
 
 
+def _execute_audio_completion_plan_core(
+    *,
+    plan: AudioCompletionPlan,
+    app,
+    user_id: int,
+    proc_msg_id: int,
+    message,
+    outcome,
+    requested_indices: list,
+    quality_key,
+) -> dict[str, Any]:
+    """
+    Core logic for executing AudioCompletionPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "finalized": False,
+        "download_dir_cleaned": False,
+        "playlist_status_sent": False,
+    }
+
+    if plan.should_finalize:
+        _finalize_completed_audio_outcome(
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            message=message,
+            outcome=outcome,
+            task_context=None,
+        )
+        result["finalized"] = True
+    if plan.should_cleanup_download_dir:
+        _cleanup_successful_audio_download_dir(user_id)
+        result["download_dir_cleaned"] = True
+    if plan.should_send_playlist_status:
+        _send_playlist_audio_terminal_status(
+            app=app,
+            user_id=user_id,
+            reply_to_message_id=message.id,
+            message=message,
+            outcome=outcome,
+            requested_indices=requested_indices,
+            quality_key=quality_key,
+        )
+        result["playlist_status_sent"] = True
+
+    return result
+
+
 def _execute_audio_completion_plan(
     *,
     plan: AudioCompletionPlan,
@@ -459,27 +512,68 @@ def _execute_audio_completion_plan(
     requested_indices: list,
     quality_key,
 ) -> RuntimeTask | None:
-    if plan.should_finalize:
-        task_context = _finalize_completed_audio_outcome(
-            user_id=user_id,
-            proc_msg_id=proc_msg_id,
-            message=message,
-            outcome=outcome,
-            task_context=task_context,
-        )
-    if plan.should_cleanup_download_dir:
-        _cleanup_successful_audio_download_dir(user_id)
-    if plan.should_send_playlist_status:
-        _send_playlist_audio_terminal_status(
+    """Legacy executor - for backward compatibility."""
+    _execute_audio_completion_plan_core(
+        plan=plan,
+        app=app,
+        user_id=user_id,
+        proc_msg_id=proc_msg_id,
+        message=message,
+        outcome=outcome,
+        requested_indices=requested_indices,
+        quality_key=quality_key,
+    )
+    return task_context
+
+
+def _execute_audio_completion_plan_with_evidence(
+    *,
+    plan: AudioCompletionPlan,
+    app,
+    user_id: int,
+    proc_msg_id: int,
+    message,
+    outcome,
+    task_context: RuntimeTask | None,
+    requested_indices: list,
+    quality_key,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_audio_completion_plan_core(
+            plan=plan,
             app=app,
             user_id=user_id,
-            reply_to_message_id=message.id,
+            proc_msg_id=proc_msg_id,
             message=message,
             outcome=outcome,
             requested_indices=requested_indices,
             quality_key=quality_key,
         )
-    return task_context
+        return result, task_context
+
+    def _executor(p: AudioCompletionPlan) -> dict[str, Any]:
+        return _execute_audio_completion_plan_core(
+            plan=p,
+            app=app,
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            message=message,
+            outcome=outcome,
+            requested_indices=requested_indices,
+            quality_key=quality_key,
+        )
+
+    new_task, result = execute_completion_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_audio_completion_plan",
+    )
+    return result, new_task
 
 
 def _build_audio_cleanup_plan() -> AudioCleanupPlan:
@@ -492,6 +586,42 @@ def _build_audio_cleanup_plan() -> AudioCleanupPlan:
     )
 
 
+def _execute_audio_cleanup_plan_core(
+    *,
+    plan: AudioCleanupPlan,
+    user_id: int,
+    status_msg_id: int | None,
+    hourglass_msg_id: int | None,
+    download_started_msg_id: int | None,
+    stop_anim,
+) -> dict[str, Any]:
+    """
+    Core logic for executing AudioCleanupPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "status_deleted": False,
+        "hourglass_deleted": False,
+        "download_started_deleted": False,
+        "animation_stopped": False,
+    }
+
+    if plan.delete_status_message and status_msg_id:
+        safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
+        result["status_deleted"] = True
+    if plan.delete_hourglass_message and hourglass_msg_id:
+        safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
+        result["hourglass_deleted"] = True
+    if plan.delete_download_started_message and download_started_msg_id:
+        safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
+        result["download_started_deleted"] = True
+    if plan.stop_animation:
+        stop_anim.set()
+        result["animation_stopped"] = True
+
+    return result
+
+
 def _execute_audio_cleanup_plan(
     *,
     plan: AudioCleanupPlan,
@@ -501,14 +631,59 @@ def _execute_audio_cleanup_plan(
     download_started_msg_id: int | None,
     stop_anim,
 ) -> None:
-    if plan.delete_status_message and status_msg_id:
-        safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
-    if plan.delete_hourglass_message and hourglass_msg_id:
-        safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
-    if plan.delete_download_started_message and download_started_msg_id:
-        safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
-    if plan.stop_animation:
-        stop_anim.set()
+    """Legacy executor - for backward compatibility."""
+    _execute_audio_cleanup_plan_core(
+        plan=plan,
+        user_id=user_id,
+        status_msg_id=status_msg_id,
+        hourglass_msg_id=hourglass_msg_id,
+        download_started_msg_id=download_started_msg_id,
+        stop_anim=stop_anim,
+    )
+
+
+def _execute_audio_cleanup_plan_with_evidence(
+    *,
+    plan: AudioCleanupPlan,
+    user_id: int,
+    status_msg_id: int | None,
+    hourglass_msg_id: int | None,
+    download_started_msg_id: int | None,
+    stop_anim,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_audio_cleanup_plan_core(
+            plan=plan,
+            user_id=user_id,
+            status_msg_id=status_msg_id,
+            hourglass_msg_id=hourglass_msg_id,
+            download_started_msg_id=download_started_msg_id,
+            stop_anim=stop_anim,
+        )
+        return result, task_context
+
+    def _executor(p: AudioCleanupPlan) -> dict[str, Any]:
+        return _execute_audio_cleanup_plan_core(
+            plan=p,
+            user_id=user_id,
+            status_msg_id=status_msg_id,
+            hourglass_msg_id=hourglass_msg_id,
+            download_started_msg_id=download_started_msg_id,
+            stop_anim=stop_anim,
+        )
+
+    new_task, result = execute_completion_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_audio_cleanup_plan",
+    )
+    return result, new_task
 
 
 @dataclass(frozen=True)
@@ -524,6 +699,262 @@ class AudioSingleCacheReplayPlan:
     mode: str
     should_replay: bool
     should_return_early: bool
+
+
+def _execute_audio_cache_replay_plan_core(
+    *,
+    plan: AudioCacheReplayPlan,
+    app,
+    message,
+    user_id: int,
+    url: str,
+    cached_videos: dict,
+    requested_indices: list,
+    uncached_indices: list,
+    user_forced_nsfw: bool,
+    send_as_file: bool,
+) -> dict[str, Any]:
+    """
+    Core logic for executing AudioCacheReplayPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "cache_replayed": False,
+        "reposted_count": 0,
+        "return_early": False,
+        "skip_partial": False,
+    }
+
+    if not plan.should_replay_cache:
+        if plan.should_skip_partial_replay:
+            result["skip_partial"] = True
+        return result
+
+    if not send_as_file:
+        try:
+            _repost_audio_cache_entries(
+                app=app,
+                message=message,
+                user_id=user_id,
+                url=url,
+                cached_videos=cached_videos,
+                requested_indices=requested_indices,
+                user_forced_nsfw=user_forced_nsfw,
+            )
+            result["cache_replayed"] = True
+            result["reposted_count"] = len(cached_videos)
+        except Exception as e:
+            logger.error(f"down_and_audio: error reposting cached audio playlist: {e}")
+    else:
+        logger.info(f"[AUDIO CACHE] send_as_file enabled for user {user_id}, skipping cache repost for playlist")
+
+    if plan.should_return_early and len(uncached_indices) == 0:
+        result["return_early"] = True
+
+    return result
+
+
+def _execute_audio_cache_replay_plan(
+    *,
+    plan: AudioCacheReplayPlan,
+    app,
+    message,
+    user_id: int,
+    url: str,
+    cached_videos: dict,
+    requested_indices: list,
+    uncached_indices: list,
+    user_forced_nsfw: bool,
+    send_as_file: bool,
+) -> dict[str, Any]:
+    """Legacy executor - for backward compatibility."""
+    return _execute_audio_cache_replay_plan_core(
+        plan=plan,
+        app=app,
+        message=message,
+        user_id=user_id,
+        url=url,
+        cached_videos=cached_videos,
+        requested_indices=requested_indices,
+        uncached_indices=uncached_indices,
+        user_forced_nsfw=user_forced_nsfw,
+        send_as_file=send_as_file,
+    )
+
+
+def _execute_audio_cache_replay_plan_with_evidence(
+    *,
+    plan: AudioCacheReplayPlan,
+    app,
+    message,
+    user_id: int,
+    url: str,
+    cached_videos: dict,
+    requested_indices: list,
+    uncached_indices: list,
+    user_forced_nsfw: bool,
+    send_as_file: bool,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_audio_cache_replay_plan_core(
+            plan=plan,
+            app=app,
+            message=message,
+            user_id=user_id,
+            url=url,
+            cached_videos=cached_videos,
+            requested_indices=requested_indices,
+            uncached_indices=uncached_indices,
+            user_forced_nsfw=user_forced_nsfw,
+            send_as_file=send_as_file,
+        )
+        return result, task_context
+
+    def _executor(p: AudioCacheReplayPlan) -> dict[str, Any]:
+        return _execute_audio_cache_replay_plan_core(
+            plan=p,
+            app=app,
+            message=message,
+            user_id=user_id,
+            url=url,
+            cached_videos=cached_videos,
+            requested_indices=requested_indices,
+            uncached_indices=uncached_indices,
+            user_forced_nsfw=user_forced_nsfw,
+            send_as_file=send_as_file,
+        )
+
+    new_task, result = execute_plan(
+        task_context,
+        plan,
+        _executor,
+        category=PlanCategory.ACQUISITION,
+        executor_name="_execute_audio_cache_replay_plan",
+    )
+    return result, new_task
+
+
+def _execute_audio_single_cache_replay_plan_core(
+    *,
+    plan: AudioSingleCacheReplayPlan,
+    app,
+    message,
+    user_id: int,
+    url: str,
+    quality_key,
+    cached_ids,
+    is_nsfw: bool,
+) -> dict[str, Any]:
+    """
+    Core logic for executing AudioSingleCacheReplayPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "cache_replayed": False,
+        "return_early": False,
+    }
+
+    if not plan.should_replay:
+        return result
+
+    replayed = _execute_audio_single_cache_replay(
+        app=app,
+        message=message,
+        user_id=user_id,
+        url=url,
+        quality_key=quality_key,
+        cached_ids=cached_ids,
+        is_nsfw=is_nsfw,
+        logger=logger,
+        send_to_logger=send_to_logger,
+    )
+
+    if replayed:
+        result["cache_replayed"] = True
+        if plan.should_return_early:
+            result["return_early"] = True
+
+    return result
+
+
+def _execute_audio_single_cache_replay_plan(
+    *,
+    plan: AudioSingleCacheReplayPlan,
+    app,
+    message,
+    user_id: int,
+    url: str,
+    quality_key,
+    cached_ids,
+    is_nsfw: bool,
+) -> dict[str, Any]:
+    """Legacy executor - for backward compatibility."""
+    return _execute_audio_single_cache_replay_plan_core(
+        plan=plan,
+        app=app,
+        message=message,
+        user_id=user_id,
+        url=url,
+        quality_key=quality_key,
+        cached_ids=cached_ids,
+        is_nsfw=is_nsfw,
+    )
+
+
+def _execute_audio_single_cache_replay_plan_with_evidence(
+    *,
+    plan: AudioSingleCacheReplayPlan,
+    app,
+    message,
+    user_id: int,
+    url: str,
+    quality_key,
+    cached_ids,
+    is_nsfw: bool,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_audio_single_cache_replay_plan_core(
+            plan=plan,
+            app=app,
+            message=message,
+            user_id=user_id,
+            url=url,
+            quality_key=quality_key,
+            cached_ids=cached_ids,
+            is_nsfw=is_nsfw,
+        )
+        return result, task_context
+
+    def _executor(p: AudioSingleCacheReplayPlan) -> dict[str, Any]:
+        return _execute_audio_single_cache_replay_plan_core(
+            plan=p,
+            app=app,
+            message=message,
+            user_id=user_id,
+            url=url,
+            quality_key=quality_key,
+            cached_ids=cached_ids,
+            is_nsfw=is_nsfw,
+        )
+
+    new_task, result = execute_plan(
+        task_context,
+        plan,
+        _executor,
+        category=PlanCategory.ACQUISITION,
+        executor_name="_execute_audio_single_cache_replay_plan",
+    )
+    return result, new_task
 
 
 def _repost_audio_cache_entries(
@@ -943,6 +1374,7 @@ def _execute_audio_download_error_plan_with_evidence(
             did_proxy_retry=did_proxy_retry,
             try_download_audio=try_download_audio,
             current_index=current_index,
+            task_context=task_context,
         )
         if retry_result is not None:
             return {
@@ -1434,18 +1866,32 @@ def _build_audio_retry_route_plan(*, url: str, error_text: str) -> AudioRetryRou
     )
 
 
-def _maybe_retry_audio_download_after_error(
+def _execute_audio_retry_route_plan_core(
     *,
+    plan: AudioRetryRoutePlan,
     user_id: int,
     url: str,
     error_text: str,
     did_proxy_retry: bool,
     try_download_audio,
     current_index: int,
-):
-    retry_route_plan = _build_audio_retry_route_plan(url=url, error_text=error_text)
-    if retry_route_plan.should_retry_proxy:
-        retry_result, did_proxy_retry = maybe_retry_with_proxy_on_geo_error(
+) -> dict[str, Any]:
+    """
+    Core execution logic for audio retry route plan.
+
+    Returns dict with retry result and updated state.
+    """
+    result = {
+        "retry_result": None,
+        "did_proxy_retry": did_proxy_retry,
+        "was_routed": False,
+        "route": None,
+    }
+
+    if plan.should_retry_proxy:
+        result["was_routed"] = True
+        result["route"] = "proxy"
+        retry_result, new_did_proxy_retry = maybe_retry_with_proxy_on_geo_error(
             user_id=user_id,
             url=url,
             error_text=error_text,
@@ -1459,12 +1905,19 @@ def _maybe_retry_audio_download_after_error(
             success_log_text="Audio download retry with proxy successful for user {user_id}",
             failure_log_text="Audio download retry with proxy failed for user {user_id}",
         )
-        return retry_result, did_proxy_retry
+        result["retry_result"] = retry_result
+        result["did_proxy_retry"] = new_did_proxy_retry
+        return result
 
-    if retry_route_plan.should_skip:
+    if plan.should_skip:
+        result["was_routed"] = True
+        result["route"] = "skip"
         logger.info("Error appears to be non-cookie-related for %s, skipping cookie fallback", url)
-        return None, did_proxy_retry
+        return result
 
+    # Cookie retry path
+    result["was_routed"] = True
+    result["route"] = "cookie"
     logger.info(
         "Non-YouTube audio download error detected for user %s, attempting cookie fallback",
         user_id,
@@ -1483,6 +1936,89 @@ def _maybe_retry_audio_download_after_error(
         logger.info("Audio download retry with cookie fallback successful for user %s", user_id)
     else:
         logger.warning("Audio download retry with cookie fallback failed for user %s", user_id)
+    result["retry_result"] = retry_result
+    return result
+
+
+def _execute_audio_retry_route_plan_with_evidence(
+    *,
+    plan: AudioRetryRoutePlan,
+    user_id: int,
+    url: str,
+    error_text: str,
+    did_proxy_retry: bool,
+    try_download_audio,
+    current_index: int,
+    task_context: RuntimeTask | None,
+) -> tuple[Any, bool, RuntimeTask | None]:
+    """
+    PDA-refactored audio retry route executor using TaskPlanExecutor.
+
+    Returns (retry_result, did_proxy_retry, updated_task) with execution evidence recorded.
+    """
+    def _executor(p: AudioRetryRoutePlan) -> dict[str, Any]:
+        return _execute_audio_retry_route_plan_core(
+            plan=p,
+            user_id=user_id,
+            url=url,
+            error_text=error_text,
+            did_proxy_retry=did_proxy_retry,
+            try_download_audio=try_download_audio,
+            current_index=current_index,
+        )
+
+    if task_context is None:
+        # No task context - execute without evidence recording
+        exec_result = _executor(plan)
+        return (
+            exec_result["retry_result"],
+            exec_result["did_proxy_retry"],
+            task_context,
+        )
+
+    # Execute with evidence recording (RECOVERY category for routing decisions)
+    new_task, exec_result = execute_recovery_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_audio_retry_route_plan",
+    )
+
+    return (
+        exec_result["retry_result"],
+        exec_result["did_proxy_retry"],
+        new_task,
+    )
+
+
+def _maybe_retry_audio_download_after_error(
+    *,
+    user_id: int,
+    url: str,
+    error_text: str,
+    did_proxy_retry: bool,
+    try_download_audio,
+    current_index: int,
+    task_context: RuntimeTask | None = None,
+):
+    """
+    Legacy executor - attempts audio download retry based on error type.
+
+    If task_context is provided, execution evidence is recorded.
+    """
+    retry_route_plan = _build_audio_retry_route_plan(url=url, error_text=error_text)
+
+    retry_result, did_proxy_retry, new_task = _execute_audio_retry_route_plan_with_evidence(
+        plan=retry_route_plan,
+        user_id=user_id,
+        url=url,
+        error_text=error_text,
+        did_proxy_retry=did_proxy_retry,
+        try_download_audio=try_download_audio,
+        current_index=current_index,
+        task_context=task_context,
+    )
+
     return retry_result, did_proxy_retry
 
 

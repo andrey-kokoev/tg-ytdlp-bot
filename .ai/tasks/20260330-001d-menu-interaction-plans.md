@@ -1,99 +1,106 @@
 # Task: Migrate Menu Interaction Plans to TaskPlanExecutor
 
 ## Metadata
-- **Status**: 📋 Ready
+- **Status**: ✅ Complete
 - **Priority**: LOWEST
 - **Created**: 2026-03-30
-- **Plans**: 14
+- **Completed**: 2026-03-30
+- **Plans**: 14 (1 migrated, 13 skipped)
 - **Category**: PDA Migration
 
 ## Background
 Menu interaction plans handle UI state and callback routing. These have lower evidence value because they represent user interactions rather than execution decisions.
 
-## Plans to Migrate
+## Migration Summary
 
-### Always Ask Menu Plans (DOWN_AND_UP/always_ask_menu.py)
-1. **AlwaysAskSubsMenuPlan** - Subtitle selection menu
-2. **AlwaysAskDubsMenuPlan** - Dub selection menu
-3. **AlwaysAskFilterUpdatePlan** - Filter update handling
-4. **AlwaysAskQualitySelectionPlan** - Quality selection
-5. **AlwaysAskSpecialActionPlan** - Special action menu
-6. **AlwaysAskClosePlan** - Menu close handling
-7. **AlwaysAskNavigationPlan** - Menu navigation
-8. **AlwaysAskOtherFormatSelectionPlan** - Format selection
-9. **AlwaysAskManualQualitySelectionPlan** - Manual quality input
-10. **QualityMenuRenderPlan** - Menu rendering
-11. **CachedQualitiesMenuPlan** - Cached quality display
-12. **OtherQualitiesMenuPlan** - Other quality options
+### Migrated Plans
 
-### Gallery Transition
-13. **GalleryFallbackTransitionPlan** (DOWN_AND_UP/always_ask_menu.py)
-    - Category: ROUTING
-    - Evidence value: Gallery fallback decisions
+#### 1. GalleryFallbackTransitionPlan (DOWN_AND_UP/always_ask_menu.py) ✅
+- **Category**: ROUTING
+- **Evidence value**: Gallery fallback decisions have execution impact
+- **Implementation**:
+  - Added `_execute_gallery_fallback_transition_plan_core()` - Core execution logic
+  - Added `_execute_gallery_fallback_transition_plan_with_evidence()` - Evidence-aware wrapper
+  - Updated `fallback_gallery_dl_callback_logic()` to use evidence-aware executor
+  - Added import for `execute_routing_plan` from TaskPlanExecutor
 
-### Tags
-14. **TagsCallbackResultPlan** (COMMANDS/tag_cmd.py)
-    - Category: ROUTING
-    - Evidence value: Tag extraction results
+### Skipped Plans (13 AlwaysAsk Menu Plans)
 
-## Low Priority Rationale
+The following plans were **explicitly skipped** based on the rationale below:
 
-Menu plans have limited evidence value:
+| Plan | Location | Skip Rationale |
+|------|----------|----------------|
+| AlwaysAskSubsMenuPlan | always_ask_menu.py | User decision, transient state |
+| AlwaysAskDubsMenuPlan | always_ask_menu.py | User decision, transient state |
+| AlwaysAskFilterUpdatePlan | always_ask_menu.py | UI state update, no execution impact |
+| AlwaysAskQualitySelectionPlan | always_ask_menu.py | User decision, captured in branch selection |
+| AlwaysAskSpecialActionPlan | always_ask_menu.py | UI navigation, no execution impact |
+| AlwaysAskClosePlan | always_ask_menu.py | UI cleanup, no execution impact |
+| AlwaysAskNavigationPlan | always_ask_menu.py | UI pagination, no execution impact |
+| AlwaysAskOtherFormatSelectionPlan | always_ask_menu.py | User decision, captured in branch selection |
+| AlwaysAskManualQualitySelectionPlan | always_ask_menu.py | User input, captured in format selection |
+| QualityMenuRenderPlan | always_ask_menu.py | UI rendering, no execution impact |
+| CachedQualitiesMenuPlan | always_ask_menu.py | UI display, no execution impact |
+| OtherQualitiesMenuPlan | always_ask_menu.py | UI display, no execution impact |
+| TagsCallbackResultPlan | COMMANDS/tag_cmd.py | User interaction, logged separately |
 
-1. **User decisions, not system decisions**: Menu selections reflect user choice, not system policy
-2. **Transient state**: Menu state is ephemeral (selection made, menu closed)
-3. **Debugging value**: Low - user interactions are logged separately in Telegram
+## Skip Rationale
 
-## Migration Approach (if undertaken)
+### Why Skip Most Menu Plans?
 
-If migrated, use ROUTING category:
+1. **User decisions, not system decisions**: Menu selections reflect user choice, not system policy. The actual execution decisions are already captured in branch selection results.
+
+2. **Transient state**: Menu state is ephemeral (selection made, menu closed). The resulting action (download, fallback, etc.) is what matters for debugging.
+
+3. **Low debugging value**: User interactions are logged separately in Telegram callback queries. The execution path is determined by branch selection, not menu rendering.
+
+4. **Evidence redundancy**: Quality/format selections are already captured when branch selection results are recorded on the RuntimeTask.
+
+### Why Migrate GalleryFallbackTransitionPlan?
+
+This plan has **execution impact**:
+- It triggers a new download flow via gallery-dl
+- Creates a new RuntimeTask with branch selection
+- Represents a routing decision between yt-dlp and gallery-dl engines
+- Important for debugging fallback scenarios
+
+## Implementation Pattern Used
 
 ```python
-def _execute_menu_plan_with_evidence(
-    plan: MenuPlanType,
-    task_context: RuntimeTask | None,
-) -> tuple[ResultType, RuntimeTask]:
-    def _executor(p: MenuPlanType) -> ResultType:
-        return _execute_menu_plan_core(p)
-    
-    if task_context is None:
-        return _executor(plan), task_context
+# Core executor extracted for reuse
+def _execute_plan_core(*, plan: PlanType, ...) -> dict:
+    ...
+
+# Evidence-aware wrapper using TaskPlanExecutor
+def _execute_plan_with_evidence(
+    *,
+    plan: PlanType,
+    ...
+) -> tuple[dict, RuntimeTask]:
+    def _executor(p: PlanType) -> dict:
+        return _execute_plan_core(plan=p, ...)
     
     new_task, result = execute_routing_plan(
         task_context,
         plan,
         _executor,
-        executor_name="_execute_menu_plan",
+        executor_name="_execute_plan",
     )
     return result, new_task
 ```
 
 ## Evidence Target
 
-Menu plan evidence would go to `artifact_refs` (ROUTING category).
+GalleryFallbackTransitionPlan evidence goes to `artifact_refs` (ROUTING category).
 
-## When to Migrate
+## Acceptance Criteria
 
-Consider migrating only if:
-1. Debugging complex menu state issues
-2. Tracking menu→execution correlation
-3. Audit requirements for user selections
-
-## Alternative: Skip Migration
-
-Menu plans may not need migration. Consider:
-- Leaving as-is (no evidence recording)
-- Using simpler logging instead
-- Migrating only GalleryFallbackTransitionPlan (has execution impact)
-
-## Acceptance Criteria (if undertaken)
-
-- [ ] GalleryFallbackTransitionPlan migrated (highest value)
-- [ ] Other menu plans migrated OR explicitly skipped
-- [ ] Documentation of skip rationale
-- [ ] Tests passing
+- [x] GalleryFallbackTransitionPlan migrated (highest value)
+- [x] Other menu plans explicitly skipped with documented rationale
+- [x] All 208 tests passing
+- [x] No regression in menu functionality
 
 ## Dependencies
 
 - All other migration tasks complete
-- Decision on whether to migrate or skip
+- TaskPlanExecutor infrastructure available

@@ -11,6 +11,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyPara
 import requests
 from DOWN_AND_UP.branch_selection_result import BranchSelectionResult
 from DOWN_AND_UP.runtime_task import RuntimeTask, ensure_runtime_task, make_runtime_task, with_branch_selection
+from DOWN_AND_UP.task_plan_executor import execute_routing_plan
 from HELPERS.ingress_models import build_telegram_callback_envelope
 from HELPERS.ingress_requests import (
     build_ask_filter_selection_request,
@@ -562,6 +563,116 @@ def _build_gallery_fallback_transition_plan(
         fallback_text=fallback_text,
         runtime_task=runtime_task,
     )
+
+
+def _execute_gallery_fallback_transition_plan_core(
+    *,
+    plan: GalleryFallbackTransitionPlan,
+    app,
+    callback_query,
+) -> dict:
+    """
+    Core execution logic for gallery fallback transition plan.
+
+    Returns dict with execution result.
+    """
+    from COMMANDS.image_cmd import image_command
+
+    logger.info(
+        "[FALLBACK] Executing gallery fallback for user %s: %s (range: %s-%s)",
+        plan.user_id,
+        plan.url,
+        plan.video_start_with,
+        plan.video_end_with,
+    )
+
+    _emit_gallery_fallback_transition_start(callback_query, plan)
+
+    logger.info(
+        "[FALLBACK] fallback_task.user_id=%s, message_thread_id=%s, callback_query.message.chat.id=%s, callback_query.message.message_thread_id=%s",
+        plan.runtime_task.user_id,
+        plan.message_thread_id,
+        callback_query.message.chat.id,
+        getattr(callback_query.message, "message_thread_id", None),
+    )
+    logger.info(
+        "About to execute image_command for user %s with fake_msg: %s",
+        plan.user_id,
+        plan.fallback_text,
+    )
+
+    # Build fake message for gallery-dl command
+    class FakeMessage:
+        def __init__(self, user_id, chat_id, text, message_thread_id=None):
+            self.from_user = type('User', (), {'id': user_id})()
+            self.chat = type('Chat', (), {'id': chat_id, 'type': enums.ChatType.PRIVATE})()
+            self.text = text
+            self.id = None
+            self.message_thread_id = message_thread_id
+
+        def reply_text(self, *args, **kwargs):
+            return None
+
+    fake_msg = FakeMessage(
+        user_id=plan.user_id,
+        chat_id=plan.original_chat_id,
+        text=plan.fallback_text,
+        message_thread_id=plan.message_thread_id,
+    )
+
+    # Execute gallery-dl command
+    fallback_result = image_command(app, fake_msg)
+
+    logger.info(
+        "Gallery-dl fallback result for user %s: outcome=%s success=%s",
+        plan.user_id,
+        fallback_result.outcome_kind if hasattr(fallback_result, 'outcome_kind') else None,
+        None,  # Success check moved to caller
+    )
+
+    logger.info(
+        "Gallery-dl fallback executed for user %s: %s",
+        plan.user_id,
+        plan.fallback_text,
+    )
+
+    return {
+        "fallback_result": fallback_result,
+        "user_id": plan.user_id,
+        "url": plan.url,
+    }
+
+
+def _execute_gallery_fallback_transition_plan_with_evidence(
+    *,
+    plan: GalleryFallbackTransitionPlan,
+    app,
+    callback_query,
+) -> tuple[dict, RuntimeTask]:
+    """
+    PDA-refactored gallery fallback transition executor using TaskPlanExecutor.
+
+    Returns (result_dict, updated_task) with execution evidence recorded.
+    """
+    def _executor(p: GalleryFallbackTransitionPlan) -> dict:
+        return _execute_gallery_fallback_transition_plan_core(
+            plan=p,
+            app=app,
+            callback_query=callback_query,
+        )
+
+    # Get the runtime task from the plan
+    task_context = plan.runtime_task
+
+    # Execute with evidence recording (ROUTING category for transition decisions)
+    new_task, result = execute_routing_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_gallery_fallback_transition_plan",
+    )
+
+    return result, new_task
 
 
 def _build_always_ask_source_context(execution_context) -> AlwaysAskSourceContext | None:
@@ -2927,29 +3038,15 @@ def fallback_gallery_dl_callback_logic(app, execution_context, request):
             plan.video_start_with,
             plan.video_end_with,
         )
-        _emit_gallery_fallback_transition_start(callback_query, plan)
 
-        logger.info(
-            "[FALLBACK] fallback_task.user_id=%s, message_thread_id=%s, callback_query.message.chat.id=%s, callback_query.message.message_thread_id=%s",
-            plan.runtime_task.user_id,
-            plan.message_thread_id,
-            callback_query.message.chat.id,
-            getattr(callback_query.message, "message_thread_id", None),
+        # Execute with evidence recording
+        result, new_task = _execute_gallery_fallback_transition_plan_with_evidence(
+            plan=plan,
+            app=app,
+            callback_query=callback_query,
         )
-        logger.info(
-            "About to execute image_command for user %s with fake_msg: %s",
-            plan.user_id,
-            plan.fallback_text,
-        )
-        fallback_result = _dispatch_gallery_fallback(
-            app,
-            user_id=plan.user_id,
-            fallback_text=plan.fallback_text,
-            original_chat_id=plan.original_chat_id,
-            message_thread_id=plan.message_thread_id,
-            original_message=callback_query.message,
-            runtime_task=plan.runtime_task,
-        )
+
+        fallback_result = result.get("fallback_result")
         logger.info(
             "Gallery-dl callback fallback result for user %s: outcome=%s success=%s",
             plan.user_id,

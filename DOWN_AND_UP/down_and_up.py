@@ -82,7 +82,14 @@ from DOWN_AND_UP.terminal_outcome_result import (
     upload_terminal_outcome,
 )
 from DOWN_AND_UP.runtime_task import RuntimeTask, ensure_runtime_task, with_branch_selection
-from DOWN_AND_UP.task_plan_executor import execute_routing_plan
+from DOWN_AND_UP.task_plan_executor import (
+    execute_routing_plan,
+    execute_terminal_plan,
+    execute_recovery_plan,
+    execute_completion_plan,
+    execute_plan,
+    PlanCategory,
+)
 from DOWN_AND_UP.task_terminal_flow import attach_and_render_terminal_outcome
 from DOWN_AND_UP.playlist_flow import build_requested_indices, send_playlist_cache_status
 from DOWN_AND_UP.retry_flow import (
@@ -396,6 +403,53 @@ def _build_split_quality_key_terminal_plan(
     )
 
 
+def _execute_split_quality_key_terminal_plan_core(
+    *,
+    plan: SplitQualityKeyTerminalPlan,
+    message,
+    user_id: int,
+    proc_msg_id: int,
+    url: str | None,
+    safe_quality_key: str | None,
+    split_msg_ids: list,
+) -> dict[str, Any]:
+    """
+    Core logic for executing SplitQualityKeyTerminalPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "finalized": False,
+        "status_edited": False,
+        "log_sent": False,
+        "subs_state_cleared": False,
+        "cache_saved": False,
+    }
+
+    if not plan.should_finalize:
+        return result
+
+    result["finalized"] = True
+    success_msg = _build_video_terminal_status(user_id, plan.final_video_count)
+    safe_edit_message_text(user_id, proc_msg_id, success_msg)
+    result["status_edited"] = True
+    send_to_logger(message, success_msg)
+    result["log_sent"] = True
+    _clear_video_subtitle_state(user_id, url)
+    result["subs_state_cleared"] = True
+    if plan.should_cache and url and safe_quality_key:
+        logger.info(f"down_and_up: saving split video to cache after quality_key error: {split_msg_ids}")
+        _save_video_cache_with_logging(
+            url,
+            safe_quality_key,
+            split_msg_ids,
+            original_text=message.text or message.caption or "",
+            user_id=user_id,
+        )
+        result["cache_saved"] = True
+
+    return result
+
+
 def _execute_split_quality_key_terminal_plan(
     *,
     plan: SplitQualityKeyTerminalPlan,
@@ -406,21 +460,63 @@ def _execute_split_quality_key_terminal_plan(
     safe_quality_key: str | None,
     split_msg_ids: list,
 ) -> None:
-    if not plan.should_finalize:
-        return
-    success_msg = _build_video_terminal_status(user_id, plan.final_video_count)
-    safe_edit_message_text(user_id, proc_msg_id, success_msg)
-    send_to_logger(message, success_msg)
-    _clear_video_subtitle_state(user_id, url)
-    if plan.should_cache and url and safe_quality_key:
-        logger.info(f"down_and_up: saving split video to cache after quality_key error: {split_msg_ids}")
-        _save_video_cache_with_logging(
-            url,
-            safe_quality_key,
-            split_msg_ids,
-            original_text=message.text or message.caption or "",
+    """Legacy executor - for backward compatibility."""
+    _execute_split_quality_key_terminal_plan_core(
+        plan=plan,
+        message=message,
+        user_id=user_id,
+        proc_msg_id=proc_msg_id,
+        url=url,
+        safe_quality_key=safe_quality_key,
+        split_msg_ids=split_msg_ids,
+    )
+
+
+def _execute_split_quality_key_terminal_plan_with_evidence(
+    *,
+    plan: SplitQualityKeyTerminalPlan,
+    message,
+    user_id: int,
+    proc_msg_id: int,
+    url: str | None,
+    safe_quality_key: str | None,
+    split_msg_ids: list,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_split_quality_key_terminal_plan_core(
+            plan=plan,
+            message=message,
             user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            url=url,
+            safe_quality_key=safe_quality_key,
+            split_msg_ids=split_msg_ids,
         )
+        return result, task_context
+
+    def _executor(p: SplitQualityKeyTerminalPlan) -> dict[str, Any]:
+        return _execute_split_quality_key_terminal_plan_core(
+            plan=p,
+            message=message,
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            url=url,
+            safe_quality_key=safe_quality_key,
+            split_msg_ids=split_msg_ids,
+        )
+
+    new_task, result = execute_terminal_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_split_quality_key_terminal_plan",
+    )
+    return result, new_task
 
 
 def _build_split_upload_completion_plan(
@@ -459,6 +555,51 @@ def _build_split_upload_completion_plan(
     )
 
 
+def _execute_split_upload_completion_plan_core(
+    *,
+    plan: SplitUploadCompletionPlan,
+    message,
+    user_id: int,
+    proc_msg_id: int,
+    url: str,
+    split_msg_ids: list,
+) -> dict[str, Any]:
+    """
+    Core logic for executing SplitUploadCompletionPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "cache_saved": False,
+        "skip_logged": False,
+        "status_edited": False,
+        "log_sent": False,
+    }
+
+    if plan.should_save_cache:
+        _save_video_cache_with_logging(
+            url,
+            plan.final_quality_key,
+            split_msg_ids,
+            original_text=message.text or message.caption or "",
+            user_id=user_id,
+        )
+        result["cache_saved"] = True
+    elif plan.should_log_skip:
+        logger.info(
+            f"Split video with subtitles is not cached (quality={plan.final_quality_key}) - different users may need different languages"
+        )
+        result["skip_logged"] = True
+
+    success_msg = _build_video_terminal_status(user_id, plan.final_video_count)
+    logger.info(f"down_and_up: sending final success message for split video: {success_msg}")
+    safe_edit_message_text(user_id, proc_msg_id, success_msg)
+    result["status_edited"] = True
+    send_to_logger(message, safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG)
+    result["log_sent"] = True
+
+    return result
+
+
 def _execute_split_upload_completion_plan(
     *,
     plan: SplitUploadCompletionPlan,
@@ -468,23 +609,59 @@ def _execute_split_upload_completion_plan(
     url: str,
     split_msg_ids: list,
 ) -> None:
-    if plan.should_save_cache:
-        _save_video_cache_with_logging(
-            url,
-            plan.final_quality_key,
-            split_msg_ids,
-            original_text=message.text or message.caption or "",
+    """Legacy executor - for backward compatibility."""
+    _execute_split_upload_completion_plan_core(
+        plan=plan,
+        message=message,
+        user_id=user_id,
+        proc_msg_id=proc_msg_id,
+        url=url,
+        split_msg_ids=split_msg_ids,
+    )
+
+
+def _execute_split_upload_completion_plan_with_evidence(
+    *,
+    plan: SplitUploadCompletionPlan,
+    message,
+    user_id: int,
+    proc_msg_id: int,
+    url: str,
+    split_msg_ids: list,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_split_upload_completion_plan_core(
+            plan=plan,
+            message=message,
             user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            url=url,
+            split_msg_ids=split_msg_ids,
         )
-    elif plan.should_log_skip:
-        logger.info(
-            f"Split video with subtitles is not cached (quality={plan.final_quality_key}) - different users may need different languages"
+        return result, task_context
+
+    def _executor(p: SplitUploadCompletionPlan) -> dict[str, Any]:
+        return _execute_split_upload_completion_plan_core(
+            plan=p,
+            message=message,
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            url=url,
+            split_msg_ids=split_msg_ids,
         )
 
-    success_msg = _build_video_terminal_status(user_id, plan.final_video_count)
-    logger.info(f"down_and_up: sending final success message for split video: {success_msg}")
-    safe_edit_message_text(user_id, proc_msg_id, success_msg)
-    send_to_logger(message, safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG)
+    new_task, result = execute_completion_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_split_upload_completion_plan",
+    )
+    return result, new_task
 
 
 def _build_non_split_upload_completion_plan() -> NonSplitUploadCompletionPlan:
@@ -494,6 +671,47 @@ def _build_non_split_upload_completion_plan() -> NonSplitUploadCompletionPlan:
         should_send_mediainfo=True,
         should_cleanup_media=True,
     )
+
+
+def _execute_non_split_upload_completion_plan_core(
+    *,
+    plan: NonSplitUploadCompletionPlan,
+    user_id: int,
+    proc_msg_id: int,
+    info_text: str,
+    full_bar: str,
+    duration: int,
+    after_rename_abs_path: str,
+    thumb_dir: str | None,
+) -> dict[str, Any]:
+    """
+    Core logic for executing NonSplitUploadCompletionPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "success_sent": False,
+        "mediainfo_sent": False,
+        "media_cleaned": False,
+    }
+
+    if plan.should_send_success:
+        safe_edit_message_text(
+            user_id,
+            proc_msg_id,
+            f"{info_text}\n{full_bar}   100.0%\n<b>{safe_get_messages(user_id).DOWN_UP_VIDEO_DURATION_MSG}</b> <i>{TimeFormatter(duration * 1000)}</i>\n{safe_get_messages(user_id).DOWN_UP_ONE_FILE_UPLOADED_MSG}",
+        )
+        result["success_sent"] = True
+    if plan.should_send_mediainfo:
+        send_mediainfo_if_enabled(user_id, after_rename_abs_path, message)
+        result["mediainfo_sent"] = True
+    if plan.should_cleanup_media:
+        if os.path.exists(after_rename_abs_path):
+            os.remove(after_rename_abs_path)
+        if thumb_dir and os.path.exists(thumb_dir):
+            os.remove(thumb_dir)
+        result["media_cleaned"] = True
+
+    return result
 
 
 def _execute_non_split_upload_completion_plan(
@@ -508,19 +726,68 @@ def _execute_non_split_upload_completion_plan(
     after_rename_abs_path: str,
     thumb_dir: str | None,
 ) -> None:
-    if plan.should_send_success:
-        safe_edit_message_text(
-            user_id,
-            proc_msg_id,
-            f"{info_text}\n{full_bar}   100.0%\n<b>{safe_get_messages(user_id).DOWN_UP_VIDEO_DURATION_MSG}</b> <i>{TimeFormatter(duration * 1000)}</i>\n{safe_get_messages(user_id).DOWN_UP_ONE_FILE_UPLOADED_MSG}",
+    """Legacy executor - for backward compatibility."""
+    _execute_non_split_upload_completion_plan_core(
+        plan=plan,
+        user_id=user_id,
+        proc_msg_id=proc_msg_id,
+        info_text=info_text,
+        full_bar=full_bar,
+        duration=duration,
+        after_rename_abs_path=after_rename_abs_path,
+        thumb_dir=thumb_dir,
+    )
+
+
+def _execute_non_split_upload_completion_plan_with_evidence(
+    *,
+    plan: NonSplitUploadCompletionPlan,
+    message,
+    user_id: int,
+    proc_msg_id: int,
+    info_text: str,
+    full_bar: str,
+    duration: int,
+    after_rename_abs_path: str,
+    thumb_dir: str | None,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_non_split_upload_completion_plan_core(
+            plan=plan,
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            info_text=info_text,
+            full_bar=full_bar,
+            duration=duration,
+            after_rename_abs_path=after_rename_abs_path,
+            thumb_dir=thumb_dir,
         )
-    if plan.should_send_mediainfo:
-        send_mediainfo_if_enabled(user_id, after_rename_abs_path, message)
-    if plan.should_cleanup_media:
-        if os.path.exists(after_rename_abs_path):
-            os.remove(after_rename_abs_path)
-        if thumb_dir and os.path.exists(thumb_dir):
-            os.remove(thumb_dir)
+        return result, task_context
+
+    def _executor(p: NonSplitUploadCompletionPlan) -> dict[str, Any]:
+        return _execute_non_split_upload_completion_plan_core(
+            plan=p,
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            info_text=info_text,
+            full_bar=full_bar,
+            duration=duration,
+            after_rename_abs_path=after_rename_abs_path,
+            thumb_dir=thumb_dir,
+        )
+
+    new_task, result = execute_completion_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_non_split_upload_completion_plan",
+    )
+    return result, new_task
 
 
 def _build_upload_cache_writeback_plan(
@@ -542,6 +809,74 @@ def _build_upload_cache_writeback_plan(
     )
 
 
+def _execute_upload_cache_writeback_plan_core(
+    *,
+    plan: UploadCacheWritebackPlan,
+    forwarded_msgs: list,
+    current_video_index: int,
+    url: str,
+    safe_quality_key: str,
+    message,
+    user_id: int,
+    playlist_video_urls: dict,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    found_type,
+    is_nsfw: bool,
+    need_subs: bool,
+) -> dict[str, Any]:
+    """
+    Core logic for executing UploadCacheWritebackPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "cache_saved": False,
+        "mode": plan.mode,
+        "playlist_index_added": False,
+        "single_cached": False,
+    }
+
+    if not plan.should_cache:
+        return result
+
+    if plan.mode == "playlist":
+        video_urls_dict = (
+            {current_video_index: playlist_video_urls.get(current_video_index)}
+            if current_video_index in playlist_video_urls
+            else None
+        )
+        save_to_playlist_cache(
+            get_clean_playlist_url(url),
+            safe_quality_key,
+            [current_video_index],
+            [m.id for m in forwarded_msgs],
+            original_text=message.text or message.caption or "",
+            video_urls_dict=video_urls_dict,
+        )
+        result["cache_saved"] = True
+        cached_check = get_cached_playlist_videos(get_clean_playlist_url(url), safe_quality_key, [current_video_index])
+        logger.info(f"Checking the cache immediately after writing: {cached_check}")
+        playlist_indices.append(current_video_index)
+        playlist_msg_ids.extend([m.id for m in forwarded_msgs])
+        result["playlist_index_added"] = True
+        result["cached_check"] = len(cached_check)
+        return result
+
+    _cache_single_video_delivery(
+        forwarded_msgs=forwarded_msgs,
+        url=url,
+        safe_quality_key=safe_quality_key,
+        message=message,
+        user_id=user_id,
+        is_nsfw=is_nsfw,
+        need_subs=need_subs,
+        log_suffix=plan.cache_log_suffix,
+    )
+    result["single_cached"] = True
+
+    return result
+
+
 def _execute_upload_cache_writeback_plan(
     *,
     plan: UploadCacheWritebackPlan,
@@ -558,37 +893,88 @@ def _execute_upload_cache_writeback_plan(
     is_nsfw: bool,
     need_subs: bool,
 ) -> None:
-    if not plan.should_cache:
-        return
-    if plan.mode == "playlist":
-        video_urls_dict = (
-            {current_video_index: playlist_video_urls.get(current_video_index)}
-            if current_video_index in playlist_video_urls
-            else None
-        )
-        save_to_playlist_cache(
-            get_clean_playlist_url(url),
-            safe_quality_key,
-            [current_video_index],
-            [m.id for m in forwarded_msgs],
-            original_text=message.text or message.caption or "",
-            video_urls_dict=video_urls_dict,
-        )
-        cached_check = get_cached_playlist_videos(get_clean_playlist_url(url), safe_quality_key, [current_video_index])
-        logger.info(f"Checking the cache immediately after writing: {cached_check}")
-        playlist_indices.append(current_video_index)
-        playlist_msg_ids.extend([m.id for m in forwarded_msgs])
-        return
-    _cache_single_video_delivery(
+    """Legacy executor - for backward compatibility."""
+    _execute_upload_cache_writeback_plan_core(
+        plan=plan,
         forwarded_msgs=forwarded_msgs,
+        current_video_index=current_video_index,
         url=url,
         safe_quality_key=safe_quality_key,
         message=message,
         user_id=user_id,
+        playlist_video_urls=playlist_video_urls,
+        playlist_indices=playlist_indices,
+        playlist_msg_ids=playlist_msg_ids,
+        found_type=found_type,
         is_nsfw=is_nsfw,
         need_subs=need_subs,
-        log_suffix=plan.cache_log_suffix,
     )
+
+
+def _execute_upload_cache_writeback_plan_with_evidence(
+    *,
+    plan: UploadCacheWritebackPlan,
+    forwarded_msgs: list,
+    current_video_index: int,
+    url: str,
+    safe_quality_key: str,
+    message,
+    user_id: int,
+    playlist_video_urls: dict,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    found_type,
+    is_nsfw: bool,
+    need_subs: bool,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_upload_cache_writeback_plan_core(
+            plan=plan,
+            forwarded_msgs=forwarded_msgs,
+            current_video_index=current_video_index,
+            url=url,
+            safe_quality_key=safe_quality_key,
+            message=message,
+            user_id=user_id,
+            playlist_video_urls=playlist_video_urls,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            found_type=found_type,
+            is_nsfw=is_nsfw,
+            need_subs=need_subs,
+        )
+        return result, task_context
+
+    def _executor(p: UploadCacheWritebackPlan) -> dict[str, Any]:
+        return _execute_upload_cache_writeback_plan_core(
+            plan=p,
+            forwarded_msgs=forwarded_msgs,
+            current_video_index=current_video_index,
+            url=url,
+            safe_quality_key=safe_quality_key,
+            message=message,
+            user_id=user_id,
+            playlist_video_urls=playlist_video_urls,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            found_type=found_type,
+            is_nsfw=is_nsfw,
+            need_subs=need_subs,
+        )
+
+    new_task, result = execute_plan(
+        task_context,
+        plan,
+        _executor,
+        category=PlanCategory.DELIVERY,
+        executor_name="_execute_upload_cache_writeback_plan",
+    )
+    return result, new_task
 
 
 def _handle_manual_forward_success(
@@ -764,6 +1150,7 @@ def _handle_route_result_post_upload(
     thumb_dir,
     caption_lst,
     force_no_title: bool,
+    task_context: RuntimeTask | None = None,
 ) -> tuple[bool, bool]:
     forwarded_msgs = route_result["forwarded_msgs"]
     already_forwarded_to_log = route_result["already_forwarded_to_log"]
@@ -799,39 +1186,38 @@ def _handle_route_result_post_upload(
             already_forwarded_to_log=already_forwarded_to_log,
             should_retry_manual=should_retry_manual,
         )
-        if recovery_plan.should_use_recovery_route:
-            logger.info(f"down_and_up: forwarding failed, trying manual forward for video: {video_msg.id}")
-            try:
-                _handle_manual_forward_retry(
-                    message=message,
-                    user_id=user_id,
-                    video_msg=video_msg,
-                    url=url,
-                    user_forced_nsfw=user_forced_nsfw,
-                    already_forwarded_to_log=already_forwarded_to_log,
-                    is_split_item=bool(caption_lst and len(caption_lst) > 1),
-                    video_path=after_rename_abs_path,
-                    caption_text='' if force_no_title else original_video_title,
-                    duration=duration,
-                    width=width,
-                    height=height,
-                    thumb_path=thumb_dir,
-                    recovery_label="successful",
-                    use_manual_suffix=True,
-                    is_playlist=is_playlist,
-                    current_video_index=current_index,
-                    safe_quality_key=safe_quality_key,
-                    playlist_video_urls=playlist_video_urls,
-                    playlist_indices=playlist_indices,
-                    playlist_msg_ids=playlist_msg_ids,
-                    found_type=found_type,
-                    is_nsfw=is_nsfw,
-                    need_subs=need_subs,
-                )
-            except Exception as e:
-                logger.error(f"Error in manual forward: {e}")
-        else:
-            logger.info(f"down_and_up: manual forward skipped ({recovery_plan.mode})")
+        # Execute recovery plan with evidence recording
+        recovery_result, new_task = _execute_manual_forward_recovery_plan_with_evidence(
+            plan=recovery_plan,
+            message=message,
+            user_id=user_id,
+            video_msg=video_msg,
+            url=url,
+            user_forced_nsfw=user_forced_nsfw,
+            already_forwarded_to_log=already_forwarded_to_log,
+            is_split_item=bool(caption_lst and len(caption_lst) > 1),
+            video_path=after_rename_abs_path,
+            caption_text='' if force_no_title else original_video_title,
+            duration=duration,
+            width=width,
+            height=height,
+            thumb_path=thumb_dir,
+            recovery_label="successful",
+            use_manual_suffix=True,
+            is_playlist=is_playlist,
+            current_video_index=current_index,
+            safe_quality_key=safe_quality_key,
+            playlist_video_urls=playlist_video_urls,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            found_type=found_type,
+            is_nsfw=is_nsfw,
+            need_subs=need_subs,
+            task_context=task_context,
+        )
+        if recovery_result.get("executed"):
+            already_forwarded_to_log = recovery_result.get("already_forwarded_to_log", already_forwarded_to_log)
+            is_nsfw = recovery_result.get("is_nsfw", is_nsfw)
     return already_forwarded_to_log, is_nsfw
 
 
@@ -864,6 +1250,7 @@ def _handle_upload_route_error(
     need_subs: bool,
     found_type,
     force_no_title: bool,
+    task_context: RuntimeTask | None = None,
 ) -> None:
     if "'quality_key'" in str(error):
         logger.info(f"quality_key error ignored (non-critical): {error}")
@@ -887,37 +1274,35 @@ def _handle_upload_route_error(
             already_forwarded_to_log=already_forwarded_to_log,
             should_retry_manual=should_retry_manual,
         )
-        if recovery_plan.should_use_recovery_route:
-            forwarded_msgs, already_forwarded_to_log, is_nsfw = _handle_manual_forward_retry(
-                message=message,
-                user_id=user_id,
-                video_msg=video_msg,
-                url=url,
-                user_forced_nsfw=user_forced_nsfw,
-                already_forwarded_to_log=already_forwarded_to_log,
-                is_split_item=bool(caption_lst and len(caption_lst) > 1),
-                video_path=after_rename_abs_path,
-                caption_text='' if force_no_title else original_video_title,
-                duration=duration,
-                width=width,
-                height=height,
-                thumb_path=thumb_dir,
-                recovery_label="after error",
-                use_manual_suffix=False,
-                is_playlist=is_playlist,
-                current_video_index=current_index,
-                safe_quality_key=safe_quality_key,
-                playlist_video_urls=playlist_video_urls,
-                playlist_indices=playlist_indices,
-                playlist_msg_ids=playlist_msg_ids,
-                found_type=found_type,
-                is_nsfw=user_forced_nsfw,
-                need_subs=need_subs,
-            )
-        else:
-            logger.info(
-                f"down_and_up: manual forward after error skipped ({recovery_plan.mode})"
-            )
+        # Execute recovery plan with evidence recording
+        recovery_result, new_task = _execute_manual_forward_recovery_plan_with_evidence(
+            plan=recovery_plan,
+            message=message,
+            user_id=user_id,
+            video_msg=video_msg,
+            url=url,
+            user_forced_nsfw=user_forced_nsfw,
+            already_forwarded_to_log=already_forwarded_to_log,
+            is_split_item=bool(caption_lst and len(caption_lst) > 1),
+            video_path=after_rename_abs_path,
+            caption_text='' if force_no_title else original_video_title,
+            duration=duration,
+            width=width,
+            height=height,
+            thumb_path=thumb_dir,
+            recovery_label="after error",
+            use_manual_suffix=False,
+            is_playlist=is_playlist,
+            current_video_index=current_index,
+            safe_quality_key=safe_quality_key,
+            playlist_video_urls=playlist_video_urls,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            found_type=found_type,
+            is_nsfw=user_forced_nsfw,
+            need_subs=need_subs,
+            task_context=task_context,
+        )
     except Exception as e2:
         if "'quality_key'" in str(e2):
             logger.info(f"quality_key error ignored (non-critical): {e2}")
@@ -1027,6 +1412,169 @@ def _build_manual_forward_recovery_plan(
         should_use_recovery_route=True,
         should_cache=True,
     )
+
+
+def _execute_manual_forward_recovery_plan_core(
+    *,
+    plan: ManualForwardRecoveryPlan,
+    message,
+    user_id: int,
+    video_msg,
+    url: str,
+    user_forced_nsfw: bool,
+    already_forwarded_to_log: bool,
+    is_split_item: bool,
+    video_path: str,
+    caption_text: str,
+    duration: int,
+    width: int,
+    height: int,
+    thumb_path: str | None,
+    recovery_label: str,
+    use_manual_suffix: bool,
+    is_playlist: bool,
+    current_video_index: int,
+    safe_quality_key: str,
+    playlist_video_urls: dict,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    found_type,
+    is_nsfw: bool,
+    need_subs: bool,
+) -> dict[str, Any]:
+    """
+    Core execution logic for manual forward recovery plan.
+
+    Returns dict with execution result and state changes.
+    """
+    result = {
+        "executed": False,
+        "forwarded_msgs": None,
+        "already_forwarded_to_log": already_forwarded_to_log,
+        "is_nsfw": is_nsfw,
+        "error": None,
+    }
+
+    if not plan.should_use_recovery_route:
+        logger.info(f"down_and_up: manual forward skipped ({plan.mode})")
+        return result
+
+    logger.info(f"down_and_up: forwarding failed, trying manual forward for video: {video_msg.id}")
+    try:
+        forwarded_msgs, new_already_forwarded_to_log, new_is_nsfw = _handle_manual_forward_retry(
+            message=message,
+            user_id=user_id,
+            video_msg=video_msg,
+            url=url,
+            user_forced_nsfw=user_forced_nsfw,
+            already_forwarded_to_log=already_forwarded_to_log,
+            is_split_item=is_split_item,
+            video_path=video_path,
+            caption_text=caption_text,
+            duration=duration,
+            width=width,
+            height=height,
+            thumb_path=thumb_path,
+            recovery_label=recovery_label,
+            use_manual_suffix=use_manual_suffix,
+            is_playlist=is_playlist,
+            current_video_index=current_video_index,
+            safe_quality_key=safe_quality_key,
+            playlist_video_urls=playlist_video_urls,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            found_type=found_type,
+            is_nsfw=is_nsfw,
+            need_subs=need_subs,
+        )
+        result["executed"] = True
+        result["forwarded_msgs"] = forwarded_msgs
+        result["already_forwarded_to_log"] = new_already_forwarded_to_log
+        result["is_nsfw"] = new_is_nsfw
+    except Exception as e:
+        logger.error(f"Error in manual forward: {e}")
+        result["error"] = str(e)
+
+    return result
+
+
+def _execute_manual_forward_recovery_plan_with_evidence(
+    *,
+    plan: ManualForwardRecoveryPlan,
+    message,
+    user_id: int,
+    video_msg,
+    url: str,
+    user_forced_nsfw: bool,
+    already_forwarded_to_log: bool,
+    is_split_item: bool,
+    video_path: str,
+    caption_text: str,
+    duration: int,
+    width: int,
+    height: int,
+    thumb_path: str | None,
+    recovery_label: str,
+    use_manual_suffix: bool,
+    is_playlist: bool,
+    current_video_index: int,
+    safe_quality_key: str,
+    playlist_video_urls: dict,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    found_type,
+    is_nsfw: bool,
+    need_subs: bool,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored manual forward recovery executor using TaskPlanExecutor.
+
+    Returns (result_dict, updated_task) with execution evidence recorded.
+    """
+    def _executor(p: ManualForwardRecoveryPlan) -> dict[str, Any]:
+        return _execute_manual_forward_recovery_plan_core(
+            plan=p,
+            message=message,
+            user_id=user_id,
+            video_msg=video_msg,
+            url=url,
+            user_forced_nsfw=user_forced_nsfw,
+            already_forwarded_to_log=already_forwarded_to_log,
+            is_split_item=is_split_item,
+            video_path=video_path,
+            caption_text=caption_text,
+            duration=duration,
+            width=width,
+            height=height,
+            thumb_path=thumb_path,
+            recovery_label=recovery_label,
+            use_manual_suffix=use_manual_suffix,
+            is_playlist=is_playlist,
+            current_video_index=current_video_index,
+            safe_quality_key=safe_quality_key,
+            playlist_video_urls=playlist_video_urls,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            found_type=found_type,
+            is_nsfw=is_nsfw,
+            need_subs=need_subs,
+        )
+
+    if task_context is None:
+        # No task context - execute without evidence recording
+        result = _executor(plan)
+        return result, task_context
+
+    # Execute with evidence recording (RECOVERY category)
+    new_task, result = execute_recovery_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_manual_forward_recovery_plan",
+    )
+
+    return result, new_task
 
 
 def _build_upload_routing_plan(
@@ -1292,6 +1840,58 @@ def _build_download_terminal_plan(
     )
 
 
+def _execute_download_terminal_plan_core(
+    *,
+    user_id: int,
+    proc_msg_id: int,
+    message,
+    app,
+    plan: DownloadTerminalPlan,
+    outcome,
+    url: str,
+    is_playlist: bool,
+    safe_quality_key: str | None,
+    requested_indices: list | None,
+) -> dict[str, Any]:
+    """
+    Core logic for executing DownloadTerminalPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "status_edited": False,
+        "log_sent": False,
+        "subs_state_cleared": False,
+        "download_dir_cleaned": False,
+        "playlist_status_sent": False,
+    }
+
+    if plan.status_text:
+        safe_edit_message_text(user_id, proc_msg_id, plan.status_text)
+        result["status_edited"] = True
+    if plan.log_text:
+        send_to_logger(message, plan.log_text)
+        result["log_sent"] = True
+    if plan.clear_subs_state:
+        _clear_video_subtitle_state(user_id, url)
+        result["subs_state_cleared"] = True
+    if plan.clear_download_dir:
+        _cleanup_successful_video_download_dir(user_id)
+        result["download_dir_cleaned"] = True
+    if plan.send_playlist_status and is_playlist and safe_quality_key and requested_indices:
+        _send_playlist_video_terminal_status(
+            app=app,
+            user_id=user_id,
+            reply_to_message_id=plan.playlist_reply_to_message_id or proc_msg_id,
+            message=message,
+            outcome=outcome,
+            requested_indices=requested_indices,
+            safe_quality_key=safe_quality_key,
+        )
+        result["playlist_status_sent"] = True
+
+    return result
+
+
 def _execute_download_terminal_plan(
     *,
     user_id: int,
@@ -1306,25 +1906,76 @@ def _execute_download_terminal_plan(
     safe_quality_key: str | None,
     requested_indices: list | None,
 ) -> RuntimeTask | None:
-    if plan.status_text:
-        safe_edit_message_text(user_id, proc_msg_id, plan.status_text)
-    if plan.log_text:
-        send_to_logger(message, plan.log_text)
-    if plan.clear_subs_state:
-        _clear_video_subtitle_state(user_id, url)
-    if plan.clear_download_dir:
-        _cleanup_successful_video_download_dir(user_id)
-    if plan.send_playlist_status and is_playlist and safe_quality_key and requested_indices:
-        _send_playlist_video_terminal_status(
-            app=app,
-            user_id=user_id,
-            reply_to_message_id=plan.playlist_reply_to_message_id or proc_msg_id,
-            message=message,
-            outcome=outcome,
-            requested_indices=requested_indices,
-            safe_quality_key=safe_quality_key,
-        )
+    """Legacy executor - for backward compatibility."""
+    _execute_download_terminal_plan_core(
+        user_id=user_id,
+        proc_msg_id=proc_msg_id,
+        message=message,
+        app=app,
+        plan=plan,
+        outcome=outcome,
+        url=url,
+        is_playlist=is_playlist,
+        safe_quality_key=safe_quality_key,
+        requested_indices=requested_indices,
+    )
     return task_context
+
+
+def _execute_download_terminal_plan_with_evidence(
+    *,
+    user_id: int,
+    proc_msg_id: int,
+    message,
+    app,
+    plan: DownloadTerminalPlan,
+    task_context: RuntimeTask | None,
+    outcome,
+    url: str,
+    is_playlist: bool,
+    safe_quality_key: str | None,
+    requested_indices: list | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_download_terminal_plan_core(
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            message=message,
+            app=app,
+            plan=plan,
+            outcome=outcome,
+            url=url,
+            is_playlist=is_playlist,
+            safe_quality_key=safe_quality_key,
+            requested_indices=requested_indices,
+        )
+        return result, task_context
+
+    def _executor(p: DownloadTerminalPlan) -> dict[str, Any]:
+        return _execute_download_terminal_plan_core(
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            message=message,
+            app=app,
+            plan=p,
+            outcome=outcome,
+            url=url,
+            is_playlist=is_playlist,
+            safe_quality_key=safe_quality_key,
+            requested_indices=requested_indices,
+        )
+
+    new_task, result = execute_terminal_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_download_terminal_plan",
+    )
+    return result, new_task
 
 
 def _build_download_error_plan(
@@ -1356,6 +2007,104 @@ def _build_download_error_plan(
     )
 
 
+def _execute_download_error_plan_core(
+    *,
+    message,
+    user_id: int,
+    proc_msg_id: int,
+    app,
+    plan: DownloadErrorPlan,
+    error_text: str | None,
+    url: str,
+    indices_to_download: list | None,
+    successful_uploads: int | None,
+    split_msg_ids: list | None,
+    is_playlist: bool,
+    status_msg_id: int | None,
+    hourglass_msg_id: int | None,
+    download_started_msg_id: int | None,
+    playlist_name: str | None,
+) -> dict[str, Any]:
+    """
+    Core logic for executing DownloadErrorPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "mode": plan.mode,
+        "quality_key_handled": False,
+        "failure_sent": False,
+        "temp_files_cleaned": False,
+        "status_messages_deleted": False,
+        "playlist_error_cleared": False,
+    }
+
+    if plan.mode == "quality_key":
+        logger.info(f"{plan.log_text}: {error_text}")
+        if split_msg_ids and not is_playlist:
+            logger.info(f"HARD FIX: Processing split video completion after quality_key error: {split_msg_ids}")
+            _finalize_split_video_success_after_quality_key_error(
+                user_id=user_id,
+                proc_msg_id=proc_msg_id,
+                message=message,
+                split_msg_ids=split_msg_ids,
+                url=url,
+            )
+            result["quality_key_handled"] = True
+    elif plan.mode == "timeout":
+        _send_video_failure(
+            message,
+            user_id,
+            failure_kind=plan.failure_kind or "timeout",
+            attempted_count=len(indices_to_download) if indices_to_download else 0,
+            delivered_count=successful_uploads or 0,
+            task_context=None,
+        )
+        result["failure_sent"] = True
+        log_error_to_channel(message, plan.log_text or LoggerMsg.DOWNLOAD_TIMEOUT_LOG, url)
+    else:
+        logger.error(plan.log_text or f"Error in video download: {error_text}")
+        _send_video_failure(
+            message,
+            user_id,
+            failure_kind=plan.failure_kind or "download_failed",
+            error_text=error_text,
+            attempted_count=len(indices_to_download) if indices_to_download else 0,
+            delivered_count=successful_uploads or 0,
+            task_context=None,
+        )
+        result["failure_sent"] = True
+
+    if plan.cleanup_temp_files:
+        try:
+            cleanup_user_temp_files(user_id)
+            result["temp_files_cleaned"] = True
+        except Exception as cleanup_error:
+            logger.error(f"Error cleaning up temp files after error for user {user_id}: {cleanup_error}")
+
+    if plan.delete_status_messages:
+        try:
+            if status_msg_id:
+                safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
+            if hourglass_msg_id:
+                safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
+            result["status_messages_deleted"] = True
+        except Exception:
+            pass
+
+    if plan.delete_status_messages and download_started_msg_id:
+        try:
+            safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
+        except Exception:
+            pass
+
+    if plan.clear_playlist_error_state and is_playlist:
+        if playlist_name:
+            clear_playlist_error_state(f"{user_id}_{playlist_name}")
+            result["playlist_error_cleared"] = True
+
+    return result
+
+
 def _execute_download_error_plan(
     *,
     message,
@@ -1375,67 +2124,151 @@ def _execute_download_error_plan(
     download_started_msg_id: int | None,
     stop_anim,
 ) -> None:
-    if plan.mode == "quality_key":
-        logger.info(f"{plan.log_text}: {error_text}")
-        if split_msg_ids and not is_playlist:
-            logger.info(f"HARD FIX: Processing split video completion after quality_key error: {split_msg_ids}")
-            _finalize_split_video_success_after_quality_key_error(
-                user_id=user_id,
-                proc_msg_id=proc_msg_id,
-                message=message,
-                split_msg_ids=split_msg_ids,
-                url=url,
-            )
-    elif plan.mode == "timeout":
-        _send_video_failure(
-            message,
-            user_id,
-            failure_kind=plan.failure_kind or "timeout",
-            attempted_count=len(indices_to_download) if indices_to_download else 0,
-            delivered_count=successful_uploads or 0,
-            task_context=task_context,
-        )
-        log_error_to_channel(message, plan.log_text or LoggerMsg.DOWNLOAD_TIMEOUT_LOG, url)
-    else:
-        logger.error(plan.log_text or f"Error in video download: {error_text}")
-        _send_video_failure(
-            message,
-            user_id,
-            failure_kind=plan.failure_kind or "download_failed",
+    """Legacy executor - for backward compatibility."""
+    _execute_download_error_plan_core(
+        message=message,
+        user_id=user_id,
+        proc_msg_id=proc_msg_id,
+        app=app,
+        plan=plan,
+        error_text=error_text,
+        url=url,
+        indices_to_download=indices_to_download,
+        successful_uploads=successful_uploads,
+        split_msg_ids=split_msg_ids,
+        is_playlist=is_playlist,
+        status_msg_id=status_msg_id,
+        hourglass_msg_id=hourglass_msg_id,
+        download_started_msg_id=download_started_msg_id,
+        playlist_name=None,
+    )
+
+
+def _execute_download_error_plan_with_evidence(
+    *,
+    message,
+    user_id: int,
+    task_context: RuntimeTask | None,
+    proc_msg_id: int,
+    app,
+    plan: DownloadErrorPlan,
+    error_text: str | None,
+    url: str,
+    indices_to_download: list | None,
+    successful_uploads: int | None,
+    split_msg_ids: list | None,
+    is_playlist: bool,
+    status_msg_id: int | None,
+    hourglass_msg_id: int | None,
+    download_started_msg_id: int | None,
+    playlist_name: str | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_download_error_plan_core(
+            message=message,
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            app=app,
+            plan=plan,
             error_text=error_text,
-            attempted_count=len(indices_to_download) if indices_to_download else 0,
-            delivered_count=successful_uploads or 0,
-            task_context=task_context,
+            url=url,
+            indices_to_download=indices_to_download,
+            successful_uploads=successful_uploads,
+            split_msg_ids=split_msg_ids,
+            is_playlist=is_playlist,
+            status_msg_id=status_msg_id,
+            hourglass_msg_id=hourglass_msg_id,
+            download_started_msg_id=download_started_msg_id,
+            playlist_name=playlist_name,
         )
+        return result, task_context
+
+    def _executor(p: DownloadErrorPlan) -> dict[str, Any]:
+        return _execute_download_error_plan_core(
+            message=message,
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            app=app,
+            plan=p,
+            error_text=error_text,
+            url=url,
+            indices_to_download=indices_to_download,
+            successful_uploads=successful_uploads,
+            split_msg_ids=split_msg_ids,
+            is_playlist=is_playlist,
+            status_msg_id=status_msg_id,
+            hourglass_msg_id=hourglass_msg_id,
+            download_started_msg_id=download_started_msg_id,
+            playlist_name=playlist_name,
+        )
+
+    new_task, result = execute_recovery_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_download_error_plan",
+    )
+    return result, new_task
+
+
+def _build_download_cleanup_plan() -> DownloadCleanupPlan:
+    return DownloadCleanupPlan(mode="final")
+
+
+def _execute_download_cleanup_plan_core(
+    *,
+    user_id: int,
+    plan: DownloadCleanupPlan,
+    status_msg_id: int | None,
+    hourglass_msg_id: int | None,
+    download_started_msg_id: int | None,
+    stop_anim,
+) -> dict[str, Any]:
+    """
+    Core logic for executing DownloadCleanupPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "temp_files_cleaned": False,
+        "status_messages_deleted": False,
+        "download_started_deleted": False,
+        "animation_stopped": False,
+    }
 
     if plan.cleanup_temp_files:
         try:
             cleanup_user_temp_files(user_id)
-        except Exception as cleanup_error:
-            logger.error(f"Error cleaning up temp files after error for user {user_id}: {cleanup_error}")
-
+            result["temp_files_cleaned"] = True
+        except Exception as e:
+            logger.error(f"Error cleaning up temp files for user {user_id}: {e}")
     if plan.delete_status_messages:
         try:
             if status_msg_id:
                 safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
             if hourglass_msg_id:
                 safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
-        except Exception:
-            pass
-
-    if plan.delete_status_messages and download_started_msg_id:
+            result["status_messages_deleted"] = True
+        except Exception as e:
+            logger.error(f"Error deleting status messages: {e}")
+    if plan.delete_download_started_message:
         try:
-            safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
+            if download_started_msg_id:
+                safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
+            result["download_started_deleted"] = True
+        except Exception:
+            pass
+    if plan.stop_animation:
+        try:
+            stop_anim.set()
+            result["animation_stopped"] = True
         except Exception:
             pass
 
-    if plan.clear_playlist_error_state and is_playlist:
-        if playlist_name:
-            clear_playlist_error_state(f"{user_id}_{playlist_name}")
-
-
-def _build_download_cleanup_plan() -> DownloadCleanupPlan:
-    return DownloadCleanupPlan(mode="final")
+    return result
 
 
 def _execute_download_cleanup_plan(
@@ -1447,30 +2280,59 @@ def _execute_download_cleanup_plan(
     download_started_msg_id: int | None,
     stop_anim,
 ) -> None:
-    if plan.cleanup_temp_files:
-        try:
-            cleanup_user_temp_files(user_id)
-        except Exception as e:
-            logger.error(f"Error cleaning up temp files for user {user_id}: {e}")
-    if plan.delete_status_messages:
-        try:
-            if status_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
-            if hourglass_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
-        except Exception as e:
-            logger.error(f"Error deleting status messages: {e}")
-    if plan.delete_download_started_message:
-        try:
-            if download_started_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
-        except Exception:
-            pass
-    if plan.stop_animation:
-        try:
-            stop_anim.set()
-        except Exception:
-            pass
+    """Legacy executor - for backward compatibility."""
+    _execute_download_cleanup_plan_core(
+        user_id=user_id,
+        plan=plan,
+        status_msg_id=status_msg_id,
+        hourglass_msg_id=hourglass_msg_id,
+        download_started_msg_id=download_started_msg_id,
+        stop_anim=stop_anim,
+    )
+
+
+def _execute_download_cleanup_plan_with_evidence(
+    *,
+    user_id: int,
+    plan: DownloadCleanupPlan,
+    status_msg_id: int | None,
+    hourglass_msg_id: int | None,
+    download_started_msg_id: int | None,
+    stop_anim,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_download_cleanup_plan_core(
+            user_id=user_id,
+            plan=plan,
+            status_msg_id=status_msg_id,
+            hourglass_msg_id=hourglass_msg_id,
+            download_started_msg_id=download_started_msg_id,
+            stop_anim=stop_anim,
+        )
+        return result, task_context
+
+    def _executor(p: DownloadCleanupPlan) -> dict[str, Any]:
+        return _execute_download_cleanup_plan_core(
+            user_id=user_id,
+            plan=p,
+            status_msg_id=status_msg_id,
+            hourglass_msg_id=hourglass_msg_id,
+            download_started_msg_id=download_started_msg_id,
+            stop_anim=stop_anim,
+        )
+
+    new_task, result = execute_completion_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_download_cleanup_plan",
+    )
+    return result, new_task
 
 
 def _build_download_cache_writeback_plan(
@@ -1504,6 +2366,50 @@ def _build_download_cache_writeback_plan(
     )
 
 
+def _execute_download_cache_writeback_plan_core(
+    *,
+    user_id: int,
+    plan: DownloadCacheWritebackPlan,
+    url: str,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    playlist_video_urls,
+    message,
+) -> dict[str, Any]:
+    """
+    Core logic for executing DownloadCacheWritebackPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "cache_saved": False,
+        "skip_logged": False,
+        "summary_generated": False,
+    }
+
+    if not plan.should_save:
+        if plan.skip_log_text:
+            logger.info(plan.skip_log_text)
+            result["skip_logged"] = True
+    else:
+        save_to_playlist_cache(
+            get_clean_playlist_url(url),
+            plan.summary_quality_key,
+            playlist_indices,
+            playlist_msg_ids,
+            original_text=message.text or message.caption or "",
+            video_urls_dict=playlist_video_urls if playlist_video_urls else None,
+        )
+        result["cache_saved"] = True
+
+    cached_check = get_cached_playlist_videos(get_clean_playlist_url(url), plan.summary_quality_key, playlist_indices)
+    summary = "\n".join([f"Index {idx}: msg_id={cached_check.get(idx, '-')}" for idx in playlist_indices])
+    logger.info(f"[SUMMARY] Playlist cache (quality {plan.summary_quality_key}):\n{summary}")
+    result["summary_generated"] = True
+    result["cached_indices_count"] = len(cached_check)
+
+    return result
+
+
 def _execute_download_cache_writeback_plan(
     *,
     user_id: int,
@@ -1514,22 +2420,64 @@ def _execute_download_cache_writeback_plan(
     playlist_video_urls,
     message,
 ) -> None:
-    if not plan.should_save:
-        if plan.skip_log_text:
-            logger.info(plan.skip_log_text)
-    else:
-        save_to_playlist_cache(
-            get_clean_playlist_url(url),
-            plan.summary_quality_key,
-            playlist_indices,
-            playlist_msg_ids,
-            original_text=message.text or message.caption or "",
-            video_urls_dict=playlist_video_urls if playlist_video_urls else None,
+    """Legacy executor - for backward compatibility."""
+    _execute_download_cache_writeback_plan_core(
+        user_id=user_id,
+        plan=plan,
+        url=url,
+        playlist_indices=playlist_indices,
+        playlist_msg_ids=playlist_msg_ids,
+        playlist_video_urls=playlist_video_urls,
+        message=message,
+    )
+
+
+def _execute_download_cache_writeback_plan_with_evidence(
+    *,
+    user_id: int,
+    plan: DownloadCacheWritebackPlan,
+    url: str,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    playlist_video_urls,
+    message,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_download_cache_writeback_plan_core(
+            user_id=user_id,
+            plan=plan,
+            url=url,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            playlist_video_urls=playlist_video_urls,
+            message=message,
+        )
+        return result, task_context
+
+    def _executor(p: DownloadCacheWritebackPlan) -> dict[str, Any]:
+        return _execute_download_cache_writeback_plan_core(
+            user_id=user_id,
+            plan=p,
+            url=url,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            playlist_video_urls=playlist_video_urls,
+            message=message,
         )
 
-    cached_check = get_cached_playlist_videos(get_clean_playlist_url(url), plan.summary_quality_key, playlist_indices)
-    summary = "\n".join([f"Index {idx}: msg_id={cached_check.get(idx, '-')}" for idx in playlist_indices])
-    logger.info(f"[SUMMARY] Playlist cache (quality {plan.summary_quality_key}):\n{summary}")
+    new_task, result = execute_plan(
+        task_context,
+        plan,
+        _executor,
+        category=PlanCategory.ACQUISITION,
+        executor_name="_execute_download_cache_writeback_plan",
+    )
+    return result, new_task
 
 
 def _is_nsfw_video_delivery(url: str, user_forced_nsfw: bool) -> bool:
@@ -5028,6 +5976,7 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 thumb_dir=thumb_dir,
                                 caption_lst=caption_lst,
                                 force_no_title=force_no_title,
+                                task_context=task_context,
                             )
                         except Exception as e:
                             _handle_upload_route_error(
@@ -5058,6 +6007,7 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 need_subs=need_subs,
                                 found_type=found_type,
                                 force_no_title=force_no_title,
+                                task_context=task_context,
                             )
                         _execute_non_split_upload_completion_plan(
                             plan=_build_non_split_upload_completion_plan(),

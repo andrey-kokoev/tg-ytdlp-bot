@@ -385,8 +385,11 @@ Convenience functions:
 - `GalleryTerminalOutcomePlan`
 - `AudioRetryOutcomePlan`
 - `UploadRoutingPlan`
+- `ManualForwardRecoveryPlan`
+- `AudioRetryRoutePlan`
+- `GalleryFallbackTransitionPlan`
 
-**Pending migration**: See `.ai/tasks/` for remaining ~34 plans organized by priority.
+**Pending migration**: See `.ai/tasks/` for remaining plans organized by priority. Note: Most menu interaction plans are intentionally skipped due to low evidence value.
 
 ### Observability
 

@@ -1,8 +1,11 @@
 # Live Stream Downloader
 # Downloads live streams in chunks and sends them immediately
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 import os
+from typing import Any
 import yt_dlp
 import time
 from datetime import datetime
@@ -16,6 +19,8 @@ from DOWN_AND_UP.ffmpeg import (
     get_duration_thumb,
     get_video_info_ffprobe,
 )
+from DOWN_AND_UP.runtime_task import RuntimeTask
+from DOWN_AND_UP.task_plan_executor import execute_completion_plan
 
 
 @dataclass(frozen=True)
@@ -218,17 +223,74 @@ def _build_live_stream_completion_plan(*, successful_chunks: int) -> LiveStreamC
     )
 
 
+def _execute_live_stream_completion_plan_core(
+    execution_context: LiveStreamExecutionContext,
+    *,
+    plan: LiveStreamCompletionPlan,
+) -> dict[str, Any]:
+    """
+    Core logic for executing LiveStreamCompletionPlan.
+    Returns execution result summary for evidence recording.
+    """
+    result = {
+        "final_status_emitted": False,
+        "successful_chunks": plan.successful_chunks,
+    }
+
+    if not plan.should_emit_final_status:
+        return result
+
+    _emit_live_stream_final_status(
+        execution_context,
+        successful_chunks=plan.successful_chunks,
+    )
+    result["final_status_emitted"] = True
+
+    return result
+
+
 def _execute_live_stream_completion_plan(
     execution_context: LiveStreamExecutionContext,
     *,
     plan: LiveStreamCompletionPlan,
 ) -> None:
-    if not plan.should_emit_final_status:
-        return
-    _emit_live_stream_final_status(
+    """Legacy executor - for backward compatibility."""
+    _execute_live_stream_completion_plan_core(
         execution_context,
-        successful_chunks=plan.successful_chunks,
+        plan=plan,
     )
+
+
+def _execute_live_stream_completion_plan_with_evidence(
+    execution_context: LiveStreamExecutionContext,
+    *,
+    plan: LiveStreamCompletionPlan,
+    task_context: RuntimeTask | None,
+) -> tuple[dict[str, Any], RuntimeTask | None]:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+    Returns (execution_result, updated_task) with execution evidence recorded.
+    """
+    if task_context is None:
+        result = _execute_live_stream_completion_plan_core(
+            execution_context,
+            plan=plan,
+        )
+        return result, task_context
+
+    def _executor(p: LiveStreamCompletionPlan) -> dict[str, Any]:
+        return _execute_live_stream_completion_plan_core(
+            execution_context,
+            plan=p,
+        )
+
+    new_task, result = execute_completion_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_live_stream_completion_plan",
+    )
+    return result, new_task
 
 
 def download_live_stream_chunked(
