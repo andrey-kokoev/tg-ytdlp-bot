@@ -306,6 +306,119 @@ Group commands are wrapped with `_wrap_group()` to ensure only allowed groups (d
 
 ---
 
+## Task Object and Plan Architecture
+
+The system implements a **Task Object Model** (per PDA doc 12) for tracking execution with evidence.
+
+### Core Components
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| `RuntimeTask` | `DOWN_AND_UP/runtime_task.py` | Immutable task container with execution evidence |
+| `TaskPlanExecutor` | `DOWN_AND_UP/task_plan_executor.py` | Systematic plan execution with evidence recording |
+| `task_debug` | `HELPERS/task_debug.py` | Observability and debugging utilities |
+
+### RuntimeTask
+
+The primary runtime representation of a task execution. Frozen (immutable) dataclass with:
+
+**Identity fields**: `user_id`, `source_message_id`, `url`, `tags_text`
+**Machine state**: `current_state`, `state_history`
+**Execution evidence**:
+- `acquisition_attempts` - download/cache operations
+- `delivery_attempts` - upload/send operations
+- `artifact_refs` - terminal/routing/completion evidence
+- `error_evidence` - recovery/error handling
+
+**Constitutive data**: `branch_selection_result`, `terminal_outcome_result`
+
+Immutability means mutations return new instances:
+```python
+new_task = task.with_branch_selection(result)
+new_task = task.with_terminal_outcome(result)
+new_task = task.with_delivery_attempt(evidence)
+```
+
+### Plan Architecture
+
+Plans are frozen dataclasses representing execution decisions:
+
+```python
+@dataclass(frozen=True)
+class SomePlan:
+    mode: str
+    some_flag: bool
+```
+
+Categories (for evidence routing):
+- **TERMINAL** - Final outcomes → `artifact_refs`
+- **RECOVERY** - Error handling → `error_evidence`
+- **ROUTING** - Path selection → `artifact_refs`
+- **ACQUISITION** - Download/cache → `acquisition_attempts`
+- **DELIVERY** - Upload/send → `delivery_attempts`
+- **COMPLETION** - Cleanup/finalization → `artifact_refs`
+
+### TaskPlanExecutor
+
+Execute plans and record evidence:
+
+```python
+from DOWN_AND_UP.task_plan_executor import execute_terminal_plan
+
+new_task, result = execute_terminal_plan(
+    task,
+    plan,
+    _executor_function,
+    executor_name="function_name",
+)
+```
+
+Convenience functions:
+- `execute_terminal_plan()` - terminal outcomes
+- `execute_recovery_plan()` - error recovery
+- `execute_routing_plan()` - routing decisions
+- `execute_plan()` - generic with explicit category
+
+### Migration Status
+
+**Migrated** (use evidence recording):
+- `GalleryTerminalOutcomePlan`
+- `AudioRetryOutcomePlan`
+- `UploadRoutingPlan`
+
+**Pending migration**: See `.ai/tasks/` for remaining ~34 plans organized by priority.
+
+### Observability
+
+Debug task execution:
+
+```python
+from HELPERS.task_debug import render_task_execution_trace, dump_task_to_console
+
+# Render full trace
+trace = render_task_execution_trace(task, include_full_input=True)
+print(trace)
+
+# Quick summary
+dump_task_to_console(task)
+
+# Compare two tasks
+from HELPERS.task_debug import compare_tasks
+diff = compare_tasks(task_a, task_b)
+```
+
+### Adding New Plans
+
+1. Define frozen dataclass for plan
+2. Build function constructs plan from context
+3. Core executor implements logic (extract to `_core()`)
+4. Create `_with_evidence()` variant using TaskPlanExecutor
+5. Legacy executor calls `_core()` for backward compatibility
+
+See existing migrated plans for implementation pattern.
+
+---
+
 ## Database and Caching
 
 ### Firebase Integration
@@ -466,4 +579,4 @@ See [`deploy/README.md`](deploy/README.md) for comparison and recommendations.
 
 ---
 
-*Last updated: 2026-03-27*
+*Last updated: 2026-03-30*
