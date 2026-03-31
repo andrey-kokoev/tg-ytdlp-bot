@@ -1,7 +1,11 @@
 # Task: Migrate Terminal and Completion Plans to TaskPlanExecutor
 
-## Status
-Ready for implementation
+## Metadata
+- **Status**: 📋 Ready
+- **Priority**: HIGH
+- **Created**: 2026-03-30
+- **Plans**: 7
+- **Category**: PDA Migration
 
 ## Background
 PDA infrastructure is complete. RuntimeTask is immutable with execution evidence fields. TaskPlanExecutor provides systematic plan execution with evidence recording.

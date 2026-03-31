@@ -1,7 +1,11 @@
 # Task: Migrate Recovery and Routing Plans to TaskPlanExecutor
 
-## Status
-Ready for implementation
+## Metadata
+- **Status**: 📋 Ready
+- **Priority**: MEDIUM
+- **Created**: 2026-03-30
+- **Plans**: 7
+- **Category**: PDA Migration
 
 ## Background
 PDA infrastructure is complete. This task migrates recovery and routing plans which handle failure scenarios and delivery decisions.

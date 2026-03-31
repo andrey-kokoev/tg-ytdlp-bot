@@ -1,7 +1,11 @@
 # Task: Migrate Cache and Cleanup Plans to TaskPlanExecutor
 
-## Status
-Ready for implementation (lower priority)
+## Metadata
+- **Status**: 📋 Ready
+- **Priority**: LOW
+- **Created**: 2026-03-30
+- **Plans**: 6
+- **Category**: PDA Migration
 
 ## Background
 Cache and cleanup plans handle file system operations and cache management. These are lower priority than terminal/completion plans but still valuable for debugging cache-related issues.

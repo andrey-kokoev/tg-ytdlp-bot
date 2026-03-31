@@ -1,7 +1,11 @@
 # Task: Migrate Menu Interaction Plans to TaskPlanExecutor
 
-## Status
-Ready for implementation (lowest priority)
+## Metadata
+- **Status**: 📋 Ready
+- **Priority**: LOWEST
+- **Created**: 2026-03-30
+- **Plans**: 14
+- **Category**: PDA Migration
 
 ## Background
 Menu interaction plans handle UI state and callback routing. These have lower evidence value because they represent user interactions rather than execution decisions.

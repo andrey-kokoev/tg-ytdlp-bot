@@ -14,10 +14,21 @@ Three high-traffic paths already migrated:
 - AudioRetryOutcomePlan  
 - UploadRoutingPlan
 
-## Task Priority
+## Task Registry
+
+| File | Status | Priority | Plans | Description |
+|------|--------|----------|-------|-------------|
+| `20260330-001a-terminal-completion-plans.md` | 📋 Ready | HIGH | 7 | Terminal outcomes and completion finalization |
+| `20260330-001b-recovery-routing-plans.md` | 📋 Ready | MEDIUM | 7 | Recovery handling and delivery routing |
+| `20260330-001c-cache-cleanup-plans.md` | 📋 Ready | LOW | 6 | Cache operations and file cleanup |
+| `20260330-001d-menu-interaction-plans.md` | 📋 Ready | LOWEST | 14 | UI menu interactions (consider skipping) |
+
+**Status**: 📋 Ready | 🚧 In Progress | ✅ Complete | ⏸️ Blocked
+
+## Quick Links
 
 ### 1. Terminal and Completion Plans (HIGH)
-**File**: `migrate-terminal-completion-plans.md`
+**File**: `20260330-001a-terminal-completion-plans.md`
 
 Terminal outcomes and completion finalization. Highest value for debugging production issues.
 
@@ -31,7 +42,7 @@ Terminal outcomes and completion finalization. Highest value for debugging produ
 - AudioCompletionPlan
 
 ### 2. Recovery and Routing Plans (MEDIUM)
-**File**: `migrate-recovery-routing-plans.md`
+**File**: `20260330-001b-recovery-routing-plans.md`
 
 Failure handling and delivery routing. Medium value for understanding retry chains.
 
@@ -45,7 +56,7 @@ Failure handling and delivery routing. Medium value for understanding retry chai
 - SenderDescriptionArtifactPlan
 
 ### 3. Cache and Cleanup Plans (LOW)
-**File**: `migrate-cache-cleanup-plans.md`
+**File**: `20260330-001c-cache-cleanup-plans.md`
 
 Cache operations and file cleanup. Lower value but useful for operational debugging.
 
@@ -58,7 +69,7 @@ Cache operations and file cleanup. Lower value but useful for operational debugg
 - AudioCleanupPlan
 
 ### 4. Menu Interaction Plans (LOWEST)
-**File**: `migrate-menu-interaction-plans.md`
+**File**: `20260330-001d-menu-interaction-plans.md`
 
 UI menu state and callback handling. Lowest value - consider skipping.
 
