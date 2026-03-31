@@ -138,6 +138,20 @@ class CookieValidationProgressPlan:
     parse_mode: object | None = None
 
 
+@dataclass(frozen=True)
+class CookieFallbackAttemptPlan:
+    mode: str
+    attempt_type: str
+    cookie_source: str | None = None
+
+
+@dataclass(frozen=True)
+class CookieFallbackOutcomePlan:
+    mode: str
+    log_text: str | None = None
+    result: object | None = None
+
+
 def _get_cookie_state_store() -> CookieStateStore:
     return CookieStateStore(
         youtube_cache=_youtube_cookie_cache,
@@ -440,6 +454,46 @@ def _execute_cookie_validation_progress_plan(
         except Exception as e:
             if "MESSAGE_NOT_MODIFIED" not in str(e):
                 logger.error(LoggerMsg.COOKIES_ERROR_UPDATING_MESSAGE_LOG_MSG.format(e=e))
+
+
+def _build_cookie_fallback_attempt_plan(attempt_type: str, cookie_source: str | None) -> CookieFallbackAttemptPlan:
+    return CookieFallbackAttemptPlan(
+        mode=attempt_type,
+        attempt_type=attempt_type,
+        cookie_source=cookie_source,
+    )
+
+
+def _build_cookie_fallback_outcome_plan(
+    *,
+    mode: str,
+    url: str,
+    attempt_type: str | None = None,
+    service_name: str | None = None,
+) -> CookieFallbackOutcomePlan:
+    if mode == "success":
+        return CookieFallbackOutcomePlan(
+            mode=mode,
+            log_text=f"Successfully downloaded {url} with {attempt_type} cookies",
+            result="success",
+        )
+    if mode == "no_cookies":
+        return CookieFallbackOutcomePlan(
+            mode=mode,
+            log_text=f"Trying download without cookies for {url}",
+        )
+    if mode == "all_failed":
+        return CookieFallbackOutcomePlan(
+            mode=mode,
+            log_text=f"All cookie attempts failed for {url}",
+            result=None,
+        )
+    if mode == "service_download_failed":
+        return CookieFallbackOutcomePlan(
+            mode=mode,
+            log_text=f"Failed to download {service_name} cookies: {url}",
+        )
+    return CookieFallbackOutcomePlan(mode=mode)
 
 def generate_task_id(user_id: int, url: str, service: str = None) -> str:
     """
@@ -2685,30 +2739,36 @@ def try_download_with_cookie_fallback(user_id: int, url: str, download_func, *ar
     for attempt_type, cookie_source in cookie_attempts:
         try:
             cookie_file_path = None
+            attempt_plan = _build_cookie_fallback_attempt_plan(attempt_type, cookie_source)
             
-            if attempt_type == 'user':
-                cookie_file_path = cookie_source
+            if attempt_plan.attempt_type == 'user':
+                cookie_file_path = attempt_plan.cookie_source
                 logger.info(f"Trying user cookies for {url}")
-            elif attempt_type == 'service':
+            elif attempt_plan.attempt_type == 'service':
                 # Download service cookies
                 try:
-                    ok, status, content, err = _download_content(cookie_source, timeout=30, user_id=user_id)
+                    ok, status, content, err = _download_content(attempt_plan.cookie_source, timeout=30, user_id=user_id)
                     if ok and content and len(content) <= 100 * 1024:
                         cookie_file_path = user_cookie_path
                         _write_cookie_file(cookie_context, content, binary=True)
                         logger.info(f"Downloaded {service_name} cookies for {url}")
                     else:
-                        logger.warning(f"Failed to download {service_name} cookies: status={status}, error={err}")
+                        outcome_plan = _build_cookie_fallback_outcome_plan(
+                            mode="service_download_failed",
+                            url=url,
+                            service_name=service_name,
+                        )
+                        logger.warning(outcome_plan.log_text)
                         continue
                 except Exception as e:
                     logger.error(f"Error downloading {service_name} cookies: {e}")
                     continue
-            elif attempt_type == 'global':
+            elif attempt_plan.attempt_type == 'global':
                 # Copy global cookies
                 try:
                     import shutil
                     cookie_file_path = user_cookie_path
-                    shutil.copy2(cookie_source, cookie_file_path)
+                    shutil.copy2(attempt_plan.cookie_source, cookie_file_path)
                     logger.info(f"Copied global cookies for {url}")
                 except Exception as e:
                     logger.error(f"Failed to copy global cookies: {e}")
@@ -2725,12 +2785,17 @@ def try_download_with_cookie_fallback(user_id: int, url: str, download_func, *ar
                     
                     result = download_func(*args, **kwargs)
                     if result is not None:
-                        logger.info(f"Successfully downloaded {url} with {attempt_type} cookies")
+                        outcome_plan = _build_cookie_fallback_outcome_plan(
+                            mode="success",
+                            url=url,
+                            attempt_type=attempt_plan.attempt_type,
+                        )
+                        logger.info(outcome_plan.log_text)
                         return result
                     else:
-                        logger.warning(f"Download failed with {attempt_type} cookies for {url}")
+                        logger.warning(f"Download failed with {attempt_plan.attempt_type} cookies for {url}")
                 except Exception as e:
-                    logger.warning(f"Download failed with {attempt_type} cookies for {url}: {e}")
+                    logger.warning(f"Download failed with {attempt_plan.attempt_type} cookies for {url}: {e}")
                     # Check whether the error is cookie-related
                     error_str = str(e).lower()
                     if any(keyword in error_str for keyword in ['cookie', 'auth', 'login', 'sign in', '403', '401']):
@@ -2745,7 +2810,8 @@ def try_download_with_cookie_fallback(user_id: int, url: str, download_func, *ar
     
     # 4) Try without cookies
     try:
-        logger.info(f"Trying download without cookies for {url}")
+        outcome_plan = _build_cookie_fallback_outcome_plan(mode="no_cookies", url=url)
+        logger.info(outcome_plan.log_text)
         # Remove cookies from options
         if 'ytdl_opts' in kwargs:
             kwargs['ytdl_opts']['cookiefile'] = None
@@ -2762,7 +2828,8 @@ def try_download_with_cookie_fallback(user_id: int, url: str, download_func, *ar
         logger.warning(f"Download failed without cookies for {url}: {e}")
     
     # All attempts failed
-    logger.error(f"All cookie attempts failed for {url}")
+    outcome_plan = _build_cookie_fallback_outcome_plan(mode="all_failed", url=url)
+    logger.error(outcome_plan.log_text)
     return None
 
 def get_cookie_cache_key(user_id: int, url: str, service: str = None) -> str:
