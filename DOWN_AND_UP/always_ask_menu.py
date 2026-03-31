@@ -344,6 +344,19 @@ class AlwaysAskFilterTransition:
     mode: str
     answer_text: str | None = None
     show_alert: bool = False
+    page: int | None = None
+
+
+@dataclass(frozen=True)
+class AlwaysAskSubsMenuPlan:
+    reply_markup: InlineKeyboardMarkup
+    answer_text: str
+
+
+@dataclass(frozen=True)
+class AlwaysAskDubsMenuPlan:
+    reply_markup: InlineKeyboardMarkup
+    answer_text: str
 
 
 @dataclass(frozen=True)
@@ -580,7 +593,11 @@ def _determine_ask_filter_transition(
     if kind == "subs_page":
         if source_context is None:
             return AlwaysAskFilterTransition("error", messages.ERROR_ORIGINAL_NOT_FOUND_MSG, True)
-        return AlwaysAskFilterTransition("subs_page", messages.PAGE_NUMBER_MSG.format(page=int(value) + 1))
+        return AlwaysAskFilterTransition(
+            "subs_page",
+            messages.PAGE_NUMBER_MSG.format(page=int(value) + 1),
+            page=int(value),
+        )
 
     if kind == "subs" and value == "back":
         return AlwaysAskFilterTransition("reopen_quality_menu")
@@ -606,6 +623,92 @@ def _determine_ask_filter_transition(
         return AlwaysAskFilterTransition("update_filters", messages.FILTERS_UPDATED_MSG)
 
     return AlwaysAskFilterTransition("noop", messages.FILTERS_UPDATED_MSG)
+
+
+def _build_askf_subs_menu_plan(
+    user_id: int,
+    *,
+    normal_langs,
+    auto_langs,
+    page: int,
+) -> AlwaysAskSubsMenuPlan:
+    langs = sorted(set(normal_langs) | set(auto_langs))
+    kb = get_language_keyboard_always_ask(
+        page=page,
+        user_id=user_id,
+        langs_override=langs,
+        per_page_rows=8,
+        normal_langs=normal_langs,
+        auto_langs=auto_langs,
+    )
+    answer_text = (
+        safe_get_messages(user_id).CHOOSE_SUBTITLE_LANGUAGE_MSG
+        if page == 0
+        else safe_get_messages(user_id).PAGE_NUMBER_MSG.format(page=page + 1)
+    )
+    return AlwaysAskSubsMenuPlan(reply_markup=kb, answer_text=answer_text)
+
+
+def _emit_askf_subs_menu(callback_query, plan: AlwaysAskSubsMenuPlan) -> None:
+    try:
+        callback_query.edit_message_reply_markup(reply_markup=plan.reply_markup)
+    except Exception:
+        pass
+    safe_callback_answer(callback_query, plan.answer_text)
+
+
+def _build_askf_dubs_menu_plan(user_id: int, langs) -> AlwaysAskDubsMenuPlan:
+    rows, row = [], []
+    for i, lang in enumerate(sorted(langs)):
+        flag = _dub_flag(lang)
+        label = f"{flag} {lang}" if flag else lang
+        row.append(InlineKeyboardButton(label, callback_data=f"askf|audio_lang|{lang}"))
+        if (i + 1) % 3 == 0:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([
+        InlineKeyboardButton(safe_get_messages(user_id).BACK_BUTTON_TEXT, callback_data="askf|dubs|back"),
+        InlineKeyboardButton(safe_get_messages(user_id).CLOSE_BUTTON_TEXT, callback_data="askf|dubs|close"),
+    ])
+    return AlwaysAskDubsMenuPlan(
+        reply_markup=InlineKeyboardMarkup(rows),
+        answer_text=safe_get_messages(user_id).CHOOSE_AUDIO_LANGUAGE_MSG,
+    )
+
+
+def _emit_askf_dubs_menu(callback_query, plan: AlwaysAskDubsMenuPlan) -> None:
+    try:
+        callback_query.edit_message_reply_markup(reply_markup=plan.reply_markup)
+    except Exception:
+        pass
+    safe_callback_answer(callback_query, plan.answer_text)
+
+
+def _reopen_askf_quality_menu(app, callback_query, source_context: AlwaysAskSourceContext | None) -> None:
+    if source_context is not None:
+        ask_quality_menu(
+            app,
+            source_context.original_message,
+            source_context.url,
+            [],
+            playlist_start_index=1,
+            cb=callback_query,
+        )
+
+
+def _close_askf_subs_menu(app, callback_query, answer_text: str | None) -> None:
+    try:
+        safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+    except Exception:
+        app.edit_message_reply_markup(
+            chat_id=callback_query.message.chat.id,
+            message_id=callback_query.message.id,
+            reply_markup=None,
+        )
+    if answer_text:
+        safe_callback_answer(callback_query, answer_text)
 
 
 def _build_quality_range_context(original_message):
@@ -1570,22 +1673,16 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
             from COMMANDS.subtitles_cmd import get_or_compute_subs_langs
             normal, auto = get_or_compute_subs_langs(user_id, source_context.url)
             check_subs_availability(source_context.url, user_id, return_type=True)
-            langs = sorted(set(normal) | set(auto))
         except Exception:
             normal, auto = load_subs_langs_cache(user_id, source_context.url)
-            langs = sorted(set(normal) | set(auto))
+        langs = sorted(set(normal) | set(auto))
         if not langs:
             safe_callback_answer(callback_query, safe_get_messages(user_id).NO_SUBTITLES_DETECTED_MSG, show_alert=True)
             return
-        kb = get_language_keyboard_always_ask(page=0, user_id=user_id, langs_override=langs, per_page_rows=8, normal_langs=normal, auto_langs=auto)
-        try:
-            callback_query.edit_message_reply_markup(reply_markup=kb)
-        except Exception:
-            pass
-        safe_callback_answer(callback_query, safe_get_messages(user_id).CHOOSE_SUBTITLE_LANGUAGE_MSG)
+        plan = _build_askf_subs_menu_plan(user_id, normal_langs=normal, auto_langs=auto, page=0)
+        _emit_askf_subs_menu(callback_query, plan)
         return
     if kind == "subs_page":
-        page = int(value)
         if transition.mode == "error":
             safe_callback_answer(callback_query, transition.answer_text, show_alert=transition.show_alert)
             return
@@ -1595,31 +1692,19 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
         else:
             normal = _subs_check_cache.get(f"{source_context.url}_{user_id}_normal_langs") or []
             auto = _subs_check_cache.get(f"{source_context.url}_{user_id}_auto_langs") or []
-        langs = sorted(set(normal) | set(auto))
-        kb = get_language_keyboard_always_ask(page=page, user_id=user_id, langs_override=langs, per_page_rows=8, normal_langs=normal, auto_langs=auto)
-        try:
-            callback_query.edit_message_reply_markup(reply_markup=kb)
-        except Exception:
-            pass
-        safe_callback_answer(callback_query, transition.answer_text)
+        plan = _build_askf_subs_menu_plan(
+            user_id,
+            normal_langs=normal,
+            auto_langs=auto,
+            page=transition.page or 0,
+        )
+        _emit_askf_subs_menu(callback_query, plan)
         return
     if kind == "subs" and value in ("back", "close"):
         if value == "back":
-            if source_context is not None:
-                ask_quality_menu(
-                    app,
-                    source_context.original_message,
-                    source_context.url,
-                    [],
-                    playlist_start_index=1,
-                    cb=callback_query,
-                )
+            _reopen_askf_quality_menu(app, callback_query, source_context)
             return
-        try:
-            safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
-        except Exception:
-            app.edit_message_reply_markup(chat_id=callback_query.message.chat.id, message_id=callback_query.message.id, reply_markup=None)
-        safe_callback_answer(callback_query, transition.answer_text)
+        _close_askf_subs_menu(app, callback_query, transition.answer_text)
         return
     if kind == "subs_lang":
         try:
@@ -1627,8 +1712,7 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
             save_user_subs_auto_mode(user_id, False)
         except Exception:
             pass
-        if source_context is not None:
-            ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
+        _reopen_askf_quality_menu(app, callback_query, source_context)
         safe_callback_answer(callback_query, transition.answer_text)
         return
     if kind == "dubs" and value == "open":
@@ -1640,32 +1724,16 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
         if not langs or len(langs) <= 1:
             safe_callback_answer(callback_query, safe_get_messages(user_id).NO_ALTERNATIVE_AUDIO_LANGUAGES_MSG, show_alert=True)
             return
-        rows, row = [], []
-        for i, lang in enumerate(sorted(langs)):
-            flag = _dub_flag(lang)
-            label = f"{flag} {lang}" if flag else lang
-            row.append(InlineKeyboardButton(label, callback_data=f"askf|audio_lang|{lang}"))
-            if (i + 1) % 3 == 0:
-                rows.append(row)
-                row = []
-        if row:
-            rows.append(row)
-        rows.append([InlineKeyboardButton(safe_get_messages(user_id).BACK_BUTTON_TEXT, callback_data="askf|dubs|back"), InlineKeyboardButton(safe_get_messages(user_id).CLOSE_BUTTON_TEXT, callback_data="askf|dubs|close")])
-        try:
-            callback_query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
-        except Exception:
-            pass
-        safe_callback_answer(callback_query, safe_get_messages(user_id).CHOOSE_AUDIO_LANGUAGE_MSG)
+        plan = _build_askf_dubs_menu_plan(user_id, langs)
+        _emit_askf_dubs_menu(callback_query, plan)
         return
     if kind == "audio_lang":
         set_filter(user_id, kind, value)
-        if source_context is not None:
-            ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
+        _reopen_askf_quality_menu(app, callback_query, source_context)
         safe_callback_answer(callback_query, transition.answer_text)
         return
     if kind == "dubs" and value in ("back", "close"):
-        if source_context is not None:
-            ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
+        _reopen_askf_quality_menu(app, callback_query, source_context)
         safe_callback_answer(callback_query, transition.answer_text)
         return
     if kind in ("codec", "ext"):
@@ -1681,7 +1749,7 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
             set_filter(user_id, "codec", "avc1")
             set_filter(user_id, "ext", "mp4")
     if source_context is not None:
-        ask_quality_menu(app, source_context.original_message, source_context.url, [], playlist_start_index=1, cb=callback_query)
+        _reopen_askf_quality_menu(app, callback_query, source_context)
         safe_callback_answer(callback_query, transition.answer_text)
         return
     safe_callback_answer(callback_query, transition.answer_text)
