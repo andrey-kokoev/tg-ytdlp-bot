@@ -201,10 +201,16 @@ def test_runtime_task_helpers_materialize_and_mutate_task_state():
         cached_count=1,
     )
 
-    assert with_branch_selection(task, branch) is task
-    assert task.branch_selection_result == branch
-    assert with_terminal_outcome(task, outcome) is task
-    assert task.terminal_outcome_result == outcome
+    # Test immutable semantics: new task returned, original unchanged
+    task_with_branch = with_branch_selection(task, branch)
+    assert task_with_branch is not task  # immutability: new instance
+    assert task_with_branch.branch_selection_result == branch
+    assert task.branch_selection_result is None  # original unchanged
+
+    task_with_outcome = with_terminal_outcome(task_with_branch, outcome)
+    assert task_with_outcome is not task_with_branch  # immutability: new instance
+    assert task_with_outcome.terminal_outcome_result == outcome
+    assert task_with_branch.terminal_outcome_result is None  # previous unchanged
 
     existing = make_runtime_task(
         user_id=1,
@@ -310,8 +316,10 @@ def test_attach_and_render_terminal_outcome_updates_task_and_respects_rendered_t
             credits_msg=None,
         ),
     )
-    assert updated_task is task
+    # Immutability: new task returned, original unchanged
+    assert updated_task is not task
     assert updated_task.terminal_outcome_result == outcome
+    assert task.terminal_outcome_result is None  # original unchanged
     assert rendered == "done 1"
 
     _, explicit_render = attach_and_render_terminal_outcome(

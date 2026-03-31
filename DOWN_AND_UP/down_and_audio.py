@@ -3,7 +3,10 @@
 # Down_and_audio function
 # ########################################
 
+from __future__ import annotations
+
 import os
+from typing import Any
 from HELPERS.logger import get_log_channel
 from CONFIG.logger_msg import LoggerMsg
 import threading
@@ -72,6 +75,7 @@ from DOWN_AND_UP.terminal_outcome_result import (
     upload_terminal_outcome,
 )
 from DOWN_AND_UP.runtime_task import RuntimeTask, ensure_runtime_task
+from DOWN_AND_UP.task_plan_executor import execute_recovery_plan
 from DOWN_AND_UP.task_terminal_flow import attach_and_render_terminal_outcome
 from DOWN_AND_UP.playlist_flow import build_requested_indices, send_playlist_cache_status
 from DOWN_AND_UP.retry_flow import (
@@ -837,72 +841,160 @@ def _execute_audio_download_error_plan(
     current_index: int,
     task_context,
 ) -> tuple[object | None, bool, bool]:
-    if "LIVE_STREAM_DETECTED" in error_text and LimitsConfig.ENABLE_LIVE_STREAM_BLOCKING:
-        live_stream_message = (
-            safe_get_messages(user_id).LIVE_STREAM_DETECTED_MSG +
-            "• You can see the final video length\n\n"
-            "Once the stream is completed, you'll be able to download it as a regular video."
-        )
-        _send_audio_failure(
-            message,
-            user_id,
-            failure_kind="live_stream_blocked",
-            error_text=error_text,
-            rendered_text=live_stream_message,
-            use_error_channel=True,
-            task_context=task_context,
-        )
-        return "LIVE_STREAM", did_proxy_retry, error_message_sent
-
-    if retry_plan.mode == "postprocessing_invalid_chars":
-        postprocessing_message = (
-            safe_get_messages(user_id).AUDIO_FILE_PROCESSING_ERROR_INVALID_CHARS_MSG +
-            "**Solutions:**\n"
-            "• Try downloading again - the system will use a safer filename\n"
-            "• If the problem persists, the audio title may contain unsupported characters\n"
-            "• Consider using a different audio source if available\n\n"
-            "The download will be retried automatically with a cleaned filename."
-        )
-        _send_audio_failure(
-            message,
-            user_id,
-            failure_kind="postprocessing_failed",
-            error_text=error_text,
-            rendered_text=postprocessing_message,
-            use_error_channel=True,
-            task_context=task_context,
-        )
-        logger.error(f"Postprocessing error: {error_text}")
-        return "POSTPROCESSING_ERROR", did_proxy_retry, error_message_sent
-
-    if retry_plan.mode == "postprocessing_invalid_argument":
-        logger.error(f"Postprocessing error (Invalid argument): {error_text}")
-        return "POSTPROCESSING_ERROR", did_proxy_retry, error_message_sent
-
-    retry_result, did_proxy_retry = _maybe_retry_audio_download_after_error(
+    """Legacy executor - for backward compatibility."""
+    return _execute_audio_download_error_plan_with_evidence(
+        message=message,
         user_id=user_id,
         url=url,
         error_text=error_text,
+        retry_plan=retry_plan,
         did_proxy_retry=did_proxy_retry,
+        error_message_sent=error_message_sent,
         try_download_audio=try_download_audio,
         current_index=current_index,
-    )
-    if retry_result is not None:
-        return retry_result, did_proxy_retry, error_message_sent
+        task_context=task_context,
+    )[:3]
 
-    if retry_plan.should_send_final_error:
-        _maybe_auto_rotate_ip_for_audio_sign_in_required(user_id, error_text)
-        _send_audio_failure(
-            message,
-            user_id,
-            failure_kind="download_failed",
+
+def _execute_audio_download_error_plan_with_evidence(
+    *,
+    message,
+    user_id: int,
+    url: str,
+    error_text: str,
+    retry_plan: AudioRetryOutcomePlan,
+    did_proxy_retry: bool,
+    error_message_sent: bool,
+    try_download_audio,
+    current_index: int,
+    task_context: RuntimeTask | None,
+) -> tuple[object | None, bool, bool, RuntimeTask]:
+    """
+    PDA-refactored audio retry executor using TaskPlanExecutor.
+
+    Executes the retry plan, records evidence on task, and returns result
+    with the updated task (immutable).
+    """
+    def _execute_plan(p: AudioRetryOutcomePlan) -> dict[str, Any]:
+        """Inner executor that implements the retry logic."""
+        nonlocal did_proxy_retry, error_message_sent
+
+        # LIVE_STREAM check
+        if "LIVE_STREAM_DETECTED" in error_text and LimitsConfig.ENABLE_LIVE_STREAM_BLOCKING:
+            live_stream_message = (
+                safe_get_messages(user_id).LIVE_STREAM_DETECTED_MSG +
+                "• You can see the final video length\n\n"
+                "Once the stream is completed, you'll be able to download it as a regular video."
+            )
+            _send_audio_failure(
+                message,
+                user_id,
+                failure_kind="live_stream_blocked",
+                error_text=error_text,
+                rendered_text=live_stream_message,
+                use_error_channel=True,
+                task_context=task_context,
+            )
+            return {
+                "result": "LIVE_STREAM",
+                "did_proxy_retry": did_proxy_retry,
+                "error_message_sent": error_message_sent,
+            }
+
+        # Postprocessing errors
+        if p.mode == "postprocessing_invalid_chars":
+            postprocessing_message = (
+                safe_get_messages(user_id).AUDIO_FILE_PROCESSING_ERROR_INVALID_CHARS_MSG +
+                "**Solutions:**\n"
+                "• Try downloading again - the system will use a safer filename\n"
+                "• If the problem persists, the audio title may contain unsupported characters\n"
+                "• Consider using a different audio source if available\n\n"
+                "The download will be retried automatically with a cleaned filename."
+            )
+            _send_audio_failure(
+                message,
+                user_id,
+                failure_kind="postprocessing_failed",
+                error_text=error_text,
+                rendered_text=postprocessing_message,
+                use_error_channel=True,
+                task_context=task_context,
+            )
+            logger.error(f"Postprocessing error: {error_text}")
+            return {
+                "result": "POSTPROCESSING_ERROR",
+                "did_proxy_retry": did_proxy_retry,
+                "error_message_sent": error_message_sent,
+            }
+
+        if p.mode == "postprocessing_invalid_argument":
+            logger.error(f"Postprocessing error (Invalid argument): {error_text}")
+            return {
+                "result": "POSTPROCESSING_ERROR",
+                "did_proxy_retry": did_proxy_retry,
+                "error_message_sent": error_message_sent,
+            }
+
+        # Attempt retry
+        retry_result, did_proxy_retry = _maybe_retry_audio_download_after_error(
+            user_id=user_id,
+            url=url,
             error_text=error_text,
-            rendered_text=_render_final_audio_download_error(error_text),
-            use_error_channel=True,
-            task_context=task_context,
+            did_proxy_retry=did_proxy_retry,
+            try_download_audio=try_download_audio,
+            current_index=current_index,
         )
-        error_message_sent = True
-    return None, did_proxy_retry, error_message_sent
+        if retry_result is not None:
+            return {
+                "result": retry_result,
+                "did_proxy_retry": did_proxy_retry,
+                "error_message_sent": error_message_sent,
+            }
+
+        # Final error handling
+        if p.should_send_final_error:
+            _maybe_auto_rotate_ip_for_audio_sign_in_required(user_id, error_text)
+            _send_audio_failure(
+                message,
+                user_id,
+                failure_kind="download_failed",
+                error_text=error_text,
+                rendered_text=_render_final_audio_download_error(error_text),
+                use_error_channel=True,
+                task_context=task_context,
+            )
+            error_message_sent = True
+
+        return {
+            "result": None,
+            "did_proxy_retry": did_proxy_retry,
+            "error_message_sent": error_message_sent,
+        }
+
+    if task_context is None:
+        # Fallback: execute without evidence recording
+        result = _execute_plan(retry_plan)
+        return (
+            result["result"],
+            result["did_proxy_retry"],
+            result["error_message_sent"],
+            task_context,  # unchanged None
+        )
+
+    # Execute with evidence recording
+    new_task, exec_result = execute_recovery_plan(
+        task_context,
+        retry_plan,
+        _execute_plan,
+        executor_name="_execute_audio_download_error_plan",
+    )
+
+    return (
+        exec_result["result"],
+        exec_result["did_proxy_retry"],
+        exec_result["error_message_sent"],
+        new_task,
+    )
 
 
 def _try_remote_audio_youtube_cookie_sources(

@@ -37,8 +37,9 @@ import json
 from URL_PARSERS.tags import save_user_tags, extract_url_range_tags
 from URL_PARSERS.service_api_info import get_service_account_info, build_tags
 from DOWN_AND_UP.gallery_command_result import GalleryCommandResult
-from DOWN_AND_UP.runtime_task import with_terminal_outcome
-from DOWN_AND_UP.terminal_outcome_result import failed_terminal_outcome, upload_terminal_outcome
+from DOWN_AND_UP.runtime_task import with_terminal_outcome, RuntimeTask
+from DOWN_AND_UP.terminal_outcome_result import failed_terminal_outcome, upload_terminal_outcome, TerminalOutcomeResult
+from DOWN_AND_UP.task_plan_executor import execute_terminal_plan
 from HELPERS.ingress_models import build_telegram_callback_envelope, build_telegram_command_envelope
 from HELPERS.ingress_requests import (
     build_close_message_request,
@@ -938,6 +939,7 @@ def _build_gallery_terminal_outcome_plan(
 
 
 def _execute_gallery_terminal_outcome_plan(message, plan: GalleryTerminalOutcomePlan) -> None:
+    """Legacy executor - mutates task in place for backward compatibility."""
     task_context = getattr(message, "_runtime_task", None)
     if task_context is None:
         return
@@ -957,7 +959,53 @@ def _execute_gallery_terminal_outcome_plan(message, plan: GalleryTerminalOutcome
             delivered_count=plan.delivered_count,
             cached_count=plan.cached_count,
         )
+    # Legacy: mutates task, ignores return value
     with_terminal_outcome(task_context, outcome)
+
+
+def _execute_gallery_terminal_outcome_plan_with_evidence(
+    message,
+    plan: GalleryTerminalOutcomePlan,
+) -> TerminalOutcomeResult | None:
+    """
+    PDA-refactored executor using TaskPlanExecutor.
+
+    Returns outcome result and records execution evidence on task.
+    Task is updated on message via setattr for backward compatibility.
+    """
+    task_context: RuntimeTask | None = getattr(message, "_runtime_task", None)
+    if task_context is None:
+        return None
+
+    def _build_and_attach_outcome(p: GalleryTerminalOutcomePlan) -> TerminalOutcomeResult:
+        if p.outcome_kind == "failed":
+            return failed_terminal_outcome(
+                media_kind=p.media_kind,
+                failure_kind="gallery_fallback_failed",
+                error_text=p.error_text or "Unknown error",
+                attempted_count=p.attempted_count,
+                delivered_count=p.delivered_count,
+                cached_count=p.cached_count,
+            )
+        else:
+            return upload_terminal_outcome(
+                media_kind=p.media_kind,
+                attempted_count=max(p.attempted_count, p.delivered_count),
+                delivered_count=p.delivered_count,
+                cached_count=p.cached_count,
+            )
+
+    new_task, outcome = execute_terminal_plan(
+        task_context,
+        plan,
+        _build_and_attach_outcome,
+        executor_name="_execute_gallery_terminal_outcome_plan",
+    )
+
+    # Update message's task reference with new immutable task
+    setattr(message, "_runtime_task", new_task)
+
+    return outcome
 
 
 def image_command_logic(app, message, request=None):

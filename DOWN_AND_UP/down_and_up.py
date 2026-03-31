@@ -82,6 +82,7 @@ from DOWN_AND_UP.terminal_outcome_result import (
     upload_terminal_outcome,
 )
 from DOWN_AND_UP.runtime_task import RuntimeTask, ensure_runtime_task, with_branch_selection
+from DOWN_AND_UP.task_plan_executor import execute_routing_plan
 from DOWN_AND_UP.task_terminal_flow import attach_and_render_terminal_outcome
 from DOWN_AND_UP.playlist_flow import build_requested_indices, send_playlist_cache_status
 from DOWN_AND_UP.retry_flow import (
@@ -1093,6 +1094,88 @@ def _execute_upload_routing_plan(
     thumb_path: str | None,
     already_forwarded_to_log: bool,
 ) -> dict:
+    """Legacy executor - backward compatibility."""
+    return _execute_upload_routing_plan_core(
+        plan=plan,
+        message=message,
+        user_id=user_id,
+        video_msg=video_msg,
+        video_path=video_path,
+        caption_text=caption_text,
+        duration=duration,
+        width=width,
+        height=height,
+        thumb_path=thumb_path,
+        already_forwarded_to_log=already_forwarded_to_log,
+    )
+
+
+def _execute_upload_routing_plan_with_evidence(
+    *,
+    plan: UploadRoutingPlan,
+    message,
+    user_id: int,
+    video_msg,
+    video_path: str,
+    caption_text: str,
+    duration: int,
+    width: int,
+    height: int,
+    thumb_path: str | None,
+    already_forwarded_to_log: bool,
+    task_context: RuntimeTask | None,
+) -> tuple[dict, RuntimeTask]:
+    """
+    PDA-refactored upload routing executor using TaskPlanExecutor.
+
+    Returns (result_dict, updated_task) with execution evidence recorded.
+    """
+    def _executor(p: UploadRoutingPlan) -> dict:
+        return _execute_upload_routing_plan_core(
+            plan=p,
+            message=message,
+            user_id=user_id,
+            video_msg=video_msg,
+            video_path=video_path,
+            caption_text=caption_text,
+            duration=duration,
+            width=width,
+            height=height,
+            thumb_path=thumb_path,
+            already_forwarded_to_log=already_forwarded_to_log,
+        )
+
+    if task_context is None:
+        # No task context - execute without evidence recording
+        result = _executor(plan)
+        return result, task_context
+
+    # Execute with evidence recording
+    new_task, result = execute_routing_plan(
+        task_context,
+        plan,
+        _executor,
+        executor_name="_execute_upload_routing_plan",
+    )
+
+    return result, new_task
+
+
+def _execute_upload_routing_plan_core(
+    *,
+    plan: UploadRoutingPlan,
+    message,
+    user_id: int,
+    video_msg,
+    video_path: str,
+    caption_text: str,
+    duration: int,
+    width: int,
+    height: int,
+    thumb_path: str | None,
+    already_forwarded_to_log: bool,
+) -> dict:
+    """Core upload routing logic (extracted for reuse)."""
     result = {
         "forwarded_msgs": None,
         "already_forwarded_to_log": already_forwarded_to_log,
