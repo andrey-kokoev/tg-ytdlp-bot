@@ -676,6 +676,69 @@ def _attempt_manual_forward_recovery(
     return forwarded_msgs, already_forwarded_to_log, is_nsfw
 
 
+def _handle_manual_forward_retry(
+    *,
+    message,
+    user_id: int,
+    video_msg,
+    url: str,
+    user_forced_nsfw: bool,
+    already_forwarded_to_log: bool,
+    is_split_item: bool,
+    video_path: str,
+    caption_text: str,
+    duration: int,
+    width: int,
+    height: int,
+    thumb_path: str | None,
+    recovery_label: str,
+    use_manual_suffix: bool,
+    is_playlist: bool,
+    current_video_index: int,
+    safe_quality_key: str,
+    playlist_video_urls: dict,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    found_type,
+    is_nsfw: bool,
+    need_subs: bool,
+) -> tuple[list | None, bool, bool]:
+    forwarded_msgs, already_forwarded_to_log, is_nsfw = _attempt_manual_forward_recovery(
+        message=message,
+        user_id=user_id,
+        video_msg=video_msg,
+        url=url,
+        user_forced_nsfw=user_forced_nsfw,
+        already_forwarded_to_log=already_forwarded_to_log,
+        is_split_item=is_split_item,
+        video_path=video_path,
+        caption_text=caption_text,
+        duration=duration,
+        width=width,
+        height=height,
+        thumb_path=thumb_path,
+        recovery_label=recovery_label,
+    )
+    if forwarded_msgs:
+        _handle_manual_forward_success(
+            forwarded_msgs=forwarded_msgs,
+            is_playlist=is_playlist,
+            current_video_index=current_video_index,
+            url=url,
+            safe_quality_key=safe_quality_key,
+            message=message,
+            user_id=user_id,
+            playlist_video_urls=playlist_video_urls,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            found_type=found_type,
+            is_nsfw=is_nsfw,
+            need_subs=need_subs,
+            use_manual_suffix=use_manual_suffix,
+        )
+    return forwarded_msgs, already_forwarded_to_log, is_nsfw
+
+
 def _build_manual_forward_recovery_plan(
     *,
     is_playlist: bool,
@@ -4643,7 +4706,7 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 if recovery_plan.should_use_recovery_route:
                                     logger.info(f"down_and_up: forwarding failed, trying manual forward for video: {video_msg.id}")
                                     try:
-                                        forwarded_msgs, already_forwarded_to_log, is_nsfw = _attempt_manual_forward_recovery(
+                                        forwarded_msgs, already_forwarded_to_log, is_nsfw = _handle_manual_forward_retry(
                                             message=message,
                                             user_id=user_id,
                                             video_msg=video_msg,
@@ -4658,26 +4721,17 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                             height=height,
                                             thumb_path=thumb_dir,
                                             recovery_label="successful",
+                                            use_manual_suffix=True,
+                                            is_playlist=is_playlist,
+                                            current_video_index=current_index,
+                                            safe_quality_key=safe_quality_key,
+                                            playlist_video_urls=playlist_video_urls,
+                                            playlist_indices=playlist_indices,
+                                            playlist_msg_ids=playlist_msg_ids,
+                                            found_type=found_type,
+                                            is_nsfw=is_nsfw,
+                                            need_subs=need_subs,
                                         )
-                                        if forwarded_msgs:
-                                            _handle_manual_forward_success(
-                                                forwarded_msgs=forwarded_msgs,
-                                                is_playlist=is_playlist,
-                                                current_video_index=current_index,
-                                                url=url,
-                                                safe_quality_key=safe_quality_key,
-                                                message=message,
-                                                user_id=user_id,
-                                                playlist_video_urls=playlist_video_urls,
-                                                playlist_indices=playlist_indices,
-                                                playlist_msg_ids=playlist_msg_ids,
-                                                found_type=found_type,
-                                                is_nsfw=is_nsfw,
-                                                need_subs=need_subs,
-                                                use_manual_suffix=True,
-                                            )
-                                        else:
-                                            logger.error("Manual forward also failed, cannot cache video")
                                     except Exception as e:
                                         logger.error(f"Error in manual forward: {e}")
                                 else:
@@ -4714,7 +4768,7 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 )
                                 if recovery_plan.should_use_recovery_route:
                                     # Safe quality_key for error recovery (already defined at function start)
-                                    forwarded_msgs, already_forwarded_to_log, is_nsfw = _attempt_manual_forward_recovery(
+                                    forwarded_msgs, already_forwarded_to_log, is_nsfw = _handle_manual_forward_retry(
                                         message=message,
                                         user_id=user_id,
                                         video_msg=video_msg,
@@ -4729,26 +4783,17 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                         height=height,
                                         thumb_path=thumb_dir,
                                         recovery_label="after error",
+                                        use_manual_suffix=False,
+                                        is_playlist=is_playlist,
+                                        current_video_index=current_index,
+                                        safe_quality_key=safe_quality_key,
+                                        playlist_video_urls=playlist_video_urls,
+                                        playlist_indices=playlist_indices,
+                                        playlist_msg_ids=playlist_msg_ids,
+                                        found_type=found_type,
+                                        is_nsfw=is_nsfw,
+                                        need_subs=need_subs,
                                     )
-                                    if forwarded_msgs:
-                                        _handle_manual_forward_success(
-                                            forwarded_msgs=forwarded_msgs,
-                                            is_playlist=is_playlist,
-                                            current_video_index=current_index,
-                                            url=url,
-                                            safe_quality_key=safe_quality_key,
-                                            message=message,
-                                            user_id=user_id,
-                                            playlist_video_urls=playlist_video_urls,
-                                            playlist_indices=playlist_indices,
-                                            playlist_msg_ids=playlist_msg_ids,
-                                            found_type=found_type,
-                                            is_nsfw=is_nsfw,
-                                            need_subs=need_subs,
-                                            use_manual_suffix=False,
-                                        )
-                                    else:
-                                        logger.error("Manual forward after error also failed, cannot cache video")
                                 else:
                                     logger.info(
                                         f"down_and_up: manual forward after error skipped ({recovery_plan.mode})"
