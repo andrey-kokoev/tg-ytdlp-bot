@@ -262,6 +262,26 @@ class DownloadTerminalPlan:
     playlist_reply_to_message_id: int | None = None
 
 
+@dataclass(frozen=True)
+class DownloadErrorPlan:
+    mode: str
+    failure_kind: str | None = None
+    error_text: str | None = None
+    log_text: str | None = None
+    cleanup_temp_files: bool = True
+    delete_status_messages: bool = True
+    clear_playlist_error_state: bool = True
+
+
+@dataclass(frozen=True)
+class DownloadCleanupPlan:
+    mode: str
+    cleanup_temp_files: bool = True
+    delete_status_messages: bool = True
+    delete_download_started_message: bool = True
+    stop_animation: bool = True
+
+
 def _build_download_terminal_plan(
     *,
     user_id: int,
@@ -340,6 +360,152 @@ def _execute_download_terminal_plan(
             safe_quality_key=safe_quality_key,
         )
     return task_context
+
+
+def _build_download_error_plan(
+    *,
+    mode: str,
+    error_text: str | None = None,
+    playlist_name: str | None = None,
+) -> DownloadErrorPlan:
+    if mode == "timeout":
+        return DownloadErrorPlan(
+            mode=mode,
+            failure_kind="timeout",
+            log_text=LoggerMsg.DOWNLOAD_TIMEOUT_LOG,
+        )
+    if mode == "quality_key":
+        return DownloadErrorPlan(
+            mode=mode,
+            failure_kind=None,
+            log_text="quality_key error ignored (non-critical)",
+            cleanup_temp_files=False,
+            delete_status_messages=False,
+            clear_playlist_error_state=False,
+        )
+    return DownloadErrorPlan(
+        mode=mode,
+        failure_kind="download_failed",
+        error_text=error_text,
+        log_text=f"Error in video download: {error_text}",
+    )
+
+
+def _execute_download_error_plan(
+    *,
+    message,
+    user_id: int,
+    task_context: RuntimeTask | None,
+    proc_msg_id: int,
+    app,
+    plan: DownloadErrorPlan,
+    error_text: str | None,
+    url: str,
+    indices_to_download: list | None,
+    successful_uploads: int | None,
+    split_msg_ids: list | None,
+    is_playlist: bool,
+    status_msg_id: int | None,
+    hourglass_msg_id: int | None,
+    download_started_msg_id: int | None,
+    stop_anim,
+) -> None:
+    if plan.mode == "quality_key":
+        logger.info(f"{plan.log_text}: {error_text}")
+        if split_msg_ids and not is_playlist:
+            logger.info(f"HARD FIX: Processing split video completion after quality_key error: {split_msg_ids}")
+            _finalize_split_video_success_after_quality_key_error(
+                user_id=user_id,
+                proc_msg_id=proc_msg_id,
+                message=message,
+                split_msg_ids=split_msg_ids,
+                url=url,
+            )
+    elif plan.mode == "timeout":
+        _send_video_failure(
+            message,
+            user_id,
+            failure_kind=plan.failure_kind or "timeout",
+            attempted_count=len(indices_to_download) if indices_to_download else 0,
+            delivered_count=successful_uploads or 0,
+            task_context=task_context,
+        )
+        log_error_to_channel(message, plan.log_text or LoggerMsg.DOWNLOAD_TIMEOUT_LOG, url)
+    else:
+        logger.error(plan.log_text or f"Error in video download: {error_text}")
+        _send_video_failure(
+            message,
+            user_id,
+            failure_kind=plan.failure_kind or "download_failed",
+            error_text=error_text,
+            attempted_count=len(indices_to_download) if indices_to_download else 0,
+            delivered_count=successful_uploads or 0,
+            task_context=task_context,
+        )
+
+    if plan.cleanup_temp_files:
+        try:
+            cleanup_user_temp_files(user_id)
+        except Exception as cleanup_error:
+            logger.error(f"Error cleaning up temp files after error for user {user_id}: {cleanup_error}")
+
+    if plan.delete_status_messages:
+        try:
+            if status_msg_id:
+                safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
+            if hourglass_msg_id:
+                safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
+        except Exception:
+            pass
+
+    if plan.delete_status_messages and download_started_msg_id:
+        try:
+            safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
+        except Exception:
+            pass
+
+    if plan.clear_playlist_error_state and is_playlist:
+        if playlist_name:
+            clear_playlist_error_state(f"{user_id}_{playlist_name}")
+
+
+def _build_download_cleanup_plan() -> DownloadCleanupPlan:
+    return DownloadCleanupPlan(mode="final")
+
+
+def _execute_download_cleanup_plan(
+    *,
+    user_id: int,
+    plan: DownloadCleanupPlan,
+    status_msg_id: int | None,
+    hourglass_msg_id: int | None,
+    download_started_msg_id: int | None,
+    stop_anim,
+) -> None:
+    if plan.cleanup_temp_files:
+        try:
+            cleanup_user_temp_files(user_id)
+        except Exception as e:
+            logger.error(f"Error cleaning up temp files for user {user_id}: {e}")
+    if plan.delete_status_messages:
+        try:
+            if status_msg_id:
+                safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
+            if hourglass_msg_id:
+                safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
+        except Exception as e:
+            logger.error(f"Error deleting status messages: {e}")
+    if plan.delete_download_started_message:
+        try:
+            if download_started_msg_id:
+                safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
+        except Exception:
+            pass
+    if plan.stop_animation:
+        try:
+            stop_anim.set()
+        except Exception:
+            pass
 
 
 def _is_nsfw_video_delivery(url: str, user_forced_nsfw: bool) -> bool:
@@ -4092,85 +4258,43 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
             )
 
     except Exception as e:
-        if "Download timeout exceeded" in str(e):
-            _send_video_failure(
-                message,
-                user_id,
-                failure_kind="timeout",
-                attempted_count=len(indices_to_download) if 'indices_to_download' in locals() else 0,
-                delivered_count=successful_uploads if 'successful_uploads' in locals() else 0,
-                task_context=task_context,
-            )
-            log_error_to_channel(message, LoggerMsg.DOWNLOAD_TIMEOUT_LOG, url)
-        elif "'quality_key'" in str(e):
-            # Quality_key errors are non-critical and should be completely ignored
-            logger.info(f"quality_key error ignored (non-critical): {e}")
-            # Quality_key errors don't affect functionality, just continue normally
-            
-            # HARD FIX: Handle split videos completion even after quality_key error
-            if split_msg_ids and not is_playlist:
-                logger.info(f"HARD FIX: Processing split video completion after quality_key error: {split_msg_ids}")
-                _finalize_split_video_success_after_quality_key_error(
-                    user_id=user_id,
-                    proc_msg_id=proc_msg_id,
-                    message=message,
-                    split_msg_ids=split_msg_ids,
-                    url=url,
-                )
-        else:
-            logger.error(f"Error in video download: {e}")
-            _send_video_failure(
-                message,
-                user_id,
-                failure_kind="download_failed",
-                error_text=str(e),
-                attempted_count=len(indices_to_download) if 'indices_to_download' in locals() else 0,
-                delivered_count=successful_uploads if 'successful_uploads' in locals() else 0,
-                task_context=task_context,
-            )
-        
-        # Immediate cleanup of temporary status messages on error
-        try:
-            if status_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
-            if hourglass_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
-            if download_started_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
-            stop_anim.set()
-        except Exception:
-            pass
-        
-        # Clean up temporary files on error
-        try:
-            cleanup_user_temp_files(user_id)
-        except Exception as cleanup_error:
-            logger.error(f"Error cleaning up temp files after error for user {user_id}: {cleanup_error}")
+        plan = _build_download_error_plan(
+            mode="timeout" if "Download timeout exceeded" in str(e) else "quality_key" if "'quality_key'" in str(e) else "download_failed",
+            error_text=str(e),
+            playlist_name=playlist_name,
+        )
+        _execute_download_error_plan(
+            message=message,
+            user_id=user_id,
+            task_context=task_context,
+            proc_msg_id=proc_msg_id,
+            app=app,
+            plan=plan,
+            error_text=str(e),
+            url=url,
+            indices_to_download=indices_to_download if 'indices_to_download' in locals() else [],
+            successful_uploads=successful_uploads if 'successful_uploads' in locals() else 0,
+            split_msg_ids=split_msg_ids if 'split_msg_ids' in locals() else [],
+            is_playlist=is_playlist,
+            status_msg_id=status_msg_id,
+            hourglass_msg_id=hourglass_msg_id,
+            download_started_msg_id=download_started_msg_id,
+            stop_anim=stop_anim,
+        )
     finally:
         set_active_download(user_id, False)
         clear_download_start_time(user_id)  # Clear the download start time
         if playlist_name:
             clear_playlist_error_state(f"{user_id}_{playlist_name}")
 
-        # Clean up temporary files
-        try:
-            cleanup_user_temp_files(user_id)
-        except Exception as e:
-            logger.error(f"Error cleaning up temp files for user {user_id}: {e}")
-
-        try:
-            if status_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
-            if hourglass_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
-        except Exception as e:
-            logger.error(f"Error deleting status messages: {e}")
-        # Also try to delete the 'Download started' message if it still exists
-        try:
-            if download_started_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
-        except Exception:
-            pass
+        _execute_download_cleanup_plan(
+            user_id=user_id,
+            plan=_build_download_cleanup_plan(),
+            status_msg_id=status_msg_id,
+            hourglass_msg_id=hourglass_msg_id,
+            download_started_msg_id=download_started_msg_id,
+            stop_anim=stop_anim,
+        )
 
         # --- ADDED: summary of cache after cycle ---
         if is_playlist and playlist_indices and playlist_msg_ids:
