@@ -24,6 +24,7 @@ from HELPERS.request_execution import (
 from HELPERS.safe_messeger import safe_send_message
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram import enums, filters
+from CONFIG.config import Config
 
 # Get app instance
 app = get_app()
@@ -33,6 +34,14 @@ app = get_app()
 class SearchCommandContext:
     user_id: int
     source_message: object
+
+
+@dataclass(frozen=True)
+class SearchCallbackResultPlan:
+    mode: str
+    answer_text: str | None = None
+    log_text: str | None = None
+    show_alert: bool = False
 
 
 def _build_search_command_context(message) -> SearchCommandContext:
@@ -79,24 +88,42 @@ def search_command_logic(app, message, request=None):
 
     send_to_logger(context.source_message, LoggerMsg.SEARCH_HELPER_OPENED.format(user_id=context.user_id))
 
+
+def _build_search_callback_result_plan(user_id: int, data: str) -> SearchCallbackResultPlan:
+    if data == "search_msg|close":
+        return SearchCallbackResultPlan(
+            mode="close",
+            answer_text=safe_get_messages(user_id).SEARCH_CLOSED_MSG,
+            log_text=LoggerMsg.SEARCH_HELPER_CLOSED.format(user_id=user_id),
+        )
+    return SearchCallbackResultPlan(
+        mode="error",
+        answer_text=safe_get_messages(user_id).ERROR_OCCURRED_SHORT_MSG,
+        show_alert=True,
+    )
+
+
+def _execute_search_callback_result_plan(client, callback_query, user_id: int, plan: SearchCallbackResultPlan) -> None:
+    if plan.mode == "close":
+        callback_envelope = build_telegram_callback_envelope(callback_query)
+        request = build_close_message_request(callback_envelope, close_scope="search_msg")
+        handle_close_message_request(
+            client,
+            build_callback_execution_context(callback_query),
+            request,
+            answer_text=plan.answer_text,
+            log_text=plan.log_text,
+        )
+        return
+    callback_query.answer(plan.answer_text, show_alert=plan.show_alert)
+
 # Callback handler for search command buttons
 @app.on_callback_query(filters.regex(r"^search_msg\|"))
 def handle_search_callback(client, callback_query):
     user_id = callback_query.from_user.id
     try:
-        data = callback_query.data
-        
-        if data == "search_msg|close":
-            callback_envelope = build_telegram_callback_envelope(callback_query)
-            request = build_close_message_request(callback_envelope, close_scope="search_msg")
-            handle_close_message_request(
-                client,
-                build_callback_execution_context(callback_query),
-                request,
-                answer_text=safe_get_messages(user_id).SEARCH_CLOSED_MSG,
-                log_text=LoggerMsg.SEARCH_HELPER_CLOSED.format(user_id=user_id),
-            )
-            
+        plan = _build_search_callback_result_plan(user_id, callback_query.data)
+        _execute_search_callback_result_plan(client, callback_query, user_id, plan)
     except Exception as e:
         send_to_logger(callback_query.message, LoggerMsg.SEARCH_CALLBACK_ERROR.format(error=e))
         callback_query.answer(safe_get_messages(user_id).ERROR_OCCURRED_SHORT_MSG, show_alert=True)
