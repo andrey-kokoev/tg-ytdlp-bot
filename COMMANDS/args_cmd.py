@@ -321,6 +321,139 @@ def _execute_args_menu_result_plan(context: ArgsCallbackContext, plan: ArgsCallb
         )
 
 
+def _build_args_value_callback_result_plan(context: ArgsCallbackContext, data: str) -> ArgsCallbackResultPlan | None:
+    messages = get_messages_instance(context.chat_id)
+    user_id = context.user_id
+
+    if data.startswith("args_bool_"):
+        remaining = data.replace("args_bool_", "")
+        if not remaining:
+            return ArgsCallbackResultPlan(
+                mode="error",
+                answer_text=messages.ARGS_INVALID_BOOL_MSG,
+                show_alert=True,
+            )
+
+        value = None
+        if remaining.endswith("_true"):
+            param_name = remaining[:-5]
+            value = True
+        elif remaining.endswith("_false"):
+            param_name = remaining[:-6]
+            value = False
+        else:
+            return ArgsCallbackResultPlan(
+                mode="error",
+                answer_text=messages.ARGS_INVALID_BOOL_MSG,
+                show_alert=True,
+            )
+
+        if param_name not in YTDLP_PARAMS:
+            return ArgsCallbackResultPlan(
+                mode="error",
+                answer_text=messages.ARGS_INVALID_PARAM_MSG,
+                show_alert=True,
+            )
+
+        user_args = get_user_args(user_id)
+        current_value = user_args.get(param_name, YTDLP_PARAMS[param_name].get("default", False))
+        _update_user_arg_value(user_id, param_name, value)
+
+        if current_value != value:
+            return ArgsCallbackResultPlan(
+                mode="bool_updated",
+                answer_text=messages.ARGS_BOOL_SET_MSG.format(value='True' if value else 'False'),
+                edit_text=messages.ARGS_CONFIG_TITLE_MSG.format(groups_msg=messages.ARGS_MENU_DESCRIPTION_MSG),
+                reply_markup=get_args_menu_keyboard(user_id),
+            )
+        return ArgsCallbackResultPlan(
+            mode="bool_unchanged",
+            answer_text=messages.ARGS_BOOL_ALREADY_SET_MSG.format(value='True' if value else 'False'),
+        )
+
+    if data.startswith("args_select_"):
+        remaining = data.replace("args_select_", "")
+        if not remaining:
+            return ArgsCallbackResultPlan(
+                mode="error",
+                answer_text=messages.ARGS_INVALID_SELECT_MSG,
+                show_alert=True,
+            )
+
+        last_underscore = remaining.rfind("_")
+        if last_underscore == -1:
+            return ArgsCallbackResultPlan(
+                mode="error",
+                answer_text=messages.ARGS_INVALID_SELECT_MSG,
+                show_alert=True,
+            )
+        param_name = remaining[:last_underscore]
+        value = remaining[last_underscore + 1:]
+
+        if not param_name or not value:
+            return ArgsCallbackResultPlan(
+                mode="error",
+                answer_text=messages.ARGS_INVALID_SELECT_MSG,
+                show_alert=True,
+            )
+
+        if param_name not in YTDLP_PARAMS:
+            return ArgsCallbackResultPlan(
+                mode="error",
+                answer_text=messages.ARGS_INVALID_PARAM_MSG,
+                show_alert=True,
+            )
+
+        user_args = get_user_args(user_id)
+        current_value = user_args.get(param_name, YTDLP_PARAMS[param_name].get("default", ""))
+        _update_user_arg_value(user_id, param_name, value)
+
+        if current_value != value:
+            return ArgsCallbackResultPlan(
+                mode="select_updated",
+                answer_text=messages.ARGS_VALUE_SET_MSG.format(value=value),
+                edit_text=(
+                    f"<b>⚙️ {get_param_description(YTDLP_PARAMS[param_name], param_name, messages)}</b>\n\n"
+                    f"{messages.ARGS_CURRENT_VALUE_MSG.format(current_value=value)}"
+                ),
+                reply_markup=get_select_menu_keyboard(param_name, value, user_id),
+            )
+        return ArgsCallbackResultPlan(
+            mode="select_unchanged",
+            answer_text=messages.ARGS_VALUE_ALREADY_SET_MSG.format(value=value),
+        )
+
+    return None
+
+
+def _execute_args_value_callback_result_plan(context: ArgsCallbackContext, plan: ArgsCallbackResultPlan) -> None:
+    callback_query = context.callback_query
+    if plan.mode in {"bool_updated", "select_updated"}:
+        _edit_args_callback_message(
+            callback_query,
+            plan.edit_text,
+            reply_markup=plan.reply_markup,
+        )
+        try:
+            _answer_args_callback(
+                callback_query,
+                plan.answer_text,
+                show_alert=plan.show_alert,
+            )
+        except Exception:
+            pass
+        return
+    if plan.mode in {"bool_unchanged", "select_unchanged", "error"}:
+        try:
+            _answer_args_callback(
+                callback_query,
+                plan.answer_text,
+                show_alert=plan.show_alert,
+            )
+        except Exception:
+            pass
+
+
 def _log_args_input_error(message, error_msg: str) -> None:
     from HELPERS.logger import log_error_to_channel
 
@@ -1508,6 +1641,10 @@ def args_callback_logic(app, execution_context, request):
         if menu_plan is not None:
             _execute_args_menu_result_plan(context, menu_plan)
             return
+        value_plan = _build_args_value_callback_result_plan(context, data)
+        if value_plan is not None:
+            _execute_args_value_callback_result_plan(context, value_plan)
+            return
 
         elif data.startswith("args_set_"):
             param_name = data.replace("args_set_", "")
@@ -1561,97 +1698,6 @@ def args_callback_logic(app, execution_context, request):
                 except Exception:
                     safe_send_message(context.chat_id, message, reply_markup=keyboard, message=context.source_message)
 
-            return
-
-        elif data.startswith("args_bool_"):
-            remaining = data.replace("args_bool_", "")
-            if not remaining:
-                _answer_args_callback(callback_query, messages.ARGS_INVALID_BOOL_MSG, show_alert=True)
-                return
-
-            value = None
-            if remaining.endswith("_true"):
-                param_name = remaining[:-5]
-                value = True
-            elif remaining.endswith("_false"):
-                param_name = remaining[:-6]
-                value = False
-            else:
-                _answer_args_callback(callback_query, messages.ARGS_INVALID_BOOL_MSG, show_alert=True)
-                return
-
-            if param_name not in YTDLP_PARAMS:
-                _answer_args_callback(callback_query, messages.ARGS_INVALID_PARAM_MSG, show_alert=True)
-                return
-
-            if value is None:
-                _answer_args_callback(callback_query, messages.ARGS_INVALID_BOOL_MSG, show_alert=True)
-                return
-
-            user_args = get_user_args(user_id)
-            current_value = user_args.get(param_name, YTDLP_PARAMS[param_name].get("default", False))
-            _update_user_arg_value(user_id, param_name, value)
-
-            if current_value != value:
-                keyboard = get_args_menu_keyboard(user_id)
-                _edit_args_callback_message(
-                    callback_query,
-                    messages.ARGS_CONFIG_TITLE_MSG.format(groups_msg=messages.ARGS_MENU_DESCRIPTION_MSG),
-                    reply_markup=keyboard
-                )
-                try:
-                    _answer_args_callback(callback_query, messages.ARGS_BOOL_SET_MSG.format(value='True' if value else 'False'))
-                except Exception:
-                    pass
-            else:
-                try:
-                    _answer_args_callback(callback_query, messages.ARGS_BOOL_ALREADY_SET_MSG.format(value='True' if value else 'False'))
-                except Exception:
-                    pass
-            return
-
-        elif data.startswith("args_select_"):
-            remaining = data.replace("args_select_", "")
-            if not remaining:
-                _answer_args_callback(callback_query, messages.ARGS_INVALID_SELECT_MSG, show_alert=True)
-                return
-
-            last_underscore = remaining.rfind("_")
-            if last_underscore == -1:
-                _answer_args_callback(callback_query, messages.ARGS_INVALID_SELECT_MSG, show_alert=True)
-                return
-            param_name = remaining[:last_underscore]
-            value = remaining[last_underscore + 1:]
-
-            if not param_name or not value:
-                _answer_args_callback(callback_query, messages.ARGS_INVALID_SELECT_MSG, show_alert=True)
-                return
-
-            if param_name not in YTDLP_PARAMS:
-                _answer_args_callback(callback_query, messages.ARGS_INVALID_PARAM_MSG, show_alert=True)
-                return
-
-            user_args = get_user_args(user_id)
-            current_value = user_args.get(param_name, YTDLP_PARAMS[param_name].get("default", ""))
-            _update_user_arg_value(user_id, param_name, value)
-
-            if current_value != value:
-                keyboard = get_select_menu_keyboard(param_name, value, user_id)
-                _edit_args_callback_message(
-                    callback_query,
-                    f"<b>⚙️ {get_param_description(YTDLP_PARAMS[param_name], param_name, messages)}</b>\n\n"
-                    f"{messages.ARGS_CURRENT_VALUE_MSG.format(current_value=value)}",
-                    reply_markup=keyboard
-                )
-                try:
-                    _answer_args_callback(callback_query, messages.ARGS_VALUE_SET_MSG.format(value=value))
-                except Exception:
-                    pass
-            else:
-                try:
-                    _answer_args_callback(callback_query, messages.ARGS_VALUE_ALREADY_SET_MSG.format(value=value))
-                except Exception:
-                    pass
             return
 
         else:
