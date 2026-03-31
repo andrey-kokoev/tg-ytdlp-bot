@@ -25,7 +25,24 @@ services:
     volumes:
       - .:/app
     ports:
-      - "5555:5555"  # Dashboard (change port via Config.DASHBOARD_PORT in CONFIG/config.py)
+      # Dashboard - only exposed to localhost (tunnel routes external traffic)
+      - "127.0.0.1:5555:5555"
+    networks:
+      - bot-network
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    command: tunnel run --token ${TUNNEL_TOKEN}
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - bot-network
+    # No ports exposed - tunnel is outbound only
+    depends_on:
+      - app
 
   bgutil-provider:
     image: brainicism/bgutil-ytdlp-pot-provider:latest
@@ -45,3 +62,9 @@ services:
       - ./docker/configuration-webserver/site:/srv:ro
       - ./docker/configuration-webserver/data:/data
       - ./docker/configuration-webserver/config:/config
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
