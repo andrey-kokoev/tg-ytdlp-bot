@@ -935,6 +935,64 @@ def _handle_upload_route_error(
             logger.error(f"Error in manual forward after error: {e2}")
 
 
+def _handle_completed_upload_outcome(
+    *,
+    user_id: int,
+    proc_msg_id: int,
+    message,
+    app,
+    task_context: RuntimeTask | None,
+    outcome,
+    url: str,
+    is_playlist: bool,
+    safe_quality_key: str,
+    requested_indices: list,
+    playlist_name: str | None,
+) -> RuntimeTask | None:
+    if playlist_name:
+        error_summary = get_playlist_error_summary(f"{user_id}_{playlist_name}")
+        if error_summary is not None:
+            outcome = downgrade_completed_outcome_to_partial(
+                outcome,
+                playlist_error_summary=error_summary,
+            )
+    if outcome.outcome_kind != "completed":
+        return task_context
+
+    plan = _build_download_terminal_plan(
+        user_id=user_id,
+        outcome=outcome,
+        is_playlist=is_playlist,
+        safe_quality_key=safe_quality_key,
+        requested_indices=requested_indices,
+    )
+    if plan.send_playlist_status and is_playlist and safe_quality_key:
+        plan = DownloadTerminalPlan(
+            mode=plan.mode,
+            status_text=plan.status_text,
+            log_text=plan.log_text,
+            clear_subs_state=plan.clear_subs_state,
+            clear_playlist_state=plan.clear_playlist_state,
+            clear_download_dir=plan.clear_download_dir,
+            clear_temp_files=plan.clear_temp_files,
+            send_playlist_status=plan.send_playlist_status,
+            playlist_reply_to_message_id=proc_msg_id,
+        )
+    return _execute_download_terminal_plan(
+        user_id=user_id,
+        proc_msg_id=proc_msg_id,
+        message=message,
+        app=app,
+        plan=plan,
+        task_context=task_context,
+        outcome=outcome,
+        url=url,
+        is_playlist=is_playlist,
+        safe_quality_key=safe_quality_key,
+        requested_indices=requested_indices,
+    )
+
+
 def _build_manual_forward_recovery_plan(
     *,
     is_playlist: bool,
@@ -4951,46 +5009,19 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
             delivered_count=successful_uploads,
             cached_count=len(cached_videos) if is_playlist and safe_quality_key else 0,
         )
-        if playlist_name:
-            error_summary = get_playlist_error_summary(f"{user_id}_{playlist_name}")
-            if error_summary is not None:
-                outcome = downgrade_completed_outcome_to_partial(
-                    outcome,
-                    playlist_error_summary=error_summary,
-                )
-        if outcome.outcome_kind == "completed":
-            plan = _build_download_terminal_plan(
-                user_id=user_id,
-                outcome=outcome,
-                is_playlist=is_playlist,
-                safe_quality_key=safe_quality_key,
-                requested_indices=requested_indices,
-            )
-            if plan.send_playlist_status and is_playlist and safe_quality_key:
-                plan = DownloadTerminalPlan(
-                    mode=plan.mode,
-                    status_text=plan.status_text,
-                    log_text=plan.log_text,
-                    clear_subs_state=plan.clear_subs_state,
-                    clear_playlist_state=plan.clear_playlist_state,
-                    clear_download_dir=plan.clear_download_dir,
-                    clear_temp_files=plan.clear_temp_files,
-                    send_playlist_status=plan.send_playlist_status,
-                    playlist_reply_to_message_id=proc_msg_id,
-                )
-            task_context = _execute_download_terminal_plan(
-                user_id=user_id,
-                proc_msg_id=proc_msg_id,
-                message=message,
-                app=app,
-                plan=plan,
-                task_context=task_context,
-                outcome=outcome,
-                url=url,
-                is_playlist=is_playlist,
-                safe_quality_key=safe_quality_key,
-                requested_indices=requested_indices,
-            )
+        task_context = _handle_completed_upload_outcome(
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            message=message,
+            app=app,
+            task_context=task_context,
+            outcome=outcome,
+            url=url,
+            is_playlist=is_playlist,
+            safe_quality_key=safe_quality_key,
+            requested_indices=requested_indices,
+            playlist_name=playlist_name,
+        )
 
     except Exception as e:
         plan = _build_download_error_plan(
