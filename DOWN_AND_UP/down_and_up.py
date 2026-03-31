@@ -308,6 +308,39 @@ class ManualForwardRecoveryPlan:
     should_cache: bool
 
 
+@dataclass(frozen=True)
+class SplitQualityKeyRecoveryPlan:
+    mode: str
+    should_finalize: bool
+    should_cache: bool
+
+
+def _build_split_quality_key_recovery_plan(
+    *,
+    split_msg_ids: list,
+    is_playlist: bool,
+    url: str | None,
+    safe_quality_key: str | None,
+) -> SplitQualityKeyRecoveryPlan:
+    if split_msg_ids and not is_playlist and url and safe_quality_key:
+        return SplitQualityKeyRecoveryPlan(
+            mode="finalize_and_cache",
+            should_finalize=True,
+            should_cache=True,
+        )
+    if split_msg_ids and not is_playlist:
+        return SplitQualityKeyRecoveryPlan(
+            mode="finalize_only",
+            should_finalize=True,
+            should_cache=False,
+        )
+    return SplitQualityKeyRecoveryPlan(
+        mode="skip",
+        should_finalize=False,
+        should_cache=False,
+    )
+
+
 def _build_manual_forward_recovery_plan(
     *,
     is_playlist: bool,
@@ -942,7 +975,13 @@ def _handle_quality_key_error(e: Exception, split_msg_ids: list, is_playlist: bo
     # Check if all downloads completed successfully
     # For split videos, check if we have split_msg_ids; for regular videos, check successful_uploads
     logger.info(f"Final check after quality_key error: successful_uploads={successful_uploads}, len(indices_to_download)={len(indices_to_download)}, split_msg_ids={split_msg_ids}, is_playlist={is_playlist}")
-    if (successful_uploads == len(indices_to_download)) or (split_msg_ids and not is_playlist):
+    recovery_plan = _build_split_quality_key_recovery_plan(
+        split_msg_ids=split_msg_ids,
+        is_playlist=is_playlist,
+        url=url,
+        safe_quality_key=safe_quality_key,
+    )
+    if (successful_uploads == len(indices_to_download)) or recovery_plan.should_finalize:
         logger.info(f"Upload complete condition met after quality_key error, replacing status message")
         delivered_count = len(split_msg_ids) if split_msg_ids and not is_playlist else video_count
         success_msg = _build_video_terminal_status(user_id, delivered_count)
@@ -951,7 +990,7 @@ def _handle_quality_key_error(e: Exception, split_msg_ids: list, is_playlist: bo
         _clear_video_subtitle_state(user_id, url)
         
         # Save to cache if we have the necessary data
-        if url and safe_quality_key and split_msg_ids and not is_playlist:
+        if recovery_plan.should_cache:
             logger.info(f"down_and_up: saving split video to cache after quality_key error: {split_msg_ids}")
             _save_video_cache_with_logging(url, safe_quality_key, split_msg_ids, original_text=message.text or message.caption or "", user_id=user_id)
         
