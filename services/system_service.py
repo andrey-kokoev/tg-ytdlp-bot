@@ -258,50 +258,61 @@ def get_package_versions() -> Dict[str, str]:
     }
 
 
-def rotate_ip() -> Dict[str, Any]:
-    """Rotate IP by restarting WireGuard and return new IPs."""
+def _run_system_command(
+    command: list[str],
+    *,
+    timeout: int,
+    success_message: str,
+    error_message: str,
+) -> Dict[str, Any]:
     try:
         result = subprocess.run(
-            ["sudo", "systemctl", "restart", "wg-quick@wgcf"],
+            command,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
             check=False,
         )
         if result.returncode == 0:
-            # Wait a bit for the new IP to apply
+            return {"status": "ok", "message": success_message, "output": result.stdout.strip()}
+        return {"status": "error", "message": result.stderr or error_message}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def rotate_ip() -> Dict[str, Any]:
+    """Rotate IP by restarting WireGuard and return new IPs."""
+    try:
+        result = _run_system_command(
+            ["sudo", "systemctl", "restart", "wg-quick@wgcf"],
+            timeout=30,
+            success_message="IP rotated successfully",
+            error_message="Failed to rotate IP",
+        )
+        if result["status"] == "ok":
             import time
+
             time.sleep(2)
-            # Get new IP addresses
             new_ips = get_external_ip()
             return {
                 "status": "ok",
-                "message": "IP rotated successfully",
+                "message": result["message"],
                 "ipv4": new_ips.get("ipv4", "unknown"),
-                "ipv6": new_ips.get("ipv6", "unknown")
+                "ipv6": new_ips.get("ipv6", "unknown"),
             }
-        else:
-            return {"status": "error", "message": result.stderr or "Failed to rotate IP"}
+        return result
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
 def restart_service() -> Dict[str, Any]:
     """Restart tg-ytdlp-bot service."""
-    try:
-        result = subprocess.run(
-            ["sudo", "systemctl", "restart", "tg-ytdlp-bot"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        if result.returncode == 0:
-            return {"status": "ok", "message": "Service restarted successfully"}
-        else:
-            return {"status": "error", "message": result.stderr or "Failed to restart service"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    return _run_system_command(
+        ["sudo", "systemctl", "restart", "tg-ytdlp-bot"],
+        timeout=30,
+        success_message="Service restarted successfully",
+        error_message="Failed to restart service",
+    )
 
 
 def update_engines() -> Dict[str, Any]:
@@ -313,19 +324,18 @@ def update_engines() -> Dict[str, Any]:
         ]
         outputs = []
         for label, command in commands:
-            result = subprocess.run(
+            result = _run_system_command(
                 command,
-                capture_output=True,
-                text=True,
                 timeout=300,
-                check=False,
+                success_message=f"{label} updated successfully",
+                error_message=f"{label} failed",
             )
-            if result.returncode != 0:
+            if result["status"] != "ok":
                 return {
                     "status": "error",
-                    "message": f"{label} failed: {result.stderr or 'Unknown error'}",
+                    "message": f"{label} failed: {result['message']}",
                 }
-            outputs.append(f"{label}:\n{result.stdout.strip()}")
+            outputs.append(f"{label}:\n{result.get('output', '').strip()}")
         return {"status": "ok", "message": "Engines updated successfully", "output": "\n\n".join(outputs)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -333,37 +343,29 @@ def update_engines() -> Dict[str, Any]:
 
 def cleanup_user_files() -> Dict[str, Any]:
     """Delete files from user folders (except system ones)."""
-    try:
-        users_dir = "/root/Telegram/tg-ytdlp-bot/users"
-        result = subprocess.run(
-            [
-                "/usr/bin/find",
-                users_dir,
-                "-type", "f",
-                "!", "-name", "lang.txt",
-                "!", "-name", "args.txt",
-                "!", "-name", "keyboard.txt",
-                "!", "-name", "subs.txt",
-                "!", "-name", "subs_auto.txt",
-                "!", "-name", "mediainfo.txt",
-                "!", "-name", "split.txt",
-                "!", "-name", "tags.txt",
-                "!", "-name", "cookie.txt",
-                "!", "-name", "logs.txt",
-                "!", "-name", "format.txt",
-                "-delete",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-        if result.returncode == 0:
-            return {"status": "ok", "message": "User files cleaned up successfully"}
-        else:
-            return {"status": "error", "message": result.stderr or "Failed to cleanup files"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    users_dir = "/root/Telegram/tg-ytdlp-bot/users"
+    return _run_system_command(
+        [
+            "/usr/bin/find",
+            users_dir,
+            "-type", "f",
+            "!", "-name", "lang.txt",
+            "!", "-name", "args.txt",
+            "!", "-name", "keyboard.txt",
+            "!", "-name", "subs.txt",
+            "!", "-name", "subs_auto.txt",
+            "!", "-name", "mediainfo.txt",
+            "!", "-name", "split.txt",
+            "!", "-name", "tags.txt",
+            "!", "-name", "cookie.txt",
+            "!", "-name", "logs.txt",
+            "!", "-name", "format.txt",
+            "-delete",
+        ],
+        timeout=60,
+        success_message="User files cleaned up successfully",
+        error_message="Failed to cleanup files",
+    )
 
 
 def update_lists() -> Dict[str, Any]:
