@@ -332,6 +332,13 @@ class NonSplitUploadCompletionPlan:
     should_cleanup_media: bool
 
 
+@dataclass(frozen=True)
+class UploadCacheWritebackPlan:
+    mode: str
+    should_cache: bool
+    cache_log_suffix: str = ""
+
+
 def _build_split_quality_key_recovery_plan(
     *,
     split_msg_ids: list,
@@ -456,6 +463,74 @@ def _execute_non_split_upload_completion_plan(
             os.remove(after_rename_abs_path)
         if thumb_dir and os.path.exists(thumb_dir):
             os.remove(thumb_dir)
+
+
+def _build_upload_cache_writeback_plan(
+    *,
+    is_playlist: bool,
+    is_nsfw: bool,
+    need_subs: bool,
+    forwarded_msgs: list,
+    use_manual_suffix: bool = False,
+) -> UploadCacheWritebackPlan:
+    if is_playlist:
+        return UploadCacheWritebackPlan(mode="playlist", should_cache=True)
+    if is_nsfw or need_subs:
+        return UploadCacheWritebackPlan(mode="skip", should_cache=False)
+    return UploadCacheWritebackPlan(
+        mode="single",
+        should_cache=bool(forwarded_msgs),
+        cache_log_suffix=" (manual)" if use_manual_suffix else "",
+    )
+
+
+def _execute_upload_cache_writeback_plan(
+    *,
+    plan: UploadCacheWritebackPlan,
+    forwarded_msgs: list,
+    current_video_index: int,
+    url: str,
+    safe_quality_key: str,
+    message,
+    user_id: int,
+    playlist_video_urls: dict,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    found_type,
+    is_nsfw: bool,
+    need_subs: bool,
+) -> None:
+    if not plan.should_cache:
+        return
+    if plan.mode == "playlist":
+        video_urls_dict = (
+            {current_video_index: playlist_video_urls.get(current_video_index)}
+            if current_video_index in playlist_video_urls
+            else None
+        )
+        save_to_playlist_cache(
+            get_clean_playlist_url(url),
+            safe_quality_key,
+            [current_video_index],
+            [m.id for m in forwarded_msgs],
+            original_text=message.text or message.caption or "",
+            video_urls_dict=video_urls_dict,
+        )
+        cached_check = get_cached_playlist_videos(get_clean_playlist_url(url), safe_quality_key, [current_video_index])
+        logger.info(f"Checking the cache immediately after writing: {cached_check}")
+        playlist_indices.append(current_video_index)
+        playlist_msg_ids.extend([m.id for m in forwarded_msgs])
+        return
+    _cache_single_video_delivery(
+        forwarded_msgs=forwarded_msgs,
+        url=url,
+        safe_quality_key=safe_quality_key,
+        message=message,
+        user_id=user_id,
+        is_nsfw=is_nsfw,
+        need_subs=need_subs,
+        log_suffix=plan.cache_log_suffix,
+    )
 
 
 def _build_manual_forward_recovery_plan(
@@ -4361,29 +4436,27 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                             logger.info(f"down_and_up: forwarded_msgs result: {forwarded_msgs}")
                             if forwarded_msgs:
                                 logger.info(f"down_and_up: saving to cache with forwarded message IDs: {[m.id for m in forwarded_msgs]}")
-                                if is_playlist:
-                                    _cache_playlist_video_delivery(
-                                        current_video_index=current_index,
-                                        forwarded_msgs=forwarded_msgs,
-                                        url=url,
-                                        safe_quality_key=safe_quality_key,
-                                        message=message,
-                                        playlist_video_urls=playlist_video_urls,
-                                        playlist_indices=playlist_indices,
-                                        playlist_msg_ids=playlist_msg_ids,
-                                        user_id=user_id,
-                                        found_type=found_type,
-                                    )
-                                else:
-                                    _cache_single_video_delivery(
-                                        forwarded_msgs=forwarded_msgs,
-                                        url=url,
-                                        safe_quality_key=safe_quality_key,
-                                        message=message,
-                                        user_id=user_id,
-                                        is_nsfw=is_nsfw,
-                                        need_subs=need_subs,
-                                    )
+                                cache_plan = _build_upload_cache_writeback_plan(
+                                    is_playlist=is_playlist,
+                                    is_nsfw=is_nsfw,
+                                    need_subs=need_subs,
+                                    forwarded_msgs=forwarded_msgs,
+                                )
+                                _execute_upload_cache_writeback_plan(
+                                    plan=cache_plan,
+                                    forwarded_msgs=forwarded_msgs,
+                                    current_video_index=current_index,
+                                    url=url,
+                                    safe_quality_key=safe_quality_key,
+                                    message=message,
+                                    user_id=user_id,
+                                    playlist_video_urls=playlist_video_urls,
+                                    playlist_indices=playlist_indices,
+                                    playlist_msg_ids=playlist_msg_ids,
+                                    found_type=found_type,
+                                    is_nsfw=is_nsfw,
+                                    need_subs=need_subs,
+                                )
                             else:
                                 # If forwarding failed, try to forward manually and get log channel IDs
                                 recovery_plan = _build_manual_forward_recovery_plan(
@@ -4415,30 +4488,28 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                         is_nsfw = manual_route_result["is_nsfw"]
                                         if forwarded_msgs:
                                             logger.info(f"down_and_up: manual forward successful, got IDs: {[m.id for m in forwarded_msgs]}")
-                                            if is_playlist:
-                                                _cache_playlist_video_delivery(
-                                                    current_video_index=current_index,
-                                                    forwarded_msgs=forwarded_msgs,
-                                                    url=url,
-                                                    safe_quality_key=safe_quality_key,
-                                                    message=message,
-                                                    playlist_video_urls=playlist_video_urls,
-                                                    playlist_indices=playlist_indices,
-                                                    playlist_msg_ids=playlist_msg_ids,
-                                                    user_id=user_id,
-                                                    found_type=found_type,
-                                                )
-                                            else:
-                                                _cache_single_video_delivery(
-                                                    forwarded_msgs=forwarded_msgs,
-                                                    url=url,
-                                                    safe_quality_key=safe_quality_key,
-                                                    message=message,
-                                                    user_id=user_id,
-                                                    is_nsfw=is_nsfw,
-                                                    need_subs=need_subs,
-                                                    log_suffix=" (manual)",
-                                                )
+                                            cache_plan = _build_upload_cache_writeback_plan(
+                                                is_playlist=is_playlist,
+                                                is_nsfw=is_nsfw,
+                                                need_subs=need_subs,
+                                                forwarded_msgs=forwarded_msgs,
+                                                use_manual_suffix=True,
+                                            )
+                                            _execute_upload_cache_writeback_plan(
+                                                plan=cache_plan,
+                                                forwarded_msgs=forwarded_msgs,
+                                                current_video_index=current_index,
+                                                url=url,
+                                                safe_quality_key=safe_quality_key,
+                                                message=message,
+                                                user_id=user_id,
+                                                playlist_video_urls=playlist_video_urls,
+                                                playlist_indices=playlist_indices,
+                                                playlist_msg_ids=playlist_msg_ids,
+                                                found_type=found_type,
+                                                is_nsfw=is_nsfw,
+                                                need_subs=need_subs,
+                                            )
                                         else:
                                             logger.error("Manual forward also failed, cannot cache video")
                                     except Exception as e:
@@ -4494,30 +4565,27 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                     is_nsfw = recovery_route_result["is_nsfw"]
                                     if forwarded_msgs:
                                         logger.info(f"down_and_up: manual forward after error successful, got IDs: {[m.id for m in forwarded_msgs]}")
-                                        if is_playlist:
-                                            _cache_playlist_video_delivery(
-                                                current_video_index=current_index,
-                                                forwarded_msgs=forwarded_msgs,
-                                                url=url,
-                                                safe_quality_key=safe_quality_key,
-                                                message=message,
-                                                playlist_video_urls=playlist_video_urls,
-                                                playlist_indices=playlist_indices,
-                                                playlist_msg_ids=playlist_msg_ids,
-                                                user_id=user_id,
-                                                found_type=found_type,
-                                            )
-                                        else:
-                                            _cache_single_video_delivery(
-                                                forwarded_msgs=forwarded_msgs,
-                                                url=url,
-                                                safe_quality_key=safe_quality_key,
-                                                message=message,
-                                                user_id=user_id,
-                                                is_nsfw=is_nsfw,
-                                                need_subs=need_subs,
-                                                log_suffix=" (error recovery)",
-                                            )
+                                        cache_plan = _build_upload_cache_writeback_plan(
+                                            is_playlist=is_playlist,
+                                            is_nsfw=is_nsfw,
+                                            need_subs=need_subs,
+                                            forwarded_msgs=forwarded_msgs,
+                                        )
+                                        _execute_upload_cache_writeback_plan(
+                                            plan=cache_plan,
+                                            forwarded_msgs=forwarded_msgs,
+                                            current_video_index=current_index,
+                                            url=url,
+                                            safe_quality_key=safe_quality_key,
+                                            message=message,
+                                            user_id=user_id,
+                                            playlist_video_urls=playlist_video_urls,
+                                            playlist_indices=playlist_indices,
+                                            playlist_msg_ids=playlist_msg_ids,
+                                            found_type=found_type,
+                                            is_nsfw=is_nsfw,
+                                            need_subs=need_subs,
+                                        )
                                     else:
                                         logger.error("Manual forward after error also failed, cannot cache video")
                                 else:
