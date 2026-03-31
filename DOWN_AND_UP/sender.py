@@ -54,6 +54,13 @@ class SenderCaptionFallbackPlan:
     timeout_log_text: str | None = None
 
 
+@dataclass(frozen=True)
+class SenderDescriptionArtifactPlan:
+    mode: str
+    should_send: bool
+    should_cleanup: bool
+
+
 def _build_sender_execution_context(message) -> SenderExecutionContext:
     chat_type = getattr(message.chat, "type", None)
     return SenderExecutionContext(
@@ -187,6 +194,38 @@ def _send_description_document(
         reply_parameters=sender_context.reply_parameters,
         parse_mode=enums.ParseMode.HTML,
     )
+
+
+def _build_sender_description_artifact_plan(*, was_truncated: bool, temp_desc_path: str) -> SenderDescriptionArtifactPlan:
+    return SenderDescriptionArtifactPlan(
+        mode="send_and_cleanup" if was_truncated and os.path.exists(temp_desc_path) else "skip",
+        should_send=was_truncated and os.path.exists(temp_desc_path),
+        should_cleanup=True,
+    )
+
+
+def _execute_sender_description_artifact_plan(
+    *,
+    plan: SenderDescriptionArtifactPlan,
+    sender_context: SenderExecutionContext,
+    temp_desc_path: str,
+    message,
+) -> None:
+    if plan.should_send:
+        try:
+            _send_description_document(
+                sender_context=sender_context,
+                description_path=temp_desc_path,
+            )
+        except Exception as e:
+            logger.error(safe_get_messages(sender_context.user_id).SENDER_ERROR_SENDING_FULL_DESCRIPTION_FILE_MSG.format(error=e))
+            from HELPERS.logger import send_error_to_user
+            send_error_to_user(message, safe_get_messages(sender_context.user_id).ERROR_SENDING_DESCRIPTION_FILE_MSG.format(error=str(e)))
+    if plan.should_cleanup and os.path.exists(temp_desc_path):
+        try:
+            os.remove(temp_desc_path)
+        except Exception as e:
+            logger.error(safe_get_messages(sender_context.user_id).SENDER_ERROR_REMOVING_TEMP_DESCRIPTION_FILE_MSG.format(error=e))
 
 
 def _is_timeout_error(exc: Exception) -> bool:
@@ -688,17 +727,15 @@ def send_videos(
         if was_truncated and full_video_title:
             with open(temp_desc_path, "w", encoding="utf-8") as f:
                 f.write(full_video_title)
-        if was_truncated and os.path.exists(temp_desc_path):
-            try:
-                user_doc_msg = _send_description_document(
-                    sender_context=sender_context,
-                    description_path=temp_desc_path,
-                )
-                # Note: Description file forwarding is handled in down_and_up.py
-            except Exception as e:
-                logger.error(safe_get_messages(user_id).SENDER_ERROR_SENDING_FULL_DESCRIPTION_FILE_MSG.format(error=e))
-                from HELPERS.logger import send_error_to_user
-                send_error_to_user(message, safe_get_messages(user_id).ERROR_SENDING_DESCRIPTION_FILE_MSG.format(error=str(e)))
+        _execute_sender_description_artifact_plan(
+            plan=_build_sender_description_artifact_plan(
+                was_truncated=was_truncated,
+                temp_desc_path=temp_desc_path,
+            ),
+            sender_context=sender_context,
+            temp_desc_path=temp_desc_path,
+            message=message,
+        )
         return video_msg
     finally:
         if os.path.exists(temp_desc_path):
