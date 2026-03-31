@@ -371,10 +371,39 @@ class AlwaysAskClosePlan:
 
 
 @dataclass(frozen=True)
+class AlwaysAskNavigationPlan:
+    mode: str
+    page: int | None = None
+    url: str | None = None
+    answer_text: str | None = None
+    show_alert: bool = False
+    keep_current_cache: bool = False
+
+
+@dataclass(frozen=True)
 class OtherQualitiesMenuPlan:
     text: str
     reply_markup: InlineKeyboardMarkup
     answer_text: str
+
+
+@dataclass(frozen=True)
+class AlwaysAskOtherFormatSelectionPlan:
+    mode: str
+    answer_text: str | None = None
+    show_alert: bool = False
+    format_id: str | None = None
+
+
+@dataclass(frozen=True)
+class AlwaysAskManualQualitySelectionPlan:
+    mode: str
+    answer_text: str | None = None
+    show_alert: bool = False
+    quality: str | None = None
+    format_override: str | None = None
+    quality_key: str | None = None
+    branch_family: str = "video"
 
 
 @dataclass(frozen=True)
@@ -694,6 +723,178 @@ def _execute_askq_close_plan(app, callback_query, close_plan: AlwaysAskClosePlan
                 reply_markup=None,
             )
     safe_callback_answer(callback_query, close_plan.answer_text)
+
+
+def _determine_other_format_selection_plan(
+    user_id: int,
+    *,
+    data: str,
+    source_context: AlwaysAskSourceContext | None,
+) -> AlwaysAskOtherFormatSelectionPlan | None:
+    if not data.startswith("other_id_"):
+        return None
+
+    messages = safe_get_messages(user_id)
+    if source_context is None:
+        return AlwaysAskOtherFormatSelectionPlan(
+            mode="error",
+            answer_text=messages.AA_ERROR_ORIGINAL_NOT_FOUND_MSG,
+            show_alert=True,
+        )
+    if not source_context.url:
+        return AlwaysAskOtherFormatSelectionPlan(
+            mode="error",
+            answer_text=messages.AA_ERROR_URL_NOT_FOUND_MSG,
+            show_alert=True,
+        )
+
+    format_id_hash = data.replace("other_id_", "")
+    format_id = get_original_data_from_callback("askq|other_id", f"askq|{data}")
+    if format_id == format_id_hash:
+        format_id = format_id_hash
+
+    return AlwaysAskOtherFormatSelectionPlan(
+        mode="download",
+        answer_text=f"{messages.ALWAYS_ASK_DOWNLOADING_FORMAT_MSG} {format_id}...",
+        format_id=format_id,
+    )
+
+
+def _build_manual_quality_format_override(quality: str) -> str:
+    if quality == "best":
+        return "bv*[vcodec*=avc1]+ba[acodec*=mp4a]/bv*[vcodec*=avc1]+ba/bv+ba/best"
+
+    quality_str = quality.replace("p", "")
+    quality_val = int(quality_str)
+    if quality_val >= 4320:
+        prev = 2160
+    elif quality_val >= 2160:
+        prev = 1440
+    elif quality_val >= 1440:
+        prev = 1080
+    elif quality_val >= 1080:
+        prev = 720
+    elif quality_val >= 720:
+        prev = 480
+    elif quality_val >= 480:
+        prev = 360
+    elif quality_val >= 360:
+        prev = 240
+    elif quality_val >= 240:
+        prev = 144
+    else:
+        prev = 0
+    return (
+        f"bv*[vcodec*=avc1][height<={quality_val}][height>{prev}]+ba[acodec*=mp4a]/"
+        f"bv*[vcodec*=avc1][height<={quality_val}]+ba[acodec*=mp4a]/"
+        "bv*[vcodec*=avc1]+ba/best/bv+ba/best"
+    )
+
+
+def _determine_askq_navigation_plan(
+    user_id: int,
+    *,
+    data: str,
+    callback_query,
+    source_context: AlwaysAskSourceContext | None,
+) -> AlwaysAskNavigationPlan | None:
+    messages = safe_get_messages(user_id)
+
+    if data.startswith("other_page_"):
+        if source_context is None or not source_context.url:
+            return AlwaysAskNavigationPlan(
+                mode="error",
+                answer_text=messages.AA_ERROR_ORIGINAL_NOT_FOUND_MSG,
+                show_alert=True,
+            )
+        return AlwaysAskNavigationPlan(
+            mode="other_page",
+            page=int(data.replace("other_page_", "")),
+            url=source_context.url,
+            keep_current_cache=True,
+        )
+
+    if data == "other_back":
+        if source_context is None or not source_context.url:
+            return AlwaysAskNavigationPlan(
+                mode="error",
+                answer_text=messages.AA_ERROR_ORIGINAL_NOT_FOUND_MSG,
+                show_alert=True,
+            )
+        return AlwaysAskNavigationPlan(
+            mode="reopen_quality_menu",
+            url=source_context.url,
+            keep_current_cache=True,
+        )
+
+    if data == "manual_back":
+        if source_context is None:
+            return AlwaysAskNavigationPlan(
+                mode="error",
+                answer_text=messages.AA_ERROR_ORIGINAL_NOT_FOUND_MSG,
+                show_alert=True,
+            )
+        if not source_context.url:
+            return AlwaysAskNavigationPlan(
+                mode="error",
+                answer_text=messages.AA_ERROR_URL_NOT_FOUND_MSG,
+                show_alert=True,
+            )
+        return AlwaysAskNavigationPlan(
+            mode="manual_back",
+            url=source_context.url,
+        )
+
+    return None
+
+
+def _determine_manual_quality_selection_plan(
+    user_id: int,
+    *,
+    data: str,
+    source_context: AlwaysAskSourceContext | None,
+) -> AlwaysAskManualQualitySelectionPlan | None:
+    if not data.startswith("manual_"):
+        return None
+
+    messages = safe_get_messages(user_id)
+    if source_context is None:
+        return AlwaysAskManualQualitySelectionPlan(
+            mode="error",
+            answer_text=messages.AA_ERROR_ORIGINAL_NOT_FOUND_MSG,
+            show_alert=True,
+        )
+    if not source_context.url:
+        return AlwaysAskManualQualitySelectionPlan(
+            mode="error",
+            answer_text=messages.AA_ERROR_URL_NOT_FOUND_MSG,
+            show_alert=True,
+        )
+
+    quality = data.replace("manual_", "")
+    if quality == "mp3":
+        return AlwaysAskManualQualitySelectionPlan(
+            mode="download",
+            answer_text=f"{messages.ALWAYS_ASK_DOWNLOADING_QUALITY_MSG} {quality}...",
+            quality=quality,
+            quality_key="mp3",
+            format_override="ba",
+            branch_family="audio",
+        )
+
+    try:
+        format_override = _build_manual_quality_format_override(quality)
+    except ValueError:
+        format_override = "bv*[vcodec*=avc1]+ba[acodec*=mp4a]/bv*[vcodec*=avc1]+ba/bv+ba/best"
+
+    return AlwaysAskManualQualitySelectionPlan(
+        mode="download",
+        answer_text=f"{messages.ALWAYS_ASK_DOWNLOADING_QUALITY_MSG} {quality}...",
+        quality=quality,
+        quality_key=quality,
+        format_override=format_override,
+        branch_family="video",
+    )
 
 
 def _build_other_qualities_menu_plan(
@@ -2061,408 +2262,68 @@ def askq_callback(app, callback_query):
             return
         # LINK BACK/CLOSE HANDLERS REMOVED - no longer needed
     
-    # Handle other qualities page navigation
-    if data.startswith("other_page_"):
-        page = int(data.replace("other_page_", ""))
-        # For page navigation, use cached data for speed
-        original_message = callback_query.message.reply_to_message
-        if original_message:
-            url_text = original_message.text or (original_message.caption or "")
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            
-            if url:
-                # Clean up old format cache files before using current cache
-                try:
-                    user_dir = os.path.join("users", str(callback_query.from_user.id))
-                    create_directory(user_dir)
-                    
-                    # Get download directory if available
-                    user_download_dir = get_user_download_dir(callback_query.from_user.id)
-                    
-                    # Remove all old format cache files except current one
-                    import glob
-                    # Use download directory if available, otherwise fallback to user directory
-                    if user_download_dir and os.path.exists(user_download_dir):
-                        format_cache_pattern = os.path.join(user_download_dir, "formats_cache_*.json")
-                        current_cache_file = os.path.join(user_download_dir, f"formats_cache_{hashlib.md5(url.encode()).hexdigest()[:8]}.json")
-                    else:
-                        format_cache_pattern = os.path.join(user_dir, "formats_cache_*.json")
-                        current_cache_file = os.path.join(user_dir, f"formats_cache_{hashlib.md5(url.encode()).hexdigest()[:8]}.json")
-                    old_cache_files = glob.glob(format_cache_pattern)
-                    
-                    for cache_file in old_cache_files:
-                        if cache_file != current_cache_file:  # Don't delete current cache
-                            try:
-                                os.remove(cache_file)
-                                logger.info(f"{LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_LOG_MSG}: {cache_file}")
-                            except Exception as e:
-                                logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_REMOVE_OLD_CACHE_FILE_LOG_MSG} {cache_file}: {e}")
-                    if len(old_cache_files) > 1:
-                        logger.info(f"{LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_FILES_DURING_NAVIGATION_LOG_MSG}: {len(old_cache_files) - 1}")
-                except Exception as e:
-                    logger.warning(f"{LoggerMsg.ALWAYS_ASK_ERROR_CLEANING_UP_OLD_FORMAT_CACHE_FILES_DURING_NAVIGATION_LOG_MSG}: {e}")
-                
-                cache_file = current_cache_file
-                if os.path.exists(cache_file):
-                    try:
-                        with open(cache_file, 'r', encoding='utf-8') as f:
-                            cached_data = json.load(f)
-                            format_lines = cached_data.get('formats', [])
-                            if format_lines:
-                                show_formats_from_cache(app, callback_query, format_lines, page, url)
-                                return
-                    except Exception:
-                        pass
-        
-                    # Fallback to full function if cache not available
-            show_other_qualities_menu(app, callback_query, page)
+    navigation_plan = _determine_askq_navigation_plan(
+        user_id,
+        data=data,
+        callback_query=callback_query,
+        source_context=source_context,
+    )
+    if navigation_plan is not None:
+        _execute_askq_navigation_plan(
+            app,
+            callback_query,
+            user_id,
+            source_context,
+            navigation_plan,
+        )
         return
     
-    if data == "other_back":
-        # Go back to main Always Ask menu
-        original_message = callback_query.message.reply_to_message
-        if original_message:
-            url_text = original_message.text or (original_message.caption or "")
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            
-            # Clean up old format cache files before returning to main menu
-            try:
-                user_dir = os.path.join("users", str(callback_query.from_user.id))
-                create_directory(user_dir)
-                
-                # Get download directory if available
-                user_download_dir = get_user_download_dir(callback_query.from_user.id)
-                
-                # Remove all old format cache files except current one
-                import glob
-                # Use download directory if available, otherwise fallback to user directory
-                if user_download_dir and os.path.exists(user_download_dir):
-                    format_cache_pattern = os.path.join(user_download_dir, "formats_cache_*.json")
-                    current_cache_file = os.path.join(user_download_dir, f"formats_cache_{hashlib.md5(url.encode()).hexdigest()[:8]}.json")
-                else:
-                    format_cache_pattern = os.path.join(user_dir, "formats_cache_*.json")
-                    current_cache_file = os.path.join(user_dir, f"formats_cache_{hashlib.md5(url.encode()).hexdigest()[:8]}.json")
-                old_cache_files = glob.glob(format_cache_pattern)
-                
-                for cache_file in old_cache_files:
-                    if cache_file != current_cache_file:  # Don't delete current cache
-                        try:
-                            os.remove(cache_file)
-                            logger.info(f"{LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_LOG_MSG}: {cache_file}")
-                        except Exception as e:
-                            logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_REMOVE_OLD_CACHE_FILE_LOG_MSG} {cache_file}: {e}")
-                if len(old_cache_files) > 1:
-                    logger.info(f"{LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_FILES_BEFORE_RETURNING_TO_MAIN_MENU_LOG_MSG}: {len(old_cache_files) - 1}")
-            except Exception as e:
-                logger.warning(f"{LoggerMsg.ALWAYS_ASK_ERROR_CLEANING_UP_OLD_FORMAT_CACHE_FILES_BEFORE_RETURNING_TO_MAIN_MENU_LOG_MSG}: {e}")
-            
-            ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-        return
-    
-    if data == "manual_back":
-        # Extract URL and tags to regenerate the original menu
-        original_message = callback_query.message.reply_to_message
-        if not original_message:
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
-            safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+    other_format_plan = _determine_other_format_selection_plan(
+        user_id,
+        data=data,
+        source_context=source_context,
+    )
+    if other_format_plan is not None:
+        if other_format_plan.answer_text:
+            safe_callback_answer(
+                callback_query,
+                other_format_plan.answer_text,
+                show_alert=other_format_plan.show_alert,
+            )
+        if other_format_plan.mode == "error":
             return
-        
-        url = None
-        if callback_query.message.caption_entities:
-            for entity in callback_query.message.caption_entities:
-                if entity.type == enums.MessageEntityType.TEXT_LINK and entity.url:
-                    url = entity.url
-                    break
-        if not url and callback_query.message.reply_to_message:
-            url_match = re.search(r'https?://[^\s\*#]+', callback_query.message.reply_to_message.text)
-            if url_match:
-                url = url_match.group(0)
-        
-        if url:
-            tags = []
-            caption_text = callback_query.message.caption
-            if caption_text:
-                tag_matches = re.findall(r'#\S+', caption_text)
-                if tag_matches:
-                    tags = tag_matches
-            safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
-            ask_quality_menu(app, original_message, url, tags)
-        else:
-            callback_query.answer(safe_get_messages(user_id).AA_ERROR_URL_NOT_FOUND_MSG, show_alert=True)
-            safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+        _execute_askq_other_format_selection(
+            app,
+            callback_query,
+            user_id,
+            source_context,
+            other_format_plan,
+        )
         return
-    
-    # Handle other quality selection by ID
-    if data.startswith("other_id_"):
-        logger.info(f"Processing other_id_ callback: {data}")
-        format_id_hash = data.replace("other_id_", "")
-        
-        # Get original format_id from callback data
-        format_id = get_original_data_from_callback("askq|other_id", callback_query.data)
-        logger.info(f"Retrieved format_id from callback: '{format_id}' for hash '{format_id_hash}'")
-        
-        # If format_id is still a hash, try to get it from the cache
-        if format_id == format_id_hash:
-            logger.warning(f"Format ID is still a hash, trying to get from cache")
-            # Try to get format_id from the cached formats
-            try:
-                user_id = callback_query.from_user.id
-                user_dir = os.path.join("users", str(user_id))
-                cache_file = os.path.join(user_dir, "formats_cache_75170fc2.json")
-                if os.path.exists(cache_file):
-                    import json
-                    with open(cache_file, 'r') as f:
-                        formats = json.load(f)
-                    # Find format by hash or try to use the hash as format_id
-                    format_id = format_id_hash
-                    logger.info(f"Using hash as format_id: {format_id}")
-                else:
-                    logger.error(f"Cache file not found: {cache_file}")
-            except Exception as e:
-                logger.error(f"Error reading cache file: {e}")
-        
-        # Delete the menu message immediately to prevent multiple menus
-        try:
-            safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
-            logger.info("Deleted Other menu message successfully")
-        except Exception as e:
-            logger.warning(f"Failed to delete Other menu message: {e}")
-        
-        safe_callback_answer(callback_query, f"{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_FORMAT_MSG} {format_id}...")
-        logger.info(f"Starting download process for format_id: {format_id}")
 
-        if source_context is None:
-            logger.error("Original message not found")
-            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
-            return
-        original_message = source_context.original_message
-        url = source_context.url
-        logger.info(f"Extracted URL: {url}")
-        if not url:
-            logger.error("URL not found in message")
-            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_URL_NOT_FOUND_MSG, show_alert=True)
-            return
-        
-        # Extract tags from the user's source message
-        original_text = source_context.url_text
-        _, _, _, _, tags, tags_text, _ = extract_url_range_tags(original_text)
-        logger.info(f"Extracted tags: {tags_text}")
-        
-        # Use specific format ID for download
-        format_override = format_id
-        logger.info(f"Using format_override: {format_override}")
-        
-        # Handle playlists
-        if is_playlist_with_range(original_text):
-            logger.info("Detected playlist, using down_and_up")
-            _, video_start_with, video_end_with, playlist_name, _, _, tag_error = extract_url_range_tags(original_text)
-            # Correct video_count calculation for negative indices
-            if video_start_with < 0 and video_end_with < 0:
-                video_count = abs(video_end_with) - abs(video_start_with) + 1
-            elif video_start_with > video_end_with:
-                video_count = abs(video_start_with - video_end_with) + 1
-            else:
-                video_count = video_end_with - video_start_with + 1
-            branch_result = _select_callback_download_branch(
-                user_id,
-                callback_data=data,
-                quality_intent=format_id,
-                quality_key=format_id,
-                format_override=format_override,
-                video_count=video_count,
-                origin="format_id_callback",
-                provenance={"callback_data": data},
-                force_branch_family="video",
+    manual_quality_plan = _determine_manual_quality_selection_plan(
+        user_id,
+        data=data,
+        source_context=source_context,
+    )
+    if manual_quality_plan is not None:
+        if manual_quality_plan.answer_text:
+            safe_callback_answer(
+                callback_query,
+                manual_quality_plan.answer_text,
+                show_alert=manual_quality_plan.show_alert,
             )
-            task = _make_callback_runtime_task(
-                original_message,
-                url=url,
-                tags=tags,
-                tags_text=tags_text,
-                branch_result=branch_result,
-                playlist_name=playlist_name,
-                video_count=video_count,
-                video_start_with=video_start_with,
-            )
-            _dispatch_callback_download_branch(
-                app,
-                original_message,
-                task,
-                clear_subs_cache_on_start=False,
-            )
-        else:
-            logger.info("Single video, using down_and_up_with_format")
-            branch_result = _select_callback_download_branch(
-                user_id,
-                callback_data=data,
-                quality_intent=format_id,
-                quality_key=format_id,
-                format_override=format_override,
-                origin="format_id_callback",
-                provenance={"callback_data": data},
-                force_branch_family="video",
-            )
-            task = _make_callback_runtime_task(
-                original_message,
-                url=url,
-                tags=tags,
-                tags_text=tags_text,
-                branch_result=branch_result,
-            )
-            _dispatch_callback_download_branch(
-                app,
-                original_message,
-                task,
-            )
-        logger.info("Download process initiated successfully")
-        return
-    
-    # Handle manual quality selection
-    if data.startswith("manual_"):
-        quality = data.replace("manual_", "")
-        safe_callback_answer(callback_query, f"{safe_get_messages(user_id).ALWAYS_ASK_DOWNLOADING_QUALITY_MSG} {quality}...")
-
-        if source_context is None:
-            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
+        if manual_quality_plan.mode == "error":
             _delete_callback_message()
             return
-        original_message = source_context.original_message
-        url = source_context.url
-        if not url:
-            safe_callback_answer(callback_query, safe_get_messages(user_id).AA_ERROR_URL_NOT_FOUND_MSG, show_alert=True)
-            _delete_callback_message()
-            return
-        
-        # New method: always extract tags from the user's source message
-        original_text = source_context.url_text
-        _, _, _, _, tags, tags_text, _ = extract_url_range_tags(original_text)
-        
-        _delete_callback_message()
-        
-        # Force use specific quality format like in /format command
-        if quality == "best":
-            format_override = "bv*[vcodec*=avc1]+ba[acodec*=mp4a]/bv*[vcodec*=avc1]+ba/bv+ba/best"
-        elif quality == "mp3":
-            branch_result = _select_callback_download_branch(
-                user_id,
-                callback_data="mp3",
-                quality_intent="mp3",
-                quality_key="mp3",
-                format_override="ba",
-                origin="manual_quality_callback",
-                provenance={"quality": quality},
-            )
-            task = _make_callback_runtime_task(
-                original_message,
-                url=url,
-                tags=tags,
-                tags_text=tags_text,
-                branch_result=branch_result,
-                proc_msg=proc_msg,
-            )
-            _dispatch_callback_download_branch(
-                app,
-                original_message,
-                task,
-                proc_msg=proc_msg,
-            )
-            return
-        else:
-            try:
-                quality_str = quality.replace('p', '')
-                quality_val = int(quality_str)
-                # choose previous rung for lower bound
-                if quality_val and quality_val >= 4320:
-                    prev = 2160
-                elif quality_val and quality_val >= 2160:
-                    prev = 1440
-                elif quality_val and quality_val >= 1440:
-                    prev = 1080
-                elif quality_val and quality_val >= 1080:
-                    prev = 720
-                elif quality_val and quality_val >= 720:
-                    prev = 480
-                elif quality_val and quality_val >= 480:
-                    prev = 360
-                elif quality_val and quality_val >= 360:
-                    prev = 240
-                elif quality_val and quality_val >= 240:
-                    prev = 144
-                else:
-                    prev = 0
-                format_override = f"bv*[vcodec*=avc1][height<={quality_val}][height>{prev}]+ba[acodec*=mp4a]/bv*[vcodec*=avc1][height<={quality_val}]+ba[acodec*=mp4a]/bv*[vcodec*=avc1]+ba/best/bv+ba/best"
-            except ValueError:
-                format_override = "bv*[vcodec*=avc1]+ba[acodec*=mp4a]/bv*[vcodec*=avc1]+ba/bv+ba/best"
-        
-        # Handle playlists
-        original_text = original_message.text or original_message.caption or ""
-        if is_playlist_with_range(original_text):
-            _, video_start_with, video_end_with, playlist_name, _, _, tag_error = extract_url_range_tags(original_text)
-            # Correct video_count calculation for negative indices
-            if video_start_with < 0 and video_end_with < 0:
-                video_count = abs(video_end_with) - abs(video_start_with) + 1
-            elif video_start_with > video_end_with:
-                video_count = abs(video_start_with - video_end_with) + 1
-            else:
-                video_count = video_end_with - video_start_with + 1
-            branch_result = _select_callback_download_branch(
-                user_id,
-                callback_data=quality,
-                quality_intent=quality,
-                quality_key=quality,
-                format_override=format_override,
-                video_count=video_count,
-                origin="manual_quality_callback",
-                provenance={"quality": quality},
-                force_branch_family="video",
-            )
-            task = _make_callback_runtime_task(
-                original_message,
-                url=url,
-                tags=tags,
-                tags_text=tags_text,
-                branch_result=branch_result,
-                playlist_name=playlist_name,
-                video_count=video_count,
-                video_start_with=video_start_with,
-                proc_msg=proc_msg,
-            )
-            _dispatch_callback_download_branch(
-                app,
-                original_message,
-                task,
-                proc_msg=proc_msg,
-                clear_subs_cache_on_start=False,
-            )
-        else:
-            branch_result = _select_callback_download_branch(
-                user_id,
-                callback_data=quality,
-                quality_intent=quality,
-                quality_key=quality,
-                format_override=format_override,
-                origin="manual_quality_callback",
-                provenance={"quality": quality},
-                force_branch_family="video",
-            )
-            task = _make_callback_runtime_task(
-                original_message,
-                url=url,
-                tags=tags,
-                tags_text=tags_text,
-                branch_result=branch_result,
-                proc_msg=proc_msg,
-            )
-            _dispatch_callback_download_branch(
-                app,
-                original_message,
-                task,
-                proc_msg=proc_msg,
-            )
+        _execute_askq_manual_quality_selection(
+            app,
+            callback_query,
+            user_id,
+            source_context,
+            manual_quality_plan,
+            proc_msg=proc_msg,
+        )
         return
 
     if source_context is None:
@@ -6538,6 +6399,285 @@ def _execute_askq_quick_embed_action(app, callback_query, user_id: int, source_c
     )
     send_to_logger(original_message, safe_get_messages(user_id).QUICK_EMBED_LOG_MSG.format(embed_url=embed_url))
     safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+
+
+def _execute_askq_other_format_selection(
+    app,
+    callback_query,
+    user_id: int,
+    source_context: AlwaysAskSourceContext | None,
+    selection_plan: AlwaysAskOtherFormatSelectionPlan,
+) -> None:
+    if source_context is None or selection_plan.format_id is None:
+        return
+
+    logger.info("Processing other_id_ callback: %s", callback_query.data)
+    format_id = selection_plan.format_id
+    original_message = source_context.original_message
+    url = source_context.url
+    original_text = source_context.url_text
+    _, _, _, _, tags, tags_text, _ = extract_url_range_tags(original_text)
+
+    try:
+        safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+        logger.info("Deleted Other menu message successfully")
+    except Exception as e:
+        logger.warning("Failed to delete Other menu message: %s", e)
+
+    logger.info("Starting download process for format_id: %s", format_id)
+    if is_playlist_with_range(original_text):
+        logger.info("Detected playlist, using down_and_up")
+        _, video_start_with, _, playlist_name, video_count = _build_quality_range_context(original_message)
+        branch_result = _select_callback_download_branch(
+            user_id,
+            callback_data=callback_query.data,
+            quality_intent=format_id,
+            quality_key=format_id,
+            format_override=format_id,
+            video_count=video_count,
+            origin="format_id_callback",
+            provenance={"callback_data": callback_query.data},
+            force_branch_family="video",
+        )
+        task = _make_callback_runtime_task(
+            original_message,
+            url=url,
+            tags=tags,
+            tags_text=tags_text,
+            branch_result=branch_result,
+            playlist_name=playlist_name,
+            video_count=video_count,
+            video_start_with=video_start_with,
+        )
+        _dispatch_callback_download_branch(
+            app,
+            original_message,
+            task,
+            clear_subs_cache_on_start=False,
+        )
+    else:
+        logger.info("Single video, using down_and_up_with_format")
+        branch_result = _select_callback_download_branch(
+            user_id,
+            callback_data=callback_query.data,
+            quality_intent=format_id,
+            quality_key=format_id,
+            format_override=format_id,
+            origin="format_id_callback",
+            provenance={"callback_data": callback_query.data},
+            force_branch_family="video",
+        )
+        task = _make_callback_runtime_task(
+            original_message,
+            url=url,
+            tags=tags,
+            tags_text=tags_text,
+            branch_result=branch_result,
+        )
+        _dispatch_callback_download_branch(
+            app,
+            original_message,
+            task,
+        )
+    logger.info("Download process initiated successfully")
+
+
+def _execute_askq_manual_quality_selection(
+    app,
+    callback_query,
+    user_id: int,
+    source_context: AlwaysAskSourceContext | None,
+    selection_plan: AlwaysAskManualQualitySelectionPlan,
+    *,
+    proc_msg=None,
+) -> None:
+    if source_context is None or selection_plan.quality is None or selection_plan.format_override is None:
+        return
+
+    original_message = source_context.original_message
+    url = source_context.url
+    original_text = source_context.url_text
+    _, _, _, _, tags, tags_text, _ = extract_url_range_tags(original_text)
+
+    try:
+        safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+    except Exception:
+        pass
+
+    if is_playlist_with_range(original_text):
+        _, video_start_with, _, playlist_name, video_count = _build_quality_range_context(original_message)
+        branch_result = _select_callback_download_branch(
+            user_id,
+            callback_data=selection_plan.quality,
+            quality_intent=selection_plan.quality,
+            quality_key=selection_plan.quality_key,
+            format_override=selection_plan.format_override,
+            video_count=video_count,
+            origin="manual_quality_callback",
+            provenance={"quality": selection_plan.quality},
+            force_branch_family="video" if selection_plan.branch_family == "video" else None,
+        )
+        task = _make_callback_runtime_task(
+            original_message,
+            url=url,
+            tags=tags,
+            tags_text=tags_text,
+            branch_result=branch_result,
+            playlist_name=playlist_name,
+            video_count=video_count,
+            video_start_with=video_start_with,
+            proc_msg=proc_msg,
+        )
+        _dispatch_callback_download_branch(
+            app,
+            original_message,
+            task,
+            proc_msg=proc_msg,
+            clear_subs_cache_on_start=False,
+        )
+        return
+
+    branch_result = _select_callback_download_branch(
+        user_id,
+        callback_data=selection_plan.quality,
+        quality_intent=selection_plan.quality,
+        quality_key=selection_plan.quality_key,
+        format_override=selection_plan.format_override,
+        origin="manual_quality_callback",
+        provenance={"quality": selection_plan.quality},
+        force_branch_family="video" if selection_plan.branch_family == "video" else None,
+    )
+    task = _make_callback_runtime_task(
+        original_message,
+        url=url,
+        tags=tags,
+        tags_text=tags_text,
+        branch_result=branch_result,
+        proc_msg=proc_msg,
+    )
+    _dispatch_callback_download_branch(
+        app,
+        original_message,
+        task,
+        proc_msg=proc_msg,
+    )
+
+
+def _cleanup_other_qualities_format_cache(
+    user_id: int,
+    *,
+    url: str,
+    keep_current_cache: bool,
+    cleanup_log_msg,
+    cleanup_error_log_msg,
+) -> None:
+    try:
+        user_dir = os.path.join("users", str(user_id))
+        create_directory(user_dir)
+        user_download_dir = get_user_download_dir(user_id)
+        if user_download_dir and os.path.exists(user_download_dir):
+            format_cache_pattern = os.path.join(user_download_dir, "formats_cache_*.json")
+            current_cache_file = os.path.join(
+                user_download_dir, f"formats_cache_{hashlib.md5(url.encode()).hexdigest()[:8]}.json"
+            )
+        else:
+            format_cache_pattern = os.path.join(user_dir, "formats_cache_*.json")
+            current_cache_file = os.path.join(
+                user_dir, f"formats_cache_{hashlib.md5(url.encode()).hexdigest()[:8]}.json"
+            )
+
+        import glob
+
+        old_cache_files = glob.glob(format_cache_pattern)
+        removed_count = 0
+        for cache_file in old_cache_files:
+            if keep_current_cache and cache_file == current_cache_file:
+                continue
+            try:
+                os.remove(cache_file)
+                removed_count += 1
+                logger.info(f"{LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_LOG_MSG}: {cache_file}")
+            except Exception as e:
+                logger.warning(f"{LoggerMsg.ALWAYS_ASK_FAILED_TO_REMOVE_OLD_CACHE_FILE_LOG_MSG} {cache_file}: {e}")
+        if removed_count:
+            logger.info(f"{cleanup_log_msg}: {removed_count}")
+    except Exception as e:
+        logger.warning(f"{cleanup_error_log_msg}: {e}")
+
+
+def _execute_askq_navigation_plan(
+    app,
+    callback_query,
+    user_id: int,
+    source_context: AlwaysAskSourceContext | None,
+    navigation_plan: AlwaysAskNavigationPlan,
+) -> None:
+    if navigation_plan.answer_text:
+        safe_callback_answer(
+            callback_query,
+            navigation_plan.answer_text,
+            show_alert=navigation_plan.show_alert,
+        )
+    if navigation_plan.mode == "error" or source_context is None:
+        return
+
+    original_message = source_context.original_message
+    url = navigation_plan.url or source_context.url
+
+    if navigation_plan.mode == "other_page":
+        _cleanup_other_qualities_format_cache(
+            user_id,
+            url=url,
+            keep_current_cache=navigation_plan.keep_current_cache,
+            cleanup_log_msg=LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_FILES_DURING_NAVIGATION_LOG_MSG,
+            cleanup_error_log_msg=LoggerMsg.ALWAYS_ASK_ERROR_CLEANING_UP_OLD_FORMAT_CACHE_FILES_DURING_NAVIGATION_LOG_MSG,
+        )
+        user_download_dir = get_user_download_dir(user_id)
+        if user_download_dir and os.path.exists(user_download_dir):
+            cache_file = os.path.join(
+                user_download_dir,
+                f"formats_cache_{hashlib.md5(url.encode()).hexdigest()[:8]}.json",
+            )
+        else:
+            cache_file = os.path.join(
+                "users",
+                str(user_id),
+                f"formats_cache_{hashlib.md5(url.encode()).hexdigest()[:8]}.json",
+            )
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    cached_data = json.load(f)
+                format_lines = cached_data.get("formats", [])
+                if format_lines:
+                    show_formats_from_cache(app, callback_query, format_lines, navigation_plan.page or 0, url)
+                    return
+            except Exception:
+                pass
+        show_other_qualities_menu(app, callback_query, navigation_plan.page or 0)
+        return
+
+    if navigation_plan.mode == "reopen_quality_menu":
+        _cleanup_other_qualities_format_cache(
+            user_id,
+            url=url,
+            keep_current_cache=navigation_plan.keep_current_cache,
+            cleanup_log_msg=LoggerMsg.ALWAYS_ASK_CLEANED_UP_OLD_FORMAT_CACHE_FILES_BEFORE_RETURNING_TO_MAIN_MENU_LOG_MSG,
+            cleanup_error_log_msg=LoggerMsg.ALWAYS_ASK_ERROR_CLEANING_UP_OLD_FORMAT_CACHE_FILES_BEFORE_RETURNING_TO_MAIN_MENU_LOG_MSG,
+        )
+        ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
+        return
+
+    if navigation_plan.mode == "manual_back":
+        tags = []
+        caption_text = getattr(callback_query.message, "caption", None)
+        if caption_text:
+            tag_matches = re.findall(r'#\S+', caption_text)
+            if tag_matches:
+                tags = tag_matches
+        safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
+        ask_quality_menu(app, original_message, url, tags)
+
 
 def analyze_format_type(format_info):
     """
