@@ -442,6 +442,105 @@ def _execute_args_value_callback_result_plan(context: ArgsCallbackContext, plan:
             )
         except Exception:
             pass
+
+
+def _build_args_set_callback_result_plan(context: ArgsCallbackContext, data: str) -> ArgsCallbackResultPlan | None:
+    if not data.startswith("args_set_"):
+        return None
+
+    messages = get_messages_instance(context.chat_id)
+    user_id = context.user_id
+    param_name = data.replace("args_set_", "")
+    if not param_name or param_name not in YTDLP_PARAMS:
+        return ArgsCallbackResultPlan(
+            mode="error",
+            answer_text=messages.ARGS_INVALID_PARAM_MSG,
+            show_alert=True,
+        )
+
+    param_config = YTDLP_PARAMS[param_name]
+    user_args = get_user_args(user_id)
+    current_value = user_args.get(param_name, param_config.get("default", ""))
+
+    if param_config["type"] == "boolean" or param_name == "send_as_file":
+        keyboard = get_boolean_menu_keyboard(param_name, current_value, user_id)
+        display_value = messages.ARGS_STATUS_TRUE_DISPLAY_MSG if current_value else messages.ARGS_STATUS_FALSE_DISPLAY_MSG
+        return ArgsCallbackResultPlan(
+            mode="set_boolean_menu",
+            edit_text=(
+                f"<b>⚙️ {get_param_description(param_config, param_name, messages)}</b>\n\n"
+                f"{messages.ARGS_CURRENT_VALUE_MSG.format(current_value=display_value)}"
+            ),
+            reply_markup=keyboard,
+        )
+
+    if param_config["type"] == "select":
+        keyboard = get_select_menu_keyboard(param_name, current_value, user_id)
+        return ArgsCallbackResultPlan(
+            mode="set_select_menu",
+            edit_text=(
+                f"<b>⚙️ {get_param_description(param_config, param_name, messages)}</b>\n\n"
+                f"{messages.ARGS_CURRENT_VALUE_MSG.format(current_value=current_value)}"
+            ),
+            reply_markup=keyboard,
+        )
+
+    if param_config["type"] in ["text", "json", "number"]:
+        if param_config["type"] == "text":
+            prompt_message = get_text_input_message(param_name, current_value, user_id)
+        elif param_config["type"] == "json":
+            prompt_message = get_json_input_message(param_name, current_value, user_id)
+        else:
+            prompt_message = get_number_input_message(param_name, current_value, user_id)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(messages.ARGS_BACK_BUTTON_MSG, callback_data="args_back")
+        ]])
+        return ArgsCallbackResultPlan(
+            mode="set_text_input",
+            edit_text=prompt_message,
+            reply_markup=keyboard,
+        )
+
+    return None
+
+
+def _execute_args_set_callback_result_plan(context: ArgsCallbackContext, plan: ArgsCallbackResultPlan, data: str) -> None:
+    callback_query = context.callback_query
+
+    if plan.mode in {"set_boolean_menu", "set_select_menu"}:
+        _edit_args_callback_message(
+            callback_query,
+            plan.edit_text,
+            reply_markup=plan.reply_markup,
+        )
+        return
+
+    if plan.mode == "set_text_input":
+        param_name = data.replace("args_set_", "")
+        param_config = YTDLP_PARAMS[param_name]
+        state = {"param": param_name, "type": param_config["type"]}
+        _start_args_input_state(context.chat_id, context.user_id, context.thread_id, state)
+        try:
+            _edit_args_callback_message(
+                callback_query,
+                plan.edit_text,
+                reply_markup=plan.reply_markup,
+            )
+        except Exception:
+            safe_send_message(
+                context.chat_id,
+                plan.edit_text,
+                reply_markup=plan.reply_markup,
+                message=context.source_message,
+            )
+        return
+
+    if plan.mode == "error":
+        _answer_args_callback(
+            callback_query,
+            plan.answer_text,
+            show_alert=plan.show_alert,
+        )
         return
     if plan.mode in {"bool_unchanged", "select_unchanged", "error"}:
         try:
@@ -1645,59 +1744,9 @@ def args_callback_logic(app, execution_context, request):
         if value_plan is not None:
             _execute_args_value_callback_result_plan(context, value_plan)
             return
-
-        elif data.startswith("args_set_"):
-            param_name = data.replace("args_set_", "")
-            if not param_name or param_name not in YTDLP_PARAMS:
-                _answer_args_callback(callback_query, messages.ARGS_INVALID_PARAM_MSG, show_alert=True)
-                return
-
-            param_config = YTDLP_PARAMS[param_name]
-            user_args = get_user_args(user_id)
-            current_value = user_args.get(param_name, param_config.get("default", ""))
-
-            if param_config["type"] == "boolean" or param_name == "send_as_file":
-                keyboard = get_boolean_menu_keyboard(param_name, current_value, user_id)
-                display_value = messages.ARGS_STATUS_TRUE_DISPLAY_MSG if current_value else messages.ARGS_STATUS_FALSE_DISPLAY_MSG
-                _edit_args_callback_message(
-                    callback_query,
-                    f"<b>⚙️ {get_param_description(param_config, param_name, messages)}</b>\n\n"
-                    f"{messages.ARGS_CURRENT_VALUE_MSG.format(current_value=display_value)}",
-                    reply_markup=keyboard
-                )
-
-            elif param_config["type"] == "select":
-                keyboard = get_select_menu_keyboard(param_name, current_value, user_id)
-                _edit_args_callback_message(
-                    callback_query,
-                    f"<b>⚙️ {get_param_description(param_config, param_name, messages)}</b>\n\n"
-                    f"{messages.ARGS_CURRENT_VALUE_MSG.format(current_value=current_value)}",
-                    reply_markup=keyboard
-                )
-
-            elif param_config["type"] in ["text", "json", "number"]:
-                state = {"param": param_name, "type": param_config["type"]}
-                _start_args_input_state(context.chat_id, context.user_id, context.thread_id, state)
-
-                if param_config["type"] == "text":
-                    message = get_text_input_message(param_name, current_value, user_id)
-                elif param_config["type"] == "json":
-                    message = get_json_input_message(param_name, current_value, user_id)
-                else:  # number
-                    message = get_number_input_message(param_name, current_value, user_id)
-
-                keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton(messages.ARGS_BACK_BUTTON_MSG, callback_data="args_back")
-                ]])
-                try:
-                    _edit_args_callback_message(
-                        callback_query,
-                        message,
-                        reply_markup=keyboard
-                    )
-                except Exception:
-                    safe_send_message(context.chat_id, message, reply_markup=keyboard, message=context.source_message)
-
+        set_plan = _build_args_set_callback_result_plan(context, data)
+        if set_plan is not None:
+            _execute_args_set_callback_result_plan(context, set_plan, data)
             return
 
         else:
