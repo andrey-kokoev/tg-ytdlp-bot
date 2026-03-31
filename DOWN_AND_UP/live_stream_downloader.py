@@ -108,6 +108,108 @@ def _send_live_stream_chunk(
     )
 
 
+def _execute_live_stream_chunk(
+    *,
+    app,
+    message,
+    execution_context: LiveStreamExecutionContext,
+    base_opts: dict,
+    url: str,
+    user_dir_name: str,
+    date_str: str,
+    safe_channel: str,
+    safe_title: str,
+    split_hours: int,
+    segment_time: int,
+    max_chunks: int,
+    chunk_idx: int,
+    video_title: str,
+    tags_text: str,
+) -> bool:
+    chunk_opts = base_opts.copy()
+    chunk_filename = f"{date_str}_{safe_channel}_{safe_title}_{chunk_idx:03d}.ts"
+    chunk_file = os.path.join(user_dir_name, chunk_filename)
+    chunk_opts["outtmpl"] = chunk_file.replace(".ts", ".%(ext)s")
+
+    segment_hours = int(segment_time / 3600)
+    segment_minutes = int((segment_time % 3600) / 60)
+    segment_seconds = int(segment_time % 60)
+    chunk_opts["downloader_args"] = {
+        "ffmpeg_i": f"-t {segment_hours:02d}:{segment_minutes:02d}:{segment_seconds:02d}",
+        "ffmpeg_o": "-f mpegts",
+    }
+
+    with yt_dlp.YoutubeDL(chunk_opts) as ydl:
+        ydl.download([url])
+
+    if not os.path.exists(chunk_file):
+        import glob
+        chunk_pattern = os.path.join(
+            user_dir_name,
+            f"{date_str}_{safe_channel}_{safe_title}_{chunk_idx:03d}.*",
+        )
+        chunk_files = glob.glob(chunk_pattern)
+        if chunk_files:
+            chunk_file = chunk_files[0]
+        else:
+            logger.warning(f"Could not find chunk file for index {chunk_idx}")
+            return False
+
+    if not os.path.exists(chunk_file):
+        logger.warning(f"Chunk file not found: {chunk_file}")
+        return False
+
+    try:
+        _, _, duration = get_video_info_ffprobe(chunk_file)
+    except Exception as e:
+        logger.error(f"Error getting video info: {e}")
+        duration = segment_time
+
+    thumb_file = None
+    try:
+        thumb_name = f"{safe_title}_chunk_{chunk_idx:03d}"
+        result = get_duration_thumb(
+            message,
+            user_dir_name,
+            chunk_file,
+            thumb_name,
+            execution_context=execution_context.ffmpeg_context,
+        )
+        if result:
+            duration_from_thumb, thumb_file = result
+            if duration_from_thumb:
+                duration = duration_from_thumb
+    except Exception as e:
+        logger.error(f"Error creating thumbnail: {e}")
+        thumb_path = os.path.join(user_dir_name, f"{safe_title}.jpg")
+        if os.path.exists(thumb_path):
+            thumb_file = thumb_path
+
+    chunk_caption = f"📡 <b>Live Stream - Chunk {chunk_idx + 1}/{max_chunks}</b>\n"
+    chunk_caption += f"⏱ Duration: {split_hours} hour(s)\n"
+    if tags_text:
+        chunk_caption += f"\n{tags_text}"
+
+    logger.info(f"Sending chunk {chunk_idx + 1} to user: {chunk_file}")
+    chunk_msg = _send_live_stream_chunk(
+        execution_context,
+        chunk_file=chunk_file,
+        chunk_caption=chunk_caption,
+        duration=int(duration) if duration else segment_time,
+        thumb_file=thumb_file or "",
+        chunk_idx=chunk_idx,
+        max_chunks=max_chunks,
+        video_title=video_title,
+        tags_text=tags_text,
+    )
+    if chunk_msg:
+        logger.info(f"Successfully sent chunk {chunk_idx + 1}")
+        return True
+
+    logger.warning(f"Failed to send chunk {chunk_idx + 1}")
+    return False
+
+
 def _build_live_stream_completion_plan(*, successful_chunks: int) -> LiveStreamCompletionPlan:
     return LiveStreamCompletionPlan(
         mode="final",
@@ -346,123 +448,29 @@ def download_live_stream_chunked(
                 )
             except Exception as e:
                 logger.error(f"Error updating progress: {e}")
-            
-            # Create yt-dlp options for this chunk
-            chunk_opts = base_opts.copy()
-            
-            # Prepare output filename for this chunk
-            chunk_filename = f"{date_str}_{safe_channel}_{safe_title}_{chunk_idx:03d}.ts"
-            chunk_file = os.path.join(user_dir_name, chunk_filename)
-            chunk_opts['outtmpl'] = chunk_file.replace('.ts', '.%(ext)s')
-            
-            # Prepare downloader args for ffmpeg to limit duration per chunk
-            # Input: limit to segment_time for this chunk
-            segment_hours = int(segment_time / 3600)
-            segment_minutes = int((segment_time % 3600) / 60)
-            segment_seconds = int(segment_time % 60)
-            ffmpeg_input_args = f"-t {segment_hours:02d}:{segment_minutes:02d}:{segment_seconds:02d}"
-            
-            # Output: use mpegts format for live streams
-            ffmpeg_output_args = "-f mpegts"
-            
-            chunk_opts['downloader_args'] = {
-                'ffmpeg_i': ffmpeg_input_args,
-                'ffmpeg_o': ffmpeg_output_args
-            }
-            
             try:
-                with yt_dlp.YoutubeDL(chunk_opts) as ydl:
-                    ydl.download([url])
-                
-                # Check if file was created (might have different extension)
-                if not os.path.exists(chunk_file):
-                    # Try to find file with any extension
-                    import glob
-                    chunk_pattern = os.path.join(
-                        user_dir_name,
-                        f"{date_str}_{safe_channel}_{safe_title}_{chunk_idx:03d}.*"
-                    )
-                    chunk_files = glob.glob(chunk_pattern)
-                    if chunk_files:
-                        chunk_file = chunk_files[0]
-                    else:
-                        logger.warning(f"Could not find chunk file for index {chunk_idx}")
-                        continue
-                
-                if not os.path.exists(chunk_file):
-                    logger.warning(f"Chunk file not found: {chunk_file}")
-                    continue
-                
-                # Get video info for the chunk
-                try:
-                    _, _, duration = get_video_info_ffprobe(chunk_file)
-                except Exception as e:
-                    logger.error(f"Error getting video info: {e}")
-                    duration = segment_time
-                
-                # Get or create thumbnail
-                thumb_file = None
-                try:
-                    thumb_name = f"{safe_title}_chunk_{chunk_idx:03d}"
-                    result = get_duration_thumb(
-                        message,
-                        user_dir_name,
-                        chunk_file,
-                        thumb_name,
-                        execution_context=execution_context.ffmpeg_context,
-                    )
-                    if result:
-                        duration_from_thumb, thumb_file = result
-                        # Update duration if we got it from thumbnail extraction
-                        if duration_from_thumb:
-                            duration = duration_from_thumb
-                except Exception as e:
-                    logger.error(f"Error creating thumbnail: {e}")
-                    # Try to use video thumbnail if available
-                    thumb_path = os.path.join(user_dir_name, f"{safe_title}.jpg")
-                    if os.path.exists(thumb_path):
-                        thumb_file = thumb_path
-                
-                # Prepare caption
-                chunk_caption = f"📡 <b>Live Stream - Chunk {chunk_idx + 1}/{max_chunks}</b>\n"
-                chunk_caption += f"⏱ Duration: {split_hours} hour(s)\n"
-                if tags_text:
-                    chunk_caption += f"\n{tags_text}"
-                
-                # Send chunk immediately
-                logger.info(f"Sending chunk {chunk_idx + 1} to user: {chunk_file}")
-                
-                chunk_msg = _send_live_stream_chunk(
-                    execution_context,
-                    chunk_file=chunk_file,
-                    chunk_caption=chunk_caption,
-                    duration=int(duration) if duration else segment_time,
-                    thumb_file=thumb_file or "",
-                    chunk_idx=chunk_idx,
+                if _execute_live_stream_chunk(
+                    app=app,
+                    message=message,
+                    execution_context=execution_context,
+                    base_opts=base_opts,
+                    url=url,
+                    user_dir_name=user_dir_name,
+                    date_str=date_str,
+                    safe_channel=safe_channel,
+                    safe_title=safe_title,
+                    split_hours=split_hours,
+                    segment_time=segment_time,
                     max_chunks=max_chunks,
+                    chunk_idx=chunk_idx,
                     video_title=video_title,
                     tags_text=tags_text,
-                )
-                
-                if chunk_msg:
+                ):
                     successful_chunks += 1
-                    logger.info(f"Successfully sent chunk {chunk_idx + 1}")
-                else:
-                    logger.warning(f"Failed to send chunk {chunk_idx + 1}")
-                
-                # Clean up chunk file after sending (optional, to save space)
-                # Uncomment if you want to delete chunks after sending
-                # try:
-                #     os.remove(chunk_file)
-                #     logger.info(f"Cleaned up chunk file: {chunk_file}")
-                # except Exception as e:
-                #     logger.error(f"Error cleaning up chunk file: {e}")
-                
             except Exception as e:
                 logger.error(f"Error downloading chunk {chunk_idx + 1}: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-                # Continue with next chunk
                 continue
             
             # Check if we've reached max duration
