@@ -360,6 +360,13 @@ class AlwaysAskDubsMenuPlan:
 
 
 @dataclass(frozen=True)
+class AlwaysAskFilterUpdatePlan:
+    mode: str
+    answer_text: str | None = None
+    show_alert: bool = False
+
+
+@dataclass(frozen=True)
 class AlwaysAskQualitySelectionPlan:
     mode: str
     answer_text: str | None = None
@@ -709,6 +716,80 @@ def _close_askf_subs_menu(app, callback_query, answer_text: str | None) -> None:
         )
     if answer_text:
         safe_callback_answer(callback_query, answer_text)
+
+
+def _determine_askf_filter_update_plan(
+    user_id: int,
+    *,
+    kind: str,
+    value: str,
+    source_context: AlwaysAskSourceContext | None,
+) -> AlwaysAskFilterUpdatePlan | None:
+    if kind not in ("codec", "ext", "toggle"):
+        return None
+
+    messages = safe_get_messages(user_id)
+    if kind == "ext" and value == "empty":
+        return AlwaysAskFilterUpdatePlan(
+            mode="error",
+            answer_text=messages.ALWAYS_ASK_FORMAT_FIXED_VIA_ARGS_MSG,
+            show_alert=True,
+        )
+
+    if source_context is None:
+        return AlwaysAskFilterUpdatePlan(
+            mode="error",
+            answer_text=messages.ERROR_ORIGINAL_NOT_FOUND_MSG,
+            show_alert=True,
+        )
+
+    available_formats = get_available_formats_from_cache(user_id, source_context.url)
+    if kind == "codec" and value not in available_formats["codecs"] and available_formats["codecs"]:
+        return AlwaysAskFilterUpdatePlan(
+            mode="error",
+            answer_text=messages.AA_ERROR_CODEC_NOT_AVAILABLE_MSG.format(codec=value.upper()),
+            show_alert=True,
+        )
+    if kind == "ext" and value not in available_formats["formats"] and available_formats["formats"]:
+        return AlwaysAskFilterUpdatePlan(
+            mode="error",
+            answer_text=messages.AA_ERROR_FORMAT_NOT_AVAILABLE_MSG.format(format=value.upper()),
+            show_alert=True,
+        )
+
+    return AlwaysAskFilterUpdatePlan(
+        mode="apply",
+        answer_text=messages.FILTERS_UPDATED_MSG,
+    )
+
+
+def _execute_askf_filter_update_plan(
+    app,
+    callback_query,
+    user_id: int,
+    source_context: AlwaysAskSourceContext | None,
+    *,
+    kind: str,
+    value: str,
+    plan: AlwaysAskFilterUpdatePlan,
+) -> None:
+    if plan.answer_text and plan.mode == "error":
+        safe_callback_answer(callback_query, plan.answer_text, show_alert=plan.show_alert)
+        return
+
+    set_filter(user_id, kind, value)
+    if kind == "ext":
+        try:
+            set_session_mkv_override(user_id, value == "mkv")
+        except Exception:
+            pass
+    elif kind == "toggle" and value == "off":
+        set_filter(user_id, "codec", "avc1")
+        set_filter(user_id, "ext", "mp4")
+
+    _reopen_askf_quality_menu(app, callback_query, source_context)
+    if plan.answer_text:
+        safe_callback_answer(callback_query, plan.answer_text)
 
 
 def _build_quality_range_context(original_message):
@@ -1736,18 +1817,23 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
         _reopen_askf_quality_menu(app, callback_query, source_context)
         safe_callback_answer(callback_query, transition.answer_text)
         return
-    if kind in ("codec", "ext"):
-        set_filter(user_id, kind, value)
-        try:
-            if kind == "ext":
-                set_session_mkv_override(user_id, value == "mkv")
-        except Exception:
-            pass
-    elif kind == "toggle":
-        set_filter(user_id, kind, value)
-        if value == "off":
-            set_filter(user_id, "codec", "avc1")
-            set_filter(user_id, "ext", "mp4")
+    filter_update_plan = _determine_askf_filter_update_plan(
+        user_id,
+        kind=kind,
+        value=value,
+        source_context=source_context,
+    )
+    if filter_update_plan is not None:
+        _execute_askf_filter_update_plan(
+            app,
+            callback_query,
+            user_id,
+            source_context,
+            kind=kind,
+            value=value,
+            plan=filter_update_plan,
+        )
+        return
     if source_context is not None:
         _reopen_askf_quality_menu(app, callback_query, source_context)
         safe_callback_answer(callback_query, transition.answer_text)
