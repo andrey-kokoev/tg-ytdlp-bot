@@ -488,6 +488,41 @@ def _send_playlist_audio_terminal_status(
             total=len(requested_indices),
         ),
     )
+
+
+@dataclass(frozen=True)
+class AudioRetryOutcomePlan:
+    mode: str
+    should_retry: bool
+    should_send_final_error: bool
+    failure_kind: str | None = None
+
+
+def _build_audio_retry_outcome_plan(
+    *,
+    error_text: str,
+    error_message_sent: bool,
+) -> AudioRetryOutcomePlan:
+    if "Postprocessing" in error_text and "Error opening output files" in error_text:
+        return AudioRetryOutcomePlan(
+            mode="postprocessing_invalid_chars",
+            should_retry=False,
+            should_send_final_error=False,
+            failure_kind="postprocessing_failed",
+        )
+    if "Postprocessing" in error_text and "Invalid argument" in error_text:
+        return AudioRetryOutcomePlan(
+            mode="postprocessing_invalid_argument",
+            should_retry=False,
+            should_send_final_error=False,
+            failure_kind="postprocessing_failed",
+        )
+    return AudioRetryOutcomePlan(
+        mode="generic",
+        should_retry=not error_message_sent,
+        should_send_final_error=not error_message_sent,
+        failure_kind="download_failed",
+    )
     send_to_logger(
         message,
         safe_get_messages(user_id).PLAYLIST_AUDIO_SENT_LOG_MSG.format(
@@ -1797,6 +1832,10 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             except yt_dlp.utils.DownloadError as e:
                 error_text = str(e)
                 logger.error(f"DownloadError: {error_text}")
+                retry_plan = _build_audio_retry_outcome_plan(
+                    error_text=error_text,
+                    error_message_sent=error_message_sent,
+                )
                 
                 # Check for live stream detection (only if detection is enabled)
                 if "LIVE_STREAM_DETECTED" in error_text:
@@ -1820,7 +1859,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     # This will be handled by the live stream download function
                 
                 # Check for postprocessing errors
-                if "Postprocessing" in error_text and "Error opening output files" in error_text:
+                if retry_plan.mode == "postprocessing_invalid_chars":
                     postprocessing_message = (
                         safe_get_messages(user_id).AUDIO_FILE_PROCESSING_ERROR_INVALID_CHARS_MSG +
                         "**Solutions:**\n"
@@ -1842,7 +1881,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     return "POSTPROCESSING_ERROR"
                 
                 # Check for postprocessing errors with Invalid argument
-                if "Postprocessing" in error_text and "Invalid argument" in error_text:
+                if retry_plan.mode == "postprocessing_invalid_argument":
                     logger.error(f"Postprocessing error (Invalid argument): {error_text}")
                     return "POSTPROCESSING_ERROR"
                 
@@ -1858,7 +1897,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     return retry_result
                 
                 # Send full error message with instructions immediately (only once)
-                if not error_message_sent:
+                if retry_plan.should_send_final_error:
                     _maybe_auto_rotate_ip_for_audio_sign_in_required(user_id, error_text)
                     
                     _send_audio_failure(
