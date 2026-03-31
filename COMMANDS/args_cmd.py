@@ -247,6 +247,80 @@ def _execute_args_terminal_callback_result_plan(context: ArgsCallbackContext, pl
             pass
 
 
+def _build_args_menu_result_plan(context: ArgsCallbackContext, data: str) -> ArgsCallbackResultPlan | None:
+    messages = get_messages_instance(context.chat_id)
+    user_id = context.user_id
+
+    if data == "args_view_current":
+        user_args = get_user_args(user_id)
+        message = format_current_args(user_args, user_id)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(messages.ARGS_EXPORT_SETTINGS_BUTTON_MSG, callback_data="args_export")],
+            [InlineKeyboardButton(messages.ARGS_BACK_BUTTON_MSG, callback_data="args_back")],
+        ])
+        return ArgsCallbackResultPlan(
+            mode="view_current",
+            edit_text=message,
+            reply_markup=keyboard,
+        )
+
+    if data == "args_export":
+        user_args = get_user_args(user_id)
+        export_message = create_export_message(user_args, user_id)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(messages.ARGS_BACK_BUTTON_MSG, callback_data="args_view_current")
+        ]])
+        return ArgsCallbackResultPlan(
+            mode="export",
+            answer_text=messages.ARGS_SETTINGS_READY_MSG,
+            edit_text=export_message,
+            reply_markup=keyboard,
+        )
+
+    if data == "args_reset_all":
+        if save_user_args(user_id, {}):
+            keyboard = get_args_menu_keyboard(user_id)
+            return ArgsCallbackResultPlan(
+                mode="reset_all",
+                answer_text=messages.ARGS_ALL_RESET_MSG,
+                edit_text=(
+                    messages.ARGS_CONFIG_TITLE_MSG.format(groups_msg=messages.ARGS_MENU_DESCRIPTION_MSG)
+                    + "\n\n"
+                    + messages.ARGS_RESET_SUCCESS_MSG
+                ),
+                reply_markup=keyboard,
+            )
+        return ArgsCallbackResultPlan(
+            mode="reset_error",
+            answer_text=messages.ARGS_RESET_ERROR_MSG,
+            show_alert=True,
+        )
+
+    return None
+
+
+def _execute_args_menu_result_plan(context: ArgsCallbackContext, plan: ArgsCallbackResultPlan) -> None:
+    callback_query = context.callback_query
+    if plan.mode in {"view_current", "export", "reset_all"}:
+        _edit_args_callback_message(
+            callback_query,
+            plan.edit_text,
+            reply_markup=plan.reply_markup,
+        )
+        _answer_args_callback(
+            callback_query,
+            plan.answer_text,
+            show_alert=plan.show_alert,
+        )
+        return
+    if plan.mode == "reset_error":
+        _answer_args_callback(
+            callback_query,
+            plan.answer_text,
+            show_alert=plan.show_alert,
+        )
+
+
 def _log_args_input_error(message, error_msg: str) -> None:
     from HELPERS.logger import log_error_to_channel
 
@@ -1430,39 +1504,9 @@ def args_callback_logic(app, execution_context, request):
         if terminal_plan is not None:
             _execute_args_terminal_callback_result_plan(context, terminal_plan)
             return
-
-        elif data == "args_view_current":
-            user_args = get_user_args(user_id)
-            message = format_current_args(user_args, user_id)
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(messages.ARGS_EXPORT_SETTINGS_BUTTON_MSG, callback_data="args_export")],
-                [InlineKeyboardButton(messages.ARGS_BACK_BUTTON_MSG, callback_data="args_back")]
-            ])
-            _edit_args_callback_message(callback_query, message, reply_markup=keyboard)
-            _answer_args_callback(callback_query)
-            return
-
-        elif data == "args_export":
-            user_args = get_user_args(user_id)
-            export_message = create_export_message(user_args, user_id)
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(messages.ARGS_BACK_BUTTON_MSG, callback_data="args_view_current")
-            ]])
-            _edit_args_callback_message(callback_query, export_message, reply_markup=keyboard)
-            _answer_args_callback(callback_query, messages.ARGS_SETTINGS_READY_MSG)
-            return
-
-        elif data == "args_reset_all":
-            if save_user_args(user_id, {}):
-                keyboard = get_args_menu_keyboard(user_id)
-                _edit_args_callback_message(
-                    callback_query,
-                    messages.ARGS_CONFIG_TITLE_MSG.format(groups_msg=messages.ARGS_MENU_DESCRIPTION_MSG) + "\n\n" + messages.ARGS_RESET_SUCCESS_MSG,
-                    reply_markup=keyboard
-                )
-                _answer_args_callback(callback_query, messages.ARGS_ALL_RESET_MSG)
-            else:
-                _answer_args_callback(callback_query, messages.ARGS_RESET_ERROR_MSG, show_alert=True)
+        menu_plan = _build_args_menu_result_plan(context, data)
+        if menu_plan is not None:
+            _execute_args_menu_result_plan(context, menu_plan)
             return
 
         elif data.startswith("args_set_"):
