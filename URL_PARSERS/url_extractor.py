@@ -116,6 +116,11 @@ class UrlRouterContext:
         self.is_command = is_command
 
 
+class UrlRouterTerminalPlan:
+    def __init__(self, mode: str):
+        self.mode = mode
+
+
 def _ensure_command_tokens(message, text: str) -> None:
     if hasattr(message, "command") and message.command is not None:
         return
@@ -613,6 +618,29 @@ def _maybe_handle_reply_message(app, message) -> bool:
     return True
 
 
+def _determine_url_router_terminal_plan(message) -> UrlRouterTerminalPlan:
+    if message.reply_to_message:
+        return UrlRouterTerminalPlan("reply_message")
+    return UrlRouterTerminalPlan("unmatched_message")
+
+
+def _execute_url_router_terminal_plan(
+    app,
+    plan: UrlRouterTerminalPlan,
+    *,
+    message,
+    text: str,
+    user_id: int,
+    args_import_handler,
+) -> bool:
+    if plan.mode == "reply_message":
+        return _maybe_handle_reply_message(app, message)
+    if plan.mode == "unmatched_message":
+        _finalize_unmatched_message(app, message, text, user_id, args_import_handler)
+        return True
+    return False
+
+
 def _finalize_unmatched_message(
     app,
     message,
@@ -694,11 +722,15 @@ def _route_url_text_message(app, route_context: UrlRouterContext, args_import_ha
     if route_context.is_admin and _dispatch_admin_command(app, message, text):
         return True
 
-    if _maybe_handle_reply_message(app, message):
-        return True
-
-    _finalize_unmatched_message(app, message, text, user_id, args_import_handler)
-    return True
+    terminal_plan = _determine_url_router_terminal_plan(message)
+    return _execute_url_router_terminal_plan(
+        app,
+        terminal_plan,
+        message=message,
+        text=text,
+        user_id=user_id,
+        args_import_handler=args_import_handler,
+    )
 
 @app.on_message(filters.text & filters.private)
 @background_handler(label="url_distractor")
