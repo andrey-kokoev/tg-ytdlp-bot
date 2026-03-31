@@ -97,6 +97,15 @@ class ArgsStorageContext:
 
 
 @dataclass(frozen=True)
+class ArgsCallbackResultPlan:
+    mode: str
+    answer_text: str | None = None
+    show_alert: bool = False
+    edit_text: str | None = None
+    reply_markup: InlineKeyboardMarkup | None = None
+
+
+@dataclass(frozen=True)
 class ArgsInputStateStore:
     dm_states: dict
     topic_states: dict
@@ -185,6 +194,57 @@ def _answer_args_callback(callback_query, text: str | None = None, *, show_alert
 
 def _edit_args_callback_message(callback_query, text: str, *, reply_markup=None) -> None:
     callback_query.edit_message_text(text, reply_markup=reply_markup)
+
+
+def _build_args_terminal_callback_result_plan(context: ArgsCallbackContext, data: str) -> ArgsCallbackResultPlan | None:
+    messages = get_messages_instance(context.chat_id)
+    if data == "args_close":
+        return ArgsCallbackResultPlan(
+            mode="close",
+            answer_text=messages.ARGS_CLOSED_MSG,
+        )
+    if data == "args_empty":
+        return ArgsCallbackResultPlan(mode="noop")
+    if data == "args_back":
+        keyboard = get_args_menu_keyboard(context.user_id)
+        return ArgsCallbackResultPlan(
+            mode="back",
+            edit_text=messages.ARGS_CONFIG_TITLE_MSG.format(groups_msg=messages.ARGS_MENU_DESCRIPTION_MSG),
+            reply_markup=keyboard,
+        )
+    return None
+
+
+def _execute_args_terminal_callback_result_plan(context: ArgsCallbackContext, plan: ArgsCallbackResultPlan) -> None:
+    callback_query = context.callback_query
+    if plan.mode == "close":
+        context.source_message.delete()
+        _answer_args_callback(
+            callback_query,
+            plan.answer_text,
+            show_alert=plan.show_alert,
+        )
+        return
+    if plan.mode == "noop":
+        _answer_args_callback(callback_query, plan.answer_text, show_alert=plan.show_alert)
+        return
+    if plan.mode == "back":
+        try:
+            _clear_args_input_state(context.chat_id, context.user_id, context.thread_id)
+        except Exception:
+            pass
+        try:
+            _edit_args_callback_message(
+                callback_query,
+                plan.edit_text,
+                reply_markup=plan.reply_markup,
+            )
+        except Exception:
+            pass
+        try:
+            _answer_args_callback(callback_query, plan.answer_text, show_alert=plan.show_alert)
+        except Exception:
+            pass
 
 
 def _log_args_input_error(message, error_msg: str) -> None:
@@ -1366,33 +1426,9 @@ def args_callback_logic(app, execution_context, request):
     data = request.action_key
 
     try:
-        if data == "args_close":
-            context.source_message.delete()
-            _answer_args_callback(callback_query, messages.ARGS_CLOSED_MSG)
-            return
-
-        elif data == "args_empty":
-            _answer_args_callback(callback_query)
-            return
-
-        elif data == "args_back":
-            try:
-                _clear_args_input_state(context.chat_id, context.user_id, context.thread_id)
-            except Exception:
-                pass
-            keyboard = get_args_menu_keyboard(user_id)
-            try:
-                _edit_args_callback_message(
-                    callback_query,
-                    messages.ARGS_CONFIG_TITLE_MSG.format(groups_msg=messages.ARGS_MENU_DESCRIPTION_MSG),
-                    reply_markup=keyboard
-                )
-            except Exception:
-                pass
-            try:
-                _answer_args_callback(callback_query)
-            except Exception:
-                pass
+        terminal_plan = _build_args_terminal_callback_result_plan(context, data)
+        if terminal_plan is not None:
+            _execute_args_terminal_callback_result_plan(context, terminal_plan)
             return
 
         elif data == "args_view_current":
