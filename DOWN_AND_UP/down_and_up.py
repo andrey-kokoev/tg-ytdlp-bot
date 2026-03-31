@@ -834,6 +834,107 @@ def _handle_route_result_post_upload(
     return already_forwarded_to_log, is_nsfw
 
 
+def _handle_upload_route_error(
+    *,
+    error: Exception,
+    message,
+    user_id: int,
+    video_msg,
+    url: str,
+    user_forced_nsfw: bool,
+    already_forwarded_to_log: bool,
+    should_retry_manual: bool,
+    is_playlist: bool,
+    caption_lst: list,
+    after_rename_abs_path: str,
+    original_video_title: str,
+    duration,
+    width,
+    height,
+    thumb_dir,
+    safe_quality_key: str,
+    split_msg_ids: list,
+    video_count: int,
+    proc_msg_id: int,
+    playlist_video_urls: dict,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    current_index: int,
+    need_subs: bool,
+    found_type,
+    force_no_title: bool,
+) -> None:
+    if "'quality_key'" in str(error):
+        logger.info(f"quality_key error ignored (non-critical): {error}")
+        _handle_split_quality_key_terminal_after_error(
+            split_msg_ids=split_msg_ids,
+            is_playlist=is_playlist,
+            video_count=video_count,
+            url=url,
+            safe_quality_key=safe_quality_key,
+            message=message,
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            recovery_label="manual forward",
+        )
+    else:
+        logger.error(f"Error forwarding video to logger: {error}")
+
+    try:
+        recovery_plan = _build_manual_forward_recovery_plan(
+            is_playlist=False,
+            already_forwarded_to_log=already_forwarded_to_log,
+            should_retry_manual=should_retry_manual,
+        )
+        if recovery_plan.should_use_recovery_route:
+            forwarded_msgs, already_forwarded_to_log, is_nsfw = _handle_manual_forward_retry(
+                message=message,
+                user_id=user_id,
+                video_msg=video_msg,
+                url=url,
+                user_forced_nsfw=user_forced_nsfw,
+                already_forwarded_to_log=already_forwarded_to_log,
+                is_split_item=bool(caption_lst and len(caption_lst) > 1),
+                video_path=after_rename_abs_path,
+                caption_text='' if force_no_title else original_video_title,
+                duration=duration,
+                width=width,
+                height=height,
+                thumb_path=thumb_dir,
+                recovery_label="after error",
+                use_manual_suffix=False,
+                is_playlist=is_playlist,
+                current_video_index=current_index,
+                safe_quality_key=safe_quality_key,
+                playlist_video_urls=playlist_video_urls,
+                playlist_indices=playlist_indices,
+                playlist_msg_ids=playlist_msg_ids,
+                found_type=found_type,
+                is_nsfw=user_forced_nsfw,
+                need_subs=need_subs,
+            )
+        else:
+            logger.info(
+                f"down_and_up: manual forward after error skipped ({recovery_plan.mode})"
+            )
+    except Exception as e2:
+        if "'quality_key'" in str(e2):
+            logger.info(f"quality_key error ignored (non-critical): {e2}")
+            _handle_split_quality_key_terminal_after_error(
+                split_msg_ids=split_msg_ids,
+                is_playlist=is_playlist,
+                video_count=video_count,
+                url=url,
+                safe_quality_key=safe_quality_key,
+                message=message,
+                user_id=user_id,
+                proc_msg_id=proc_msg_id,
+                recovery_label="manual forward after error",
+            )
+        else:
+            logger.error(f"Error in manual forward after error: {e2}")
+
+
 def _build_manual_forward_recovery_plan(
     *,
     is_playlist: bool,
@@ -4788,86 +4889,35 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 force_no_title=force_no_title,
                             )
                         except Exception as e:
-                            # Check if error is related to quality_key - if so, ignore it completely
-                            if "'quality_key'" in str(e):
-                                logger.info(f"quality_key error ignored (non-critical): {e}")
-                                # Quality_key errors don't affect functionality, just continue
-                                
-                                # PREVENTIVE FIX: Handle split video completion even after quality_key error
-                                _handle_split_quality_key_terminal_after_error(
-                                    split_msg_ids=split_msg_ids,
-                                    is_playlist=is_playlist,
-                                    video_count=video_count,
-                                    url=url,
-                                    safe_quality_key=safe_quality_key,
-                                    message=message,
-                                    user_id=user_id,
-                                    proc_msg_id=proc_msg_id,
-                                    recovery_label="manual forward",
-                                )
-                
-                            else:
-                                logger.error(f"Error forwarding video to logger: {e}")
-                            # Try to forward manually even after error
-                            try:
-                                recovery_plan = _build_manual_forward_recovery_plan(
-                                    is_playlist=False,
-                                    already_forwarded_to_log=already_forwarded_to_log,
-                                    should_retry_manual=should_retry_manual,
-                                )
-                                if recovery_plan.should_use_recovery_route:
-                                    # Safe quality_key for error recovery (already defined at function start)
-                                    forwarded_msgs, already_forwarded_to_log, is_nsfw = _handle_manual_forward_retry(
-                                        message=message,
-                                        user_id=user_id,
-                                        video_msg=video_msg,
-                                        url=url,
-                                        user_forced_nsfw=user_forced_nsfw,
-                                        already_forwarded_to_log=already_forwarded_to_log,
-                                        is_split_item=bool(caption_lst and len(caption_lst) > 1),
-                                        video_path=after_rename_abs_path,
-                                        caption_text='' if force_no_title else original_video_title,
-                                        duration=duration,
-                                        width=width,
-                                        height=height,
-                                        thumb_path=thumb_dir,
-                                        recovery_label="after error",
-                                        use_manual_suffix=False,
-                                        is_playlist=is_playlist,
-                                        current_video_index=current_index,
-                                        safe_quality_key=safe_quality_key,
-                                        playlist_video_urls=playlist_video_urls,
-                                        playlist_indices=playlist_indices,
-                                        playlist_msg_ids=playlist_msg_ids,
-                                        found_type=found_type,
-                                        is_nsfw=is_nsfw,
-                                        need_subs=need_subs,
-                                    )
-                                else:
-                                    logger.info(
-                                        f"down_and_up: manual forward after error skipped ({recovery_plan.mode})"
-                                    )
-                            except Exception as e2:
-                                # Check if error is related to quality_key - if so, ignore it completely
-                                if "'quality_key'" in str(e2):
-                                    logger.info(f"quality_key error ignored (non-critical): {e2}")
-                                    # Quality_key errors don't affect functionality, just continue
-                                    
-                                    # PREVENTIVE FIX: Handle split video completion even after quality_key error
-                                    _handle_split_quality_key_terminal_after_error(
-                                        split_msg_ids=split_msg_ids,
-                                        is_playlist=is_playlist,
-                                        video_count=video_count,
-                                        url=url,
-                                        safe_quality_key=safe_quality_key,
-                                        message=message,
-                                        user_id=user_id,
-                                        proc_msg_id=proc_msg_id,
-                                        recovery_label="manual forward after error",
-                                    )
-                                # end-of-task subs cache clearing handled in unified success branches below
-                                else:
-                                    logger.error(f"Error in manual forward after error: {e2}")
+                            _handle_upload_route_error(
+                                error=e,
+                                message=message,
+                                user_id=user_id,
+                                video_msg=video_msg,
+                                url=url,
+                                user_forced_nsfw=user_forced_nsfw,
+                                already_forwarded_to_log=already_forwarded_to_log,
+                                should_retry_manual=should_retry_manual,
+                                is_playlist=is_playlist,
+                                caption_lst=caption_lst,
+                                after_rename_abs_path=after_rename_abs_path,
+                                original_video_title=original_video_title,
+                                duration=duration,
+                                width=width,
+                                height=height,
+                                thumb_dir=thumb_dir,
+                                safe_quality_key=safe_quality_key,
+                                split_msg_ids=split_msg_ids,
+                                video_count=video_count,
+                                proc_msg_id=proc_msg_id,
+                                playlist_video_urls=playlist_video_urls,
+                                playlist_indices=playlist_indices,
+                                playlist_msg_ids=playlist_msg_ids,
+                                current_index=current_index,
+                                need_subs=need_subs,
+                                found_type=found_type,
+                                force_no_title=force_no_title,
+                            )
                         _execute_non_split_upload_completion_plan(
                             plan=_build_non_split_upload_completion_plan(),
                             message=message,
