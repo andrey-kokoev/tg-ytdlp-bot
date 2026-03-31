@@ -111,10 +111,8 @@ def update_domain_list(list_name: str, items: List[str]) -> bool:
         return False
 
 
-def update_lists() -> Dict[str, Any]:
-    """Update lists via script.sh."""
+def _run_lists_script(script_path: str) -> Dict[str, Any]:
     try:
-        script_path = "/root/Telegram/tg-ytdlp-bot/script.sh"
         result = subprocess.run(
             ["bash", script_path],
             capture_output=True,
@@ -124,7 +122,11 @@ def update_lists() -> Dict[str, Any]:
         )
         if result.returncode == 0:
             return {"status": "ok", "message": "Lists updated successfully", "output": result.stdout}
-        else:
-            return {"status": "error", "message": result.stderr or "Failed to update lists"}
+        return {"status": "error", "message": result.stderr or "Failed to update lists"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+def update_lists() -> Dict[str, Any]:
+    """Update lists via script.sh."""
+    return _run_lists_script("/root/Telegram/tg-ytdlp-bot/script.sh")
