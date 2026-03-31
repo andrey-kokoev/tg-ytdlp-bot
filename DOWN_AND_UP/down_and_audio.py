@@ -507,6 +507,51 @@ def _execute_audio_cleanup_plan(
         stop_anim.set()
 
 
+@dataclass(frozen=True)
+class AudioCacheReplayPlan:
+    mode: str
+    should_replay_cache: bool
+    should_return_early: bool
+    should_skip_partial_replay: bool
+
+
+def _build_audio_cache_replay_plan(
+    *,
+    is_playlist: bool,
+    cached_videos: dict,
+    uncached_indices: list,
+    use_range_download: bool,
+    send_as_file: bool,
+) -> AudioCacheReplayPlan:
+    if not is_playlist or not cached_videos:
+        return AudioCacheReplayPlan(
+            mode="skip",
+            should_replay_cache=False,
+            should_return_early=False,
+            should_skip_partial_replay=False,
+        )
+    if send_as_file:
+        return AudioCacheReplayPlan(
+            mode="skip_send_as_file",
+            should_replay_cache=False,
+            should_return_early=False,
+            should_skip_partial_replay=False,
+        )
+    if cached_videos and (not use_range_download or len(uncached_indices) == 0):
+        return AudioCacheReplayPlan(
+            mode="replay_all",
+            should_replay_cache=True,
+            should_return_early=True,
+            should_skip_partial_replay=False,
+        )
+    return AudioCacheReplayPlan(
+        mode="partial",
+        should_replay_cache=True,
+        should_return_early=False,
+        should_skip_partial_replay=bool(cached_videos),
+    )
+
+
 def _send_playlist_audio_terminal_status(
     *,
     app,
@@ -1387,13 +1432,17 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             logger.info(f"[AUDIO CACHE] Skipping cache check for playlist because Always Ask mode is enabled: url={url}, quality={quality_key}")
             cached_videos = {}
             uncached_indices = requested_indices
+        from COMMANDS.args_cmd import get_user_args
+        send_as_file = get_user_args(user_id).get("send_as_file", False)
+        replay_plan = _build_audio_cache_replay_plan(
+            is_playlist=is_playlist,
+            cached_videos=cached_videos,
+            uncached_indices=uncached_indices,
+            use_range_download=use_range_download,
+            send_as_file=send_as_file,
+        )
         # First, repost the cached ones (skip if send_as_file is enabled)
-        if cached_videos and (not use_range_download or len(uncached_indices) == 0):
-            # Check if send_as_file is enabled - if so, skip cache repost
-            from COMMANDS.args_cmd import get_user_args
-            user_args = get_user_args(user_id)
-            send_as_file = user_args.get("send_as_file", False)
-            
+        if replay_plan.should_replay_cache:
             if not send_as_file:
                 for index in requested_indices:
                     if index in cached_videos:
@@ -1441,7 +1490,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                 # If send_as_file is enabled, treat all indices as uncached
                 logger.info(f"[AUDIO CACHE] send_as_file enabled for user {user_id}, skipping cache repost for playlist")
                 uncached_indices = requested_indices
-            if len(uncached_indices) == 0:
+            if replay_plan.should_return_early and len(uncached_indices) == 0:
                 send_playlist_cache_status(
                     app=app,
                     user_id=user_id,
@@ -1463,7 +1512,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                         total=len(requested_indices),
                     ),
                 )
-        elif cached_videos:
+        elif replay_plan.should_skip_partial_replay:
             logger.info("[AUDIO CACHE] Skipping partial cache replay for negative range to avoid duplicate downloads")
             uncached_indices = requested_indices
     elif quality_key and not is_playlist:
