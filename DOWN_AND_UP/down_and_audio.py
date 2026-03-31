@@ -515,6 +515,13 @@ class AudioCacheReplayPlan:
     should_skip_partial_replay: bool
 
 
+@dataclass(frozen=True)
+class AudioSingleCacheReplayPlan:
+    mode: str
+    should_replay: bool
+    should_return_early: bool
+
+
 def _build_audio_cache_replay_plan(
     *,
     is_playlist: bool,
@@ -549,6 +556,30 @@ def _build_audio_cache_replay_plan(
         should_replay_cache=True,
         should_return_early=False,
         should_skip_partial_replay=bool(cached_videos),
+    )
+
+
+def _build_audio_single_cache_replay_plan(
+    *,
+    cached_ids,
+    send_as_file: bool,
+) -> AudioSingleCacheReplayPlan:
+    if not cached_ids:
+        return AudioSingleCacheReplayPlan(
+            mode="skip",
+            should_replay=False,
+            should_return_early=False,
+        )
+    if send_as_file:
+        return AudioSingleCacheReplayPlan(
+            mode="skip_send_as_file",
+            should_replay=False,
+            should_return_early=False,
+        )
+    return AudioSingleCacheReplayPlan(
+        mode="replay",
+        should_replay=True,
+        should_return_early=True,
     )
 
 
@@ -1536,8 +1567,12 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             from COMMANDS.args_cmd import get_user_args
             user_args = get_user_args(user_id)
             send_as_file = user_args.get("send_as_file", False)
-            
-            if not send_as_file:
+            single_replay_plan = _build_audio_single_cache_replay_plan(
+                cached_ids=cached_ids,
+                send_as_file=send_as_file,
+            )
+
+            if single_replay_plan.should_replay:
                 is_private_chat = getattr(message.chat, "type", None) == enums.ChatType.PRIVATE
                 is_paid = is_nsfw and is_private_chat
 
@@ -1572,7 +1607,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     on_replay_error=lambda: save_to_video_cache(url, quality_key, [], clear=True),
                     send_to_logger=send_to_logger,
                 )
-                if replayed:
+                if replayed and single_replay_plan.should_return_early:
                     return
             else:
                 # If send_as_file is enabled, skip cache repost and continue with download
