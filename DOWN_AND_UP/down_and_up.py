@@ -315,6 +315,15 @@ class SplitQualityKeyRecoveryPlan:
     should_cache: bool
 
 
+@dataclass(frozen=True)
+class SplitUploadCompletionPlan:
+    mode: str
+    should_save_cache: bool
+    final_video_count: int
+    final_quality_key: str | None
+    should_log_skip: bool = False
+
+
 def _build_split_quality_key_recovery_plan(
     *,
     split_msg_ids: list,
@@ -339,6 +348,70 @@ def _build_split_quality_key_recovery_plan(
         should_finalize=False,
         should_cache=False,
     )
+
+
+def _build_split_upload_completion_plan(
+    *,
+    split_msg_ids: list,
+    is_playlist: bool,
+    quality_key: str | None,
+    safe_quality_key: str | None,
+    url: str,
+    user_id: int,
+) -> SplitUploadCompletionPlan:
+    if not split_msg_ids or is_playlist:
+        return SplitUploadCompletionPlan(
+            mode="skip",
+            should_save_cache=False,
+            final_video_count=0,
+            final_quality_key=safe_quality_key,
+            should_log_skip=True,
+        )
+
+    final_quality_key = safe_quality_key
+    if quality_key and quality_key != "best":
+        final_quality_key = quality_key
+
+    found_type = check_subs_availability(url, user_id, final_quality_key, return_type=True)
+    subs_enabled = is_subs_enabled(user_id)
+    auto_mode = get_user_subs_auto_mode(user_id)
+    need_subs = determine_need_subs(subs_enabled, found_type, user_id)
+    should_save_cache = not need_subs
+    return SplitUploadCompletionPlan(
+        mode="save" if should_save_cache else "skip_subtitles",
+        should_save_cache=should_save_cache,
+        final_video_count=len(split_msg_ids),
+        final_quality_key=final_quality_key,
+        should_log_skip=not should_save_cache,
+    )
+
+
+def _execute_split_upload_completion_plan(
+    *,
+    plan: SplitUploadCompletionPlan,
+    message,
+    user_id: int,
+    proc_msg_id: int,
+    url: str,
+    split_msg_ids: list,
+) -> None:
+    if plan.should_save_cache:
+        _save_video_cache_with_logging(
+            url,
+            plan.final_quality_key,
+            split_msg_ids,
+            original_text=message.text or message.caption or "",
+            user_id=user_id,
+        )
+    elif plan.should_log_skip:
+        logger.info(
+            f"Split video with subtitles is not cached (quality={plan.final_quality_key}) - different users may need different languages"
+        )
+
+    success_msg = _build_video_terminal_status(user_id, plan.final_video_count)
+    logger.info(f"down_and_up: sending final success message for split video: {success_msg}")
+    safe_edit_message_text(user_id, proc_msg_id, success_msg)
+    send_to_logger(message, safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG)
 
 
 def _build_manual_forward_recovery_plan(
@@ -4026,39 +4099,31 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                 
                 # Save all parts of split video to cache after the loop is completed
                 logger.info(f"down_and_up: checking split_msg_ids for cache save: {split_msg_ids}, is_playlist={is_playlist}")
-                if split_msg_ids and not is_playlist:
-                    # Remove duplicates
-                    split_msg_ids = list(dict.fromkeys(split_msg_ids))
-                    logger.info(f"down_and_up: saving all split video parts to cache: {split_msg_ids}")
-                    
-                    # Update safe_quality_key to the actual quality used for splitting
-                    if quality_key and quality_key != "best":
-                        safe_quality_key = quality_key
-                        logger.info(f"down_and_up: updated safe_quality_key for split video: {safe_quality_key}")
-                    
-                    # Check subtitle requirements for split videos
-                    found_type = check_subs_availability(url, user_id, safe_quality_key, return_type=True)
-                    subs_enabled = is_subs_enabled(user_id)
-                    auto_mode = get_user_subs_auto_mode(user_id)
-                    need_subs = determine_need_subs(subs_enabled, found_type, user_id)
-                    
-                    # Only save to cache if subtitles are not needed
-                    if not need_subs:
-                        _save_video_cache_with_logging(url, safe_quality_key, split_msg_ids, original_text=message.text or message.caption or "", user_id=user_id)
-                    else:
-                        logger.info(f"Split video with subtitles is not cached (found_type={found_type}, auto_mode={auto_mode}) - different users may need different languages")
+                split_msg_ids = list(dict.fromkeys(split_msg_ids))
+                split_completion_plan = _build_split_upload_completion_plan(
+                    split_msg_ids=split_msg_ids,
+                    is_playlist=is_playlist,
+                    quality_key=quality_key,
+                    safe_quality_key=safe_quality_key,
+                    url=url,
+                    user_id=user_id,
+                )
+                if split_completion_plan.mode != "skip":
+                    logger.info(f"down_and_up: split upload completion plan={split_completion_plan.mode}, ids={split_msg_ids}")
                 else:
                     logger.warning(f"down_and_up: NOT saving to cache - split_msg_ids={split_msg_ids}, is_playlist={is_playlist}")
+                _execute_split_upload_completion_plan(
+                    plan=split_completion_plan,
+                    message=message,
+                    user_id=user_id,
+                    proc_msg_id=proc_msg_id,
+                    url=url,
+                    split_msg_ids=split_msg_ids,
+                )
                 if os.path.exists(thumb_dir):
                     os.remove(thumb_dir)
                 if os.path.exists(user_vid_path):
                     os.remove(user_vid_path)
-                # Use the actual number of split parts for the success message
-                actual_video_count = len(split_msg_ids) if split_msg_ids else video_count
-                success_msg = _build_video_terminal_status(user_id, actual_video_count)
-                logger.info(f"down_and_up: sending final success message for split video: {success_msg}")
-                safe_edit_message_text(user_id, proc_msg_id, success_msg)
-                send_to_logger(message, safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG)
                 
             else:
                 if final_name:
