@@ -2187,6 +2187,18 @@ def askq_callback(app, callback_query):
 
     # Parse callback data correctly - handle both old and new formats
     parts = callback_query.data.split("|")
+    if len(parts) >= 4 and parts[1] == "f":
+        filter_request = build_ask_filter_selection_request(
+            build_telegram_callback_envelope(callback_query),
+            filter_kind=parts[2],
+            filter_value=parts[3],
+        )
+        handle_ask_filter_selection_request(
+            app,
+            execution_context,
+            filter_request,
+        )
+        return
     if len(parts) >= 3 and parts[1] == "other_id":
         selection_token = f"other_id_{parts[2]}"  # Reconstruct other_id_XXX format
     else:
@@ -2244,178 +2256,6 @@ def askq_callback(app, callback_query):
         show_other_qualities_menu(app, callback_query)
         return
 
-    # Handle filter toggles
-    if data.startswith("f|") or data.startswith("askf|"):
-        parts = callback_query.data.split("|")
-        # support both prefixes
-        _, kind, value = parts[0], parts[1], parts[2]
-        if kind in ("codec", "ext"):
-            # Handle empty callback (fixed format)
-            if value == "empty":
-                callback_query.answer(safe_get_messages(user_id).ALWAYS_ASK_FORMAT_FIXED_VIA_ARGS_MSG, show_alert=True)
-                return
-                
-            # Get original message and URL
-            original_message = callback_query.message.reply_to_message
-            if not original_message:
-                callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
-                return
-            url = original_message.text or (original_message.caption or "")
-            # try to extract url
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url)
-            if m:
-                url = m.group(0)
-            
-            # Check if the selected codec/format is available
-            available_formats = get_available_formats_from_cache(user_id, url)
-            
-            if kind == "codec":
-                if value not in available_formats["codecs"] and available_formats["codecs"]:
-                    # Codec is not available, show warning
-                    callback_query.answer(safe_get_messages(user_id).AA_ERROR_CODEC_NOT_AVAILABLE_MSG.format(codec=value.upper()), show_alert=True)
-                    return
-            elif kind == "ext":
-                if value not in available_formats["formats"] and available_formats["formats"]:
-                    # Format is not available, show warning
-                    callback_query.answer(safe_get_messages(user_id).AA_ERROR_FORMAT_NOT_AVAILABLE_MSG.format(format=value.upper()), show_alert=True)
-                    return
-            
-            # Set filter and reopen menu
-            set_filter(callback_query.from_user.id, kind, value)
-            callback_query.answer(safe_get_messages(user_id).FILTERS_UPDATED_MSG)
-            ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-            return
-        if kind == "dubs" and value == "open":
-            # Build and show dubs selection menu with flags
-            original_message = callback_query.message.reply_to_message
-            if not original_message:
-                callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
-                return
-            url_text = original_message.text or (original_message.caption or "")
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            # Use precomputed list from filters state for speed/stability
-            fstate = get_filters(callback_query.from_user.id)
-            langs = fstate.get('available_dubs', [])
-            # Build buttons 3 per row with flags
-            rows = []
-            row = []
-            for i, lang in enumerate(sorted(langs)):
-                # DUBS: use first part for flags (de from de-DE)
-                flag = get_flag(lang, use_second_part=False)
-                label = f"{flag} {lang}" if flag else lang
-                row.append(InlineKeyboardButton(label, callback_data=f"askf|audio_lang|{lang}"))
-                if (i+1) % 3 == 0:
-                    rows.append(row)
-                    row = []
-            if row:
-                rows.append(row)
-            rows.append([InlineKeyboardButton("🔙Back", callback_data="askf|dubs|back"), InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="askf|dubs|close")])
-            kb = InlineKeyboardMarkup(rows)
-            try:
-                # Replace entire keyboard (keeping caption/text) to show dubs
-                callback_query.edit_message_reply_markup(reply_markup=kb)
-            except Exception:
-                pass
-            callback_query.answer(safe_get_messages(user_id).AA_CHOOSE_AUDIO_LANGUAGE_MSG)
-            return
-        # LINK MENU HANDLER REMOVED - now using direct link approach
-        if kind == "subs_page":
-            # Handle page navigation in Always Ask subtitle menu
-            page = int(value)
-            original_message = callback_query.message.reply_to_message
-            if not original_message:
-                callback_query.answer(safe_get_messages(user_id).ERROR_ORIGINAL_NOT_FOUND_MSG, show_alert=True)
-                return
-            url_text = original_message.text or (original_message.caption or "")
-            import re as _re
-            m = _re.search(r'https?://[^\s\*#]+', url_text)
-            url = m.group(0) if m else url_text
-            try:
-                normal = _subs_check_cache.get(f"{url}_{user_id}_normal_langs") or []
-                auto = _subs_check_cache.get(f"{url}_{user_id}_auto_langs") or []
-            except Exception:
-                normal, auto = [], []
-            langs = sorted(set(normal) | set(auto))
-            kb = get_language_keyboard_always_ask(page=page, user_id=user_id, langs_override=langs, per_page_rows=8, normal_langs=normal, auto_langs=auto)
-            try:
-                callback_query.edit_message_reply_markup(reply_markup=kb)
-            except Exception:
-                pass
-            callback_query.answer(safe_get_messages(user_id).PAGE_NUMBER_MSG.format(page=page + 1))
-            return
-        if kind == "subs" and value == "back":
-            # Go back to main Always Ask menu
-            original_message = callback_query.message.reply_to_message
-            if original_message:
-                url_text = original_message.text or (original_message.caption or "")
-                import re as _re
-                m = _re.search(r'https?://[^\s\*#]+', url_text)
-                url = m.group(0) if m else url_text
-                ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-            return
-        if kind == "subs" and value == "close":
-            # Close subtitle menu
-            try:
-                safe_delete_messages(chat_id=callback_query.message.chat.id, message_ids=[callback_query.message.id])
-            except Exception:
-                app.edit_message_reply_markup(chat_id=callback_query.message.chat.id, message_id=callback_query.message.id, reply_markup=None)
-            callback_query.answer(safe_get_messages(user_id).SUBTITLE_MENU_CLOSED_MSG)
-            return
-        # OLD LINK TOGGLE HANDLER REMOVED - now using submenu approach
-        if kind == "subs_lang":
-            # Handle subtitle language selection in Always Ask
-            selected_lang = value
-            # Store the selected subtitle language for this video
-            fstate = get_filters(user_id)
-            fstate['selected_subs_lang'] = selected_lang
-            save_filters(user_id, fstate)
-            callback_query.answer(safe_get_messages(user_id).SUBTITLE_LANGUAGE_SET_MSG.format(value=selected_lang))
-            # Return to main Always Ask menu
-            original_message = callback_query.message.reply_to_message
-            if original_message:
-                url_text = original_message.text or (original_message.caption or "")
-                import re as _re
-                m = _re.search(r'https?://[^\s\*#]+', url_text)
-                url = m.group(0) if m else url_text
-                ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-            return
-        if kind == "dubs" and value == "close":
-            # Close dubs menu without changing audio_lang
-            original_message = callback_query.message.reply_to_message
-            if original_message:
-                url_text = original_message.text or (original_message.caption or "")
-                import re as _re
-                m = _re.search(r'https?://[^\s\*#]+', url_text)
-                url = m.group(0) if m else url_text
-                ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-            return
-        if kind == "audio_lang":
-            set_filter(callback_query.from_user.id, kind, value)
-            callback_query.answer(safe_get_messages(user_id).AUDIO_SET_MSG.format(value=value))
-            # Return to main menu with updated summary
-            original_message = callback_query.message.reply_to_message
-            if original_message:
-                url_text = original_message.text or (original_message.caption or "")
-                import re as _re
-                m = _re.search(r'https?://[^\s\*#]+', url_text)
-                url = m.group(0) if m else url_text
-                ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-            return
-        if kind == "dubs" and value == "back":
-            # Go back to main menu
-            original_message = callback_query.message.reply_to_message
-            if original_message:
-                url_text = original_message.text or (original_message.caption or "")
-                import re as _re
-                m = _re.search(r'https?://[^\s\*#]+', url_text)
-                url = m.group(0) if m else url_text
-                ask_quality_menu(app, original_message, url, [], playlist_start_index=1, cb=callback_query)
-            return
-        # LINK BACK/CLOSE HANDLERS REMOVED - no longer needed
-    
     navigation_plan = _determine_askq_navigation_plan(
         user_id,
         data=data,
