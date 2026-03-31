@@ -850,40 +850,27 @@ def _attach_gallery_terminal_outcome(
     delivered_count: int,
     cached_count: int = 0,
 ):
-    task_context = getattr(message, "_runtime_task", None)
-    if task_context is None:
-        return
-    media_kind = (
-        "gallery_fallback"
-        if getattr(getattr(task_context, "branch_selection_result", None), "branch_family", None)
-        == "gallery_fallback_download"
-        else "gallery_media"
+    _execute_gallery_terminal_outcome_plan(
+        message,
+        _build_gallery_terminal_outcome_plan(
+            message,
+            attempted_count=attempted_count,
+            delivered_count=delivered_count,
+            cached_count=cached_count,
+        ),
     )
-    outcome = upload_terminal_outcome(
-        media_kind=media_kind,
-        attempted_count=max(attempted_count, delivered_count),
-        delivered_count=delivered_count,
-        cached_count=cached_count,
-    )
-    with_terminal_outcome(task_context, outcome)
 
 
 def _attach_gallery_failure_outcome(message, *, error_text: str):
-    task_context = getattr(message, "_runtime_task", None)
-    if task_context is None:
-        return
-    media_kind = (
-        "gallery_fallback"
-        if getattr(getattr(task_context, "branch_selection_result", None), "branch_family", None)
-        == "gallery_fallback_download"
-        else "gallery_media"
+    _execute_gallery_terminal_outcome_plan(
+        message,
+        _build_gallery_terminal_outcome_plan(
+            message,
+            attempted_count=0,
+            delivered_count=0,
+            error_text=error_text,
+        ),
     )
-    outcome = failed_terminal_outcome(
-        media_kind=media_kind,
-        failure_kind="gallery_fallback_failed",
-        error_text=error_text,
-    )
-    with_terminal_outcome(task_context, outcome)
 
 
 def _record_gallery_command_result(
@@ -912,6 +899,65 @@ def image_command(app, message):
     request = build_image_command_request(envelope)
     execution_context = build_message_execution_context(message)
     handle_image_command_request(app, execution_context, request)
+
+
+@dataclass(frozen=True)
+class GalleryTerminalOutcomePlan:
+    media_kind: str
+    outcome_kind: str
+    attempted_count: int
+    delivered_count: int
+    cached_count: int = 0
+    error_text: str | None = None
+
+
+def _build_gallery_terminal_outcome_plan(
+    message,
+    *,
+    attempted_count: int,
+    delivered_count: int,
+    cached_count: int = 0,
+    error_text: str | None = None,
+) -> GalleryTerminalOutcomePlan:
+    task_context = getattr(message, "_runtime_task", None)
+    media_kind = (
+        "gallery_fallback"
+        if getattr(getattr(task_context, "branch_selection_result", None), "branch_family", None)
+        == "gallery_fallback_download"
+        else "gallery_media"
+    )
+    outcome_kind = "failed" if error_text else ("completed" if delivered_count >= attempted_count else "partial")
+    return GalleryTerminalOutcomePlan(
+        media_kind=media_kind,
+        outcome_kind=outcome_kind,
+        attempted_count=attempted_count,
+        delivered_count=delivered_count,
+        cached_count=cached_count,
+        error_text=error_text,
+    )
+
+
+def _execute_gallery_terminal_outcome_plan(message, plan: GalleryTerminalOutcomePlan) -> None:
+    task_context = getattr(message, "_runtime_task", None)
+    if task_context is None:
+        return
+    if plan.outcome_kind == "failed":
+        outcome = failed_terminal_outcome(
+            media_kind=plan.media_kind,
+            failure_kind="gallery_fallback_failed",
+            error_text=plan.error_text or "Unknown error",
+            attempted_count=plan.attempted_count,
+            delivered_count=plan.delivered_count,
+            cached_count=plan.cached_count,
+        )
+    else:
+        outcome = upload_terminal_outcome(
+            media_kind=plan.media_kind,
+            attempted_count=max(plan.attempted_count, plan.delivered_count),
+            delivered_count=plan.delivered_count,
+            cached_count=plan.cached_count,
+        )
+    with_terminal_outcome(task_context, outcome)
 
 
 def image_command_logic(app, message, request=None):
