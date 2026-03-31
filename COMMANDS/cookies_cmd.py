@@ -111,6 +111,15 @@ class CookieStateStore:
     active_retry_keys: set
 
 
+@dataclass(frozen=True)
+class CookieRetryOutcomePlan:
+    mode: str
+    log_text: str | None = None
+    remove_cookie_file: bool = False
+    cache_result: bool | None = None
+    reset_checked_sources: bool = False
+
+
 def _get_cookie_state_store() -> CookieStateStore:
     return CookieStateStore(
         youtube_cache=_youtube_cookie_cache,
@@ -159,6 +168,70 @@ def _activate_cookie_retry(retry_key: str) -> None:
 
 def _deactivate_cookie_retry(retry_key: str) -> None:
     _get_cookie_state_store().active_retry_keys.discard(retry_key)
+
+
+def _build_cookie_retry_outcome_plan(
+    *,
+    mode: str,
+    user_id: int,
+    cookie_file_path: str | None = None,
+) -> CookieRetryOutcomePlan:
+    if mode == "limit_exceeded":
+        return CookieRetryOutcomePlan(
+            mode=mode,
+            log_text=f"YouTube cookie retry limit exceeded for user {user_id}",
+        )
+    if mode == "no_sources":
+        return CookieRetryOutcomePlan(
+            mode=mode,
+            log_text=LoggerMsg.COOKIES_YOUTUBE_RETRY_NO_SOURCES_LOG_MSG.format(user_id=user_id),
+        )
+    if mode == "no_unchecked_sources":
+        return CookieRetryOutcomePlan(
+            mode=mode,
+            log_text=f"All cookie sources have been checked for user {user_id}, no more sources to try",
+            reset_checked_sources=True,
+        )
+    if mode == "success":
+        return CookieRetryOutcomePlan(
+            mode=mode,
+            cache_result=True,
+        )
+    if mode == "all_failed":
+        return CookieRetryOutcomePlan(
+            mode=mode,
+            log_text=LoggerMsg.COOKIES_YOUTUBE_RETRY_ALL_SOURCES_FAILED_LOG_MSG.format(user_id=user_id),
+            remove_cookie_file=True,
+            cache_result=False,
+        )
+    if mode == "non_cookie_error":
+        return CookieRetryOutcomePlan(
+            mode=mode,
+            log_text=LoggerMsg.COOKIES_YOUTUBE_RETRY_ERROR_NOT_COOKIE_RELATED_LOG_MSG.format(user_id=user_id),
+        )
+    return CookieRetryOutcomePlan(mode=mode)
+
+
+def _execute_cookie_retry_outcome_plan(
+    user_id: int,
+    cookie_context: CookieFileContext | None,
+    plan: CookieRetryOutcomePlan,
+) -> None:
+    if plan.reset_checked_sources:
+        reset_checked_cookie_sources(user_id)
+        logger.info(f"Reset checked cookie sources for user {user_id} to allow retry in future")
+
+    if plan.remove_cookie_file and cookie_context is not None:
+        _remove_cookie_file_if_present(cookie_context)
+
+    if plan.cache_result is not None and cookie_context is not None:
+        _set_youtube_cookie_cache_entry(user_id, plan.cache_result, cookie_context.cookie_file_path)
+
+    if plan.log_text:
+        if plan.mode in {"all_failed", "limit_exceeded", "no_sources", "no_unchecked_sources", "non_cookie_error"}:
+            logger.warning(plan.log_text)
+        else:
+            logger.info(plan.log_text)
 
 def generate_task_id(user_id: int, url: str, service: str = None) -> str:
     """
@@ -2128,22 +2201,31 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
         
         # Check the YouTube cookie rotation retry limit
         if not check_youtube_cookie_retry_limit(user_id):
-            logger.warning(f"YouTube cookie retry limit exceeded for user {user_id}")
+            _execute_cookie_retry_outcome_plan(
+                user_id,
+                None,
+                _build_cookie_retry_outcome_plan(mode="limit_exceeded", user_id=user_id),
+            )
             return None
         
         # Get cookie sources
         cookie_urls = get_youtube_cookie_urls()
         if not cookie_urls:
-            logger.warning(LoggerMsg.COOKIES_YOUTUBE_RETRY_NO_SOURCES_LOG_MSG.format(user_id=user_id))
+            _execute_cookie_retry_outcome_plan(
+                user_id,
+                None,
+                _build_cookie_retry_outcome_plan(mode="no_sources", user_id=user_id),
+            )
             return None
         
         # Use only unchecked sources for this user
         unchecked_indices = get_unchecked_cookie_sources(user_id, cookie_urls)
         if not unchecked_indices:
-            logger.warning(f"All cookie sources have been checked for user {user_id}, no more sources to try")
-            # Reset the checked-source cache for this user
-            reset_checked_cookie_sources(user_id)
-            logger.info(f"Reset checked cookie sources for user {user_id} to allow retry in future")
+            _execute_cookie_retry_outcome_plan(
+                user_id,
+                None,
+                _build_cookie_retry_outcome_plan(mode="no_unchecked_sources", user_id=user_id),
+            )
             return None
         
         cookie_context = _ensure_cookie_user_dir(user_id)
@@ -2203,9 +2285,15 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
                 # Validate cookies
                 if test_youtube_cookies(cookie_file_path, user_id=user_id):
                     logger.info(LoggerMsg.COOKIES_YOUTUBE_RETRY_SOURCE_WORKING_LOG_MSG.format(source_index=idx + 1, user_id=user_id))
-                    
-                    # Update cache
-                    _set_youtube_cookie_cache_entry(user_id, True, cookie_file_path)
+                    _execute_cookie_retry_outcome_plan(
+                        user_id,
+                        cookie_context,
+                        _build_cookie_retry_outcome_plan(
+                            mode="success",
+                            user_id=user_id,
+                            cookie_file_path=cookie_file_path,
+                        ),
+                    )
                     
                     # Retry download
                     try:
@@ -2222,7 +2310,15 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
                             logger.info(LoggerMsg.COOKIES_YOUTUBE_RETRY_ERROR_COOKIE_RELATED_LOG_MSG.format(user_id=user_id))
                             continue
                         else:
-                            logger.info(LoggerMsg.COOKIES_YOUTUBE_RETRY_ERROR_NOT_COOKIE_RELATED_LOG_MSG.format(user_id=user_id))
+                            _execute_cookie_retry_outcome_plan(
+                                user_id,
+                                cookie_context,
+                                _build_cookie_retry_outcome_plan(
+                                    mode="non_cookie_error",
+                                    user_id=user_id,
+                                    cookie_file_path=cookie_file_path,
+                                ),
+                            )
                             return None
                 else:
                     logger.warning(LoggerMsg.COOKIES_YOUTUBE_RETRY_SOURCE_FAILED_VALIDATION_LOG_MSG.format(source_index=idx + 1, user_id=user_id))
@@ -2236,12 +2332,15 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
                 continue
         
         # If all sources failed
-        logger.warning(LoggerMsg.COOKIES_YOUTUBE_RETRY_ALL_SOURCES_FAILED_LOG_MSG.format(user_id=user_id))
-        _remove_cookie_file_if_present(cookie_context)
-        
-        # Update cache
-        _set_youtube_cookie_cache_entry(user_id, False, cookie_file_path)
-        
+        _execute_cookie_retry_outcome_plan(
+            user_id,
+            cookie_context,
+            _build_cookie_retry_outcome_plan(
+                mode="all_failed",
+                user_id=user_id,
+                cookie_file_path=cookie_file_path,
+            ),
+        )
         return None
     finally:
         _deactivate_cookie_retry(retry_key)
