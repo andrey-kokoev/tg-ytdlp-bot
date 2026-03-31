@@ -574,6 +574,54 @@ def _repost_audio_cache_entries(
             logger.error(f"down_and_audio: error reposting cached audio index={index}: {e}")
 
 
+def _execute_audio_single_cache_replay(
+    *,
+    app,
+    message,
+    user_id: int,
+    url: str,
+    quality_key,
+    cached_ids,
+    is_nsfw: bool,
+    logger,
+    send_to_logger,
+) -> bool:
+    is_private_chat = getattr(message.chat, "type", None) == enums.ChatType.PRIVATE
+    is_paid = is_nsfw and is_private_chat
+
+    def resolve_from_chat_id():
+        if is_paid:
+            from_chat_id = get_log_channel("video", paid=True)
+        elif is_nsfw:
+            from_chat_id = get_log_channel("video", nsfw=True)
+        else:
+            from_chat_id = get_log_channel("video")
+        valid_channels = [
+            get_log_channel("video"),
+            get_log_channel("video", nsfw=True),
+            get_log_channel("video", paid=True),
+        ]
+        if from_chat_id not in valid_channels:
+            logger.error(f"CRITICAL: Attempting to repost from wrong channel {from_chat_id}")
+            raise Exception("Wrong channel for repost")
+        return from_chat_id
+
+    return try_repost_single_cached_media(
+        app=app,
+        message=message,
+        user_id=user_id,
+        cached_ids=cached_ids,
+        resolve_from_chat_id=resolve_from_chat_id,
+        success_text=safe_get_messages(user_id).AUDIO_SENT_FROM_CACHE_MSG,
+        success_log_text=LoggerMsg.AUDIO_SENT_FROM_CACHE.format(quality=quality_key, user_id=user_id),
+        logger=logger,
+        replay_log_prefix="[AUDIO CACHE] Reposting audio",
+        replay_error_prefix="Error reposting audio from cache",
+        on_replay_error=lambda: save_to_video_cache(url, quality_key, [], clear=True),
+        send_to_logger=send_to_logger,
+    )
+
+
 def _execute_audio_cache_replay(
     *,
     app,
@@ -1644,38 +1692,15 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             )
 
             if single_replay_plan.should_replay:
-                is_private_chat = getattr(message.chat, "type", None) == enums.ChatType.PRIVATE
-                is_paid = is_nsfw and is_private_chat
-
-                def resolve_from_chat_id():
-                    if is_paid:
-                        from_chat_id = get_log_channel("video", paid=True)
-                    elif is_nsfw:
-                        from_chat_id = get_log_channel("video", nsfw=True)
-                    else:
-                        from_chat_id = get_log_channel("video")
-                    valid_channels = [
-                        get_log_channel("video"),
-                        get_log_channel("video", nsfw=True),
-                        get_log_channel("video", paid=True),
-                    ]
-                    if from_chat_id not in valid_channels:
-                        logger.error(f"CRITICAL: Attempting to repost from wrong channel {from_chat_id}")
-                        raise Exception("Wrong channel for repost")
-                    return from_chat_id
-
-                replayed = try_repost_single_cached_media(
+                replayed = _execute_audio_single_cache_replay(
                     app=app,
                     message=message,
                     user_id=user_id,
+                    url=url,
+                    quality_key=quality_key,
                     cached_ids=cached_ids,
-                    resolve_from_chat_id=resolve_from_chat_id,
-                    success_text=safe_get_messages(user_id).AUDIO_SENT_FROM_CACHE_MSG,
-                    success_log_text=LoggerMsg.AUDIO_SENT_FROM_CACHE.format(quality=quality_key, user_id=user_id),
+                    is_nsfw=is_nsfw,
                     logger=logger,
-                    replay_log_prefix="[AUDIO CACHE] Reposting audio",
-                    replay_error_prefix="Error reposting audio from cache",
-                    on_replay_error=lambda: save_to_video_cache(url, quality_key, [], clear=True),
                     send_to_logger=send_to_logger,
                 )
                 if replayed and single_replay_plan.should_return_early:
