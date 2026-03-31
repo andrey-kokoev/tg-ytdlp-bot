@@ -106,6 +106,15 @@ class ArgsCallbackResultPlan:
 
 
 @dataclass(frozen=True)
+class ArgsTextInputOutcomePlan:
+    mode: str
+    message_text: str
+    clear_state: bool
+    log_error: bool = False
+    parse_mode: object | None = None
+
+
+@dataclass(frozen=True)
 class ArgsInputStateStore:
     dm_states: dict
     topic_states: dict
@@ -557,6 +566,35 @@ def _log_args_input_error(message, error_msg: str) -> None:
     from HELPERS.logger import log_error_to_channel
 
     log_error_to_channel(message, error_msg)
+
+
+def _build_args_text_input_outcome_plan(
+    *,
+    message_text: str,
+    clear_state: bool,
+    log_error: bool = False,
+    parse_mode: object | None = None,
+) -> ArgsTextInputOutcomePlan:
+    return ArgsTextInputOutcomePlan(
+        mode="emit",
+        message_text=message_text,
+        clear_state=clear_state,
+        log_error=log_error,
+        parse_mode=parse_mode,
+    )
+
+
+def _execute_args_text_input_outcome_plan(context: ArgsTextInputContext, plan: ArgsTextInputOutcomePlan) -> None:
+    safe_send_message(
+        context.user_id,
+        plan.message_text,
+        parse_mode=plan.parse_mode,
+        message=context.source_message,
+    )
+    if plan.log_error:
+        _log_args_input_error(context.source_message, plan.message_text)
+    if plan.clear_state:
+        _clear_args_input_state(context.chat_id, context.owner_id, context.thread_id)
 
 
 def _build_args_storage_context(user_id: int) -> ArgsStorageContext:
@@ -1780,50 +1818,55 @@ def handle_args_text_input(app, execution_context, request=None):
     try:
         if param_type == "text":
             if len(context.text) > 500:
-                error_msg = messages.ARGS_TEXT_TOO_LONG_MSG
-                safe_send_message(context.user_id, error_msg, message=context.source_message)
-                _log_args_input_error(context.source_message, error_msg)
+                outcome_plan = _build_args_text_input_outcome_plan(
+                    message_text=messages.ARGS_TEXT_TOO_LONG_MSG,
+                    clear_state=False,
+                    log_error=True,
+                )
+                _execute_args_text_input_outcome_plan(context, outcome_plan)
                 return
 
             _update_user_arg_value(context.owner_id, param_name, context.text)
-
-            _clear_args_input_state(context.chat_id, context.owner_id, context.thread_id)
-            safe_send_message(
-                context.user_id,
-                messages.ARGS_PARAM_SET_TO_MSG.format(
+            outcome_plan = _build_args_text_input_outcome_plan(
+                message_text=messages.ARGS_PARAM_SET_TO_MSG.format(
                     description=get_param_description(YTDLP_PARAMS[param_name], param_name, messages),
                     value=context.text,
                 ),
+                clear_state=True,
                 parse_mode=enums.ParseMode.HTML,
-                message=context.source_message
             )
+            _execute_args_text_input_outcome_plan(context, outcome_plan)
 
         elif param_type == "json":
             try:
                 parsed_json = json.loads(context.text)
                 if not isinstance(parsed_json, dict):
-                    error_msg = messages.ARGS_JSON_MUST_BE_OBJECT_MSG
-                    safe_send_message(context.user_id, error_msg, message=context.source_message)
-                    _log_args_input_error(context.source_message, error_msg)
+                    outcome_plan = _build_args_text_input_outcome_plan(
+                        message_text=messages.ARGS_JSON_MUST_BE_OBJECT_MSG,
+                        clear_state=False,
+                        log_error=True,
+                    )
+                    _execute_args_text_input_outcome_plan(context, outcome_plan)
                     return
 
                 _update_user_arg_value(context.owner_id, param_name, context.text)
-
-                _clear_args_input_state(context.chat_id, context.owner_id, context.thread_id)
-                safe_send_message(
-                    context.user_id,
-                    messages.ARGS_PARAM_SET_TO_MSG.format(
+                outcome_plan = _build_args_text_input_outcome_plan(
+                    message_text=messages.ARGS_PARAM_SET_TO_MSG.format(
                         description=get_param_description(YTDLP_PARAMS[param_name], param_name, messages),
                         value=context.text,
                     ),
+                    clear_state=True,
                     parse_mode=enums.ParseMode.HTML,
-                    message=context.source_message
                 )
+                _execute_args_text_input_outcome_plan(context, outcome_plan)
 
             except json.JSONDecodeError:
-                error_msg = messages.ARGS_INVALID_JSON_FORMAT_MSG
-                safe_send_message(context.user_id, error_msg, message=context.source_message)
-                _log_args_input_error(context.source_message, error_msg)
+                outcome_plan = _build_args_text_input_outcome_plan(
+                    message_text=messages.ARGS_INVALID_JSON_FORMAT_MSG,
+                    clear_state=False,
+                    log_error=True,
+                )
+                _execute_args_text_input_outcome_plan(context, outcome_plan)
                 return
 
         elif param_type == "number":
@@ -1834,20 +1877,24 @@ def handle_args_text_input(app, execution_context, request=None):
                 elif text_lower in ["false", "0", "no", "off"]:
                     value = False
                 else:
-                    error_msg = messages.ARGS_BOOL_INPUT_MSG
-                    safe_send_message(context.user_id, error_msg, message=context.source_message)
-                    _log_args_input_error(context.source_message, error_msg)
+                    outcome_plan = _build_args_text_input_outcome_plan(
+                        message_text=messages.ARGS_BOOL_INPUT_MSG,
+                        clear_state=False,
+                        log_error=True,
+                    )
+                    _execute_args_text_input_outcome_plan(context, outcome_plan)
                     return
 
                 _update_user_arg_value(context.owner_id, param_name, value)
-
-                _clear_args_input_state(context.chat_id, context.owner_id, context.thread_id)
-                safe_send_message(
-                    context.user_id,
-                    messages.ARGS_PARAM_SET_TO_MSG.format(description=get_param_description(YTDLP_PARAMS[param_name], param_name, messages), value='True' if value else 'False'),
+                outcome_plan = _build_args_text_input_outcome_plan(
+                    message_text=messages.ARGS_PARAM_SET_TO_MSG.format(
+                        description=get_param_description(YTDLP_PARAMS[param_name], param_name, messages),
+                        value='True' if value else 'False',
+                    ),
+                    clear_state=True,
                     parse_mode=enums.ParseMode.HTML,
-                    message=context.source_message
                 )
+                _execute_args_text_input_outcome_plan(context, outcome_plan)
             else:
                 try:
                     value = int(context.text)
@@ -1856,35 +1903,41 @@ def handle_args_text_input(app, execution_context, request=None):
                     max_val = param_config.get("max", 999999)
 
                     if value and value < min_val or value > max_val:
-                        safe_send_message(
-                            context.user_id,
-                            messages.ARGS_VALUE_MUST_BE_BETWEEN_MSG.format(min_val=min_val, max_val=max_val),
-                            message=context.source_message
+                        outcome_plan = _build_args_text_input_outcome_plan(
+                            message_text=messages.ARGS_VALUE_MUST_BE_BETWEEN_MSG.format(min_val=min_val, max_val=max_val),
+                            clear_state=False,
                         )
+                        _execute_args_text_input_outcome_plan(context, outcome_plan)
                         return
 
                     _update_user_arg_value(context.owner_id, param_name, value)
-
-                    _clear_args_input_state(context.chat_id, context.owner_id, context.thread_id)
-                    safe_send_message(
-                        context.user_id,
-                        messages.ARGS_PARAM_SET_TO_MSG.format(description=get_param_description(YTDLP_PARAMS[param_name], param_name, messages), value=value),
+                    outcome_plan = _build_args_text_input_outcome_plan(
+                        message_text=messages.ARGS_PARAM_SET_TO_MSG.format(
+                            description=get_param_description(YTDLP_PARAMS[param_name], param_name, messages),
+                            value=value,
+                        ),
+                        clear_state=True,
                         parse_mode=enums.ParseMode.HTML,
-                        message=context.source_message
                     )
+                    _execute_args_text_input_outcome_plan(context, outcome_plan)
 
                 except ValueError:
-                    error_msg = messages.ARGS_INVALID_NUMBER_INPUT_MSG
-                    safe_send_message(context.user_id, error_msg, message=context.source_message)
-                    _log_args_input_error(context.source_message, error_msg)
+                    outcome_plan = _build_args_text_input_outcome_plan(
+                        message_text=messages.ARGS_INVALID_NUMBER_INPUT_MSG,
+                        clear_state=False,
+                        log_error=True,
+                    )
+                    _execute_args_text_input_outcome_plan(context, outcome_plan)
                     return
 
     except Exception as e:
         logger.error(LoggerMsg.ARGS_ERROR_HANDLING_TEXT_INPUT_LOG_MSG.format(error=e))
-        error_msg = messages.ARGS_ERROR_PROCESSING_MSG
-        safe_send_message(context.user_id, error_msg, message=context.source_message)
-        _log_args_input_error(context.source_message, error_msg)
-        _clear_args_input_state(context.chat_id, context.owner_id, context.thread_id)
+        outcome_plan = _build_args_text_input_outcome_plan(
+            message_text=messages.ARGS_ERROR_PROCESSING_MSG,
+            clear_state=True,
+            log_error=True,
+        )
+        _execute_args_text_input_outcome_plan(context, outcome_plan)
 
 def _has_args_state(flt, client, message) -> bool:
     try:
