@@ -115,6 +115,13 @@ class ArgsTextInputOutcomePlan:
 
 
 @dataclass(frozen=True)
+class ArgsInputLifecyclePlan:
+    mode: str
+    clear_state: bool
+    send_timeout_message: bool = False
+
+
+@dataclass(frozen=True)
 class ArgsInputStateStore:
     dm_states: dict
     topic_states: dict
@@ -650,12 +657,62 @@ def _update_user_arg_value(user_id: int, param_name: str, value: Any) -> bool:
     args_state = _apply_args_boolean_pair_consistency(args_state)
     return _persist_user_args_state(storage, args_state)
 
-def clear_input_state_timer(user_id: int, thread_id: int = None):
-    messages = get_messages_instance(user_id)
-    """Clear input state and its timer"""
+
+def _build_args_input_lifecycle_plan(
+    user_id: int,
+    thread_id: int = None,
+    *,
+    timeout_triggered: bool = False,
+) -> ArgsInputLifecyclePlan | None:
     state_store = _get_args_input_state_store()
     if thread_id:
-        # Clear topic state
+        has_topic_state = (
+            (user_id, thread_id) in state_store.topic_timers
+            or (user_id, thread_id) in state_store.topic_states
+            or (user_id, thread_id) in state_store.topic_timeouts
+        )
+        if timeout_triggered:
+            if (user_id, thread_id) not in state_store.topic_timers:
+                return None
+            if (user_id, thread_id) in state_store.topic_timeouts:
+                return None
+            return ArgsInputLifecyclePlan(
+                mode="topic_timeout",
+                clear_state=True,
+                send_timeout_message=True,
+            )
+        if not has_topic_state:
+            return None
+        return ArgsInputLifecyclePlan(mode="topic_clear", clear_state=True)
+
+    has_dm_state = (
+        user_id in state_store.dm_timers
+        or user_id in state_store.dm_states
+        or user_id in state_store.dm_timeouts
+    )
+    if timeout_triggered:
+        if user_id not in state_store.dm_timers:
+            return None
+        if user_id in state_store.dm_timeouts:
+            return None
+        return ArgsInputLifecyclePlan(
+            mode="dm_timeout",
+            clear_state=True,
+            send_timeout_message=True,
+        )
+    if not has_dm_state:
+        return None
+    return ArgsInputLifecyclePlan(mode="dm_clear", clear_state=True)
+
+
+def _execute_args_input_lifecycle_plan(user_id: int, thread_id: int = None, plan: ArgsInputLifecyclePlan | None = None):
+    if plan is None or not plan.clear_state:
+        return
+
+    state_store = _get_args_input_state_store()
+    if thread_id:
+        if plan.send_timeout_message:
+            state_store.topic_timeouts.add((user_id, thread_id))
         state_store.topic_states.pop((user_id, thread_id), None)
         timer = state_store.topic_timers.pop((user_id, thread_id), None)
         if timer:
@@ -663,10 +720,11 @@ def clear_input_state_timer(user_id: int, thread_id: int = None):
                 timer.cancel()
             except Exception:
                 pass
-        # Clear timeout flag
-        state_store.topic_timeouts.discard((user_id, thread_id))
+        if not plan.send_timeout_message:
+            state_store.topic_timeouts.discard((user_id, thread_id))
     else:
-        # Clear DM state
+        if plan.send_timeout_message:
+            state_store.dm_timeouts.add(user_id)
         state_store.dm_states.pop(user_id, None)
         timer = state_store.dm_timers.pop(user_id, None)
         if timer:
@@ -674,42 +732,31 @@ def clear_input_state_timer(user_id: int, thread_id: int = None):
                 timer.cancel()
             except Exception:
                 pass
-        # Clear timeout flag
-        state_store.dm_timeouts.discard(user_id)
+        if not plan.send_timeout_message:
+            state_store.dm_timeouts.discard(user_id)
 
-def start_input_state_timer(user_id: int, thread_id: int = None):
-    messages = get_messages_instance(user_id)
-    """Start a 5-minute timer to auto-close input state"""
-    def auto_close():
-        messages = get_messages_instance(user_id)
-        state_store = _get_args_input_state_store()
-        # Check if timer still exists (not cancelled)
-        if thread_id:
-            if (user_id, thread_id) not in state_store.topic_timers:
-                return
-            # Check if timeout message already sent
-            if (user_id, thread_id) in state_store.topic_timeouts:
-                return
-            state_store.topic_timeouts.add((user_id, thread_id))
-        else:
-            if user_id not in state_store.dm_timers:
-                return
-            # Check if timeout message already sent
-            if user_id in state_store.dm_timeouts:
-                return
-            state_store.dm_timeouts.add(user_id)
-        
-        clear_input_state_timer(user_id, thread_id)
-        # Send notification to user only once
+    if plan.send_timeout_message:
         try:
             messages = get_messages_instance(user_id)
             safe_send_message(
                 user_id,
-                messages.ARGS_INPUT_TIMEOUT_MSG
+                messages.ARGS_INPUT_TIMEOUT_MSG,
             )
         except Exception as e:
             messages = get_messages_instance(user_id)
             logger.error(messages.ARGS_ERROR_SENDING_TIMEOUT_MSG.format(error=e))
+
+
+def clear_input_state_timer(user_id: int, thread_id: int = None):
+    """Clear input state and its timer"""
+    plan = _build_args_input_lifecycle_plan(user_id, thread_id)
+    _execute_args_input_lifecycle_plan(user_id, thread_id, plan)
+
+def start_input_state_timer(user_id: int, thread_id: int = None):
+    """Start a 5-minute timer to auto-close input state"""
+    def auto_close():
+        plan = _build_args_input_lifecycle_plan(user_id, thread_id, timeout_triggered=True)
+        _execute_args_input_lifecycle_plan(user_id, thread_id, plan)
     
     # Cancel existing timer if any
     state_store = _get_args_input_state_store()
