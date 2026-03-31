@@ -29,6 +29,22 @@ class SenderExecutionContext:
     is_private_chat: bool
 
 
+@dataclass(frozen=True)
+class SenderDeliveryPlan:
+    mode: str
+    send_as_paid: bool = False
+    send_as_document: bool = False
+    timeout_attempts: int = 0
+    timeout_log_text: str | None = None
+
+
+@dataclass(frozen=True)
+class SenderDeliveryOutcomePlan:
+    mode: str
+    result_kind: str
+    log_text: str | None = None
+
+
 def _build_sender_execution_context(message) -> SenderExecutionContext:
     chat_type = getattr(message.chat, "type", None)
     return SenderExecutionContext(
@@ -187,6 +203,33 @@ def _send_with_timeout_fallback(
                 logger.warning(timeout_log_text)
                 return fallback_send()
             time.sleep(2)
+
+
+def _build_sender_delivery_plan(
+    *,
+    is_private_chat: bool,
+    is_spoiler: bool,
+    send_as_file: bool,
+    caption_too_long: bool,
+    timeout_attempts: int = 3,
+) -> SenderDeliveryPlan:
+    if is_spoiler and is_private_chat:
+        return SenderDeliveryPlan(mode="paid", send_as_paid=True)
+    if send_as_file:
+        return SenderDeliveryPlan(mode="document", send_as_document=True)
+    if caption_too_long:
+        return SenderDeliveryPlan(mode="caption_fallback", timeout_attempts=max(1, timeout_attempts - 1))
+    return SenderDeliveryPlan(mode="video", timeout_attempts=timeout_attempts)
+
+
+def _build_sender_delivery_outcome_plan(mode: str, *, log_text: str | None = None) -> SenderDeliveryOutcomePlan:
+    if mode == "paid":
+        return SenderDeliveryOutcomePlan(mode=mode, result_kind="paid", log_text=log_text)
+    if mode == "document":
+        return SenderDeliveryOutcomePlan(mode=mode, result_kind="document", log_text=log_text)
+    if mode == "video":
+        return SenderDeliveryOutcomePlan(mode=mode, result_kind="video", log_text=log_text)
+    return SenderDeliveryOutcomePlan(mode=mode, result_kind=mode, log_text=log_text)
 
 # Get app instance for decorators
 app = get_app()
@@ -428,8 +471,14 @@ def send_videos(
             # For free messages: external preview without padding; for paid: 320x320 cover
             local_thumb_free = _gen_free_cover(video_abs_path)
             # Paid media only in private chats; in groups/channels send regular video
-            is_private_chat = sender_context.is_private_chat
-            if is_spoiler and is_private_chat:
+            delivery_plan = _build_sender_delivery_plan(
+                is_private_chat=sender_context.is_private_chat,
+                is_spoiler=is_spoiler,
+                send_as_file=send_as_file,
+                caption_too_long=False,
+                timeout_attempts=3,
+            )
+            if delivery_plan.send_as_paid:
                 try:
                     v_w, v_h, v_dur = get_video_info_ffprobe(video_abs_path)
                 except Exception:
@@ -489,8 +538,14 @@ def send_videos(
                         local_thumb = None
             except Exception:
                 local_thumb = thumb_file_path
-            is_private_chat = sender_context.is_private_chat
-            if is_spoiler and is_private_chat:
+            delivery_plan = _build_sender_delivery_plan(
+                is_private_chat=sender_context.is_private_chat,
+                is_spoiler=is_spoiler,
+                send_as_file=True,
+                caption_too_long=False,
+                timeout_attempts=3,
+            )
+            if delivery_plan.send_as_paid:
                 try:
                     v_w, v_h, v_dur = get_video_info_ffprobe(video_abs_path)
                 except Exception:
@@ -523,15 +578,23 @@ def send_videos(
 
         try:
             # Check if user wants to send as file
-            if send_as_file:
+            delivery_plan = _build_sender_delivery_plan(
+                is_private_chat=sender_context.is_private_chat,
+                is_spoiler=is_spoiler,
+                send_as_file=send_as_file,
+                caption_too_long=False,
+                timeout_attempts=3,
+            )
+            if delivery_plan.send_as_document:
                 logger.info(safe_get_messages(user_id).SENDER_USER_SEND_AS_FILE_ENABLED_MSG.format(user_id=user_id))
                 video_msg = _fallback_send_document(cap)
             else:
                 video_msg = _send_with_timeout_fallback(
                     primary_send=lambda: _try_send_video(cap),
                     fallback_send=lambda: _fallback_send_document(cap),
-                    attempts=3,
-                    timeout_log_text=safe_get_messages(user_id).SENDER_SEND_VIDEO_TIMED_OUT_MSG,
+                    attempts=delivery_plan.timeout_attempts,
+                    timeout_log_text=delivery_plan.timeout_log_text
+                    or safe_get_messages(user_id).SENDER_SEND_VIDEO_TIMED_OUT_MSG,
                 )
         except Exception as e:
             if "MEDIA_CAPTION_TOO_LONG" in str(e):
@@ -543,21 +606,36 @@ def send_videos(
                 minimal_cap += link_block
                 
                 try:
-                    if send_as_file:
+                    caption_plan = _build_sender_delivery_plan(
+                        is_private_chat=sender_context.is_private_chat,
+                        is_spoiler=is_spoiler,
+                        send_as_file=send_as_file,
+                        caption_too_long=True,
+                        timeout_attempts=2,
+                    )
+                    if caption_plan.send_as_document:
                         # If send_as_file is enabled, always use document
                         video_msg = _fallback_send_document(minimal_cap)
                     else:
                         video_msg = _send_with_timeout_fallback(
                             primary_send=lambda: _try_send_video(minimal_cap),
                             fallback_send=lambda: _fallback_send_document(minimal_cap),
-                            attempts=2,
-                            timeout_log_text=safe_get_messages(user_id).SENDER_SEND_VIDEO_MINIMAL_CAPTION_TIMED_OUT_MSG,
+                            attempts=caption_plan.timeout_attempts,
+                            timeout_log_text=caption_plan.timeout_log_text
+                            or safe_get_messages(user_id).SENDER_SEND_VIDEO_MINIMAL_CAPTION_TIMED_OUT_MSG,
                         )
                 except Exception as e:
                     logger.error(safe_get_messages(user_id).SENDER_ERROR_SENDING_VIDEO_MINIMAL_CAPTION_MSG.format(error=e))
                     # Final fallback: no caption; use document on timeout
                     try:
-                        if send_as_file:
+                        final_plan = _build_sender_delivery_plan(
+                            is_private_chat=sender_context.is_private_chat,
+                            is_spoiler=is_spoiler,
+                            send_as_file=send_as_file,
+                            caption_too_long=True,
+                            timeout_attempts=1,
+                        )
+                        if final_plan.send_as_document:
                             video_msg = _fallback_send_document("")
                         else:
                             video_msg = _try_send_video("")
