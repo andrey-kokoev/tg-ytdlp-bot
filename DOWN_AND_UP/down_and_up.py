@@ -631,6 +631,51 @@ def _handle_manual_forward_success(
     )
 
 
+def _attempt_manual_forward_recovery(
+    *,
+    message,
+    user_id: int,
+    video_msg,
+    url: str,
+    user_forced_nsfw: bool,
+    already_forwarded_to_log: bool,
+    is_split_item: bool,
+    video_path: str,
+    caption_text: str,
+    duration: int,
+    width: int,
+    height: int,
+    thumb_path: str | None,
+    recovery_label: str,
+):
+    recovery_route_result = _route_uploaded_video_to_logs(
+        message=message,
+        user_id=user_id,
+        video_msg=video_msg,
+        url=url,
+        user_forced_nsfw=user_forced_nsfw,
+        already_forwarded_to_log=already_forwarded_to_log,
+        is_playlist=False,
+        is_split_item=is_split_item,
+        video_path=video_path,
+        caption_text=caption_text,
+        duration=duration,
+        width=width,
+        height=height,
+        thumb_path=thumb_path,
+    )
+    forwarded_msgs = recovery_route_result["forwarded_msgs"]
+    already_forwarded_to_log = recovery_route_result["already_forwarded_to_log"]
+    is_nsfw = recovery_route_result["is_nsfw"]
+    if forwarded_msgs:
+        logger.info(
+            f"down_and_up: manual forward {recovery_label} successful, got IDs: {[m.id for m in forwarded_msgs]}"
+        )
+    else:
+        logger.error(f"Manual forward {recovery_label} also failed, cannot cache video")
+    return forwarded_msgs, already_forwarded_to_log, is_nsfw
+
+
 def _build_manual_forward_recovery_plan(
     *,
     is_playlist: bool,
@@ -4564,14 +4609,13 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 if recovery_plan.should_use_recovery_route:
                                     logger.info(f"down_and_up: forwarding failed, trying manual forward for video: {video_msg.id}")
                                     try:
-                                        manual_route_result = _route_uploaded_video_to_logs(
+                                        forwarded_msgs, already_forwarded_to_log, is_nsfw = _attempt_manual_forward_recovery(
                                             message=message,
                                             user_id=user_id,
                                             video_msg=video_msg,
                                             url=url,
                                             user_forced_nsfw=user_forced_nsfw,
                                             already_forwarded_to_log=already_forwarded_to_log,
-                                            is_playlist=False,
                                             is_split_item=bool(caption_lst and len(caption_lst) > 1),
                                             video_path=after_rename_abs_path,
                                             caption_text='' if force_no_title else original_video_title,
@@ -4579,12 +4623,9 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                             width=width,
                                             height=height,
                                             thumb_path=thumb_dir,
+                                            recovery_label="successful",
                                         )
-                                        forwarded_msgs = manual_route_result["forwarded_msgs"]
-                                        already_forwarded_to_log = manual_route_result["already_forwarded_to_log"]
-                                        is_nsfw = manual_route_result["is_nsfw"]
                                         if forwarded_msgs:
-                                            logger.info(f"down_and_up: manual forward successful, got IDs: {[m.id for m in forwarded_msgs]}")
                                             _handle_manual_forward_success(
                                                 forwarded_msgs=forwarded_msgs,
                                                 is_playlist=is_playlist,
@@ -4648,14 +4689,13 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 )
                                 if recovery_plan.should_use_recovery_route:
                                     # Safe quality_key for error recovery (already defined at function start)
-                                    recovery_route_result = _route_uploaded_video_to_logs(
+                                    forwarded_msgs, already_forwarded_to_log, is_nsfw = _attempt_manual_forward_recovery(
                                         message=message,
                                         user_id=user_id,
                                         video_msg=video_msg,
                                         url=url,
                                         user_forced_nsfw=user_forced_nsfw,
                                         already_forwarded_to_log=already_forwarded_to_log,
-                                        is_playlist=False,
                                         is_split_item=bool(caption_lst and len(caption_lst) > 1),
                                         video_path=after_rename_abs_path,
                                         caption_text='' if force_no_title else original_video_title,
@@ -4663,12 +4703,9 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                         width=width,
                                         height=height,
                                         thumb_path=thumb_dir,
+                                        recovery_label="after error",
                                     )
-                                    forwarded_msgs = recovery_route_result["forwarded_msgs"]
-                                    already_forwarded_to_log = recovery_route_result["already_forwarded_to_log"]
-                                    is_nsfw = recovery_route_result["is_nsfw"]
                                     if forwarded_msgs:
-                                        logger.info(f"down_and_up: manual forward after error successful, got IDs: {[m.id for m in forwarded_msgs]}")
                                         _handle_manual_forward_success(
                                             forwarded_msgs=forwarded_msgs,
                                             is_playlist=is_playlist,
