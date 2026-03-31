@@ -290,6 +290,152 @@ class DownloadCacheWritebackPlan:
     skip_log_text: str | None = None
 
 
+@dataclass(frozen=True)
+class UploadRoutingPlan:
+    mode: str
+    is_paid: bool
+    is_nsfw: bool
+    should_force_forward: bool
+    should_retry_manual: bool
+    forward_channel_kind: str | None = None
+
+
+def _build_upload_routing_plan(
+    *,
+    message,
+    url: str,
+    user_forced_nsfw: bool,
+    already_forwarded_to_log: bool,
+    is_playlist: bool,
+    is_split_item: bool,
+    video_msg,
+) -> UploadRoutingPlan:
+    is_nsfw = _is_nsfw_video_delivery(url, user_forced_nsfw)
+    is_private_chat = getattr(message.chat, "type", None) == enums.ChatType.PRIVATE
+    is_paid = _is_paid_video_message(video_msg) or (is_nsfw and is_private_chat)
+    should_force_forward = is_playlist or is_split_item
+    if is_paid:
+        return UploadRoutingPlan(
+            mode="paid",
+            is_paid=True,
+            is_nsfw=is_nsfw,
+            should_force_forward=should_force_forward,
+            should_retry_manual=False,
+            forward_channel_kind="paid",
+        )
+    if is_nsfw:
+        return UploadRoutingPlan(
+            mode="nsfw",
+            is_paid=False,
+            is_nsfw=True,
+            should_force_forward=should_force_forward,
+            should_retry_manual=False,
+            forward_channel_kind="nsfw",
+        )
+    if _is_paid_video_message(video_msg):
+        return UploadRoutingPlan(
+            mode="paid_message",
+            is_paid=True,
+            is_nsfw=False,
+            should_force_forward=False,
+            should_retry_manual=False,
+            forward_channel_kind=None,
+        )
+    return UploadRoutingPlan(
+        mode="regular",
+        is_paid=False,
+        is_nsfw=False,
+        should_force_forward=should_force_forward,
+        should_retry_manual=not already_forwarded_to_log,
+        forward_channel_kind="regular",
+    )
+
+
+def _execute_upload_routing_plan(
+    *,
+    plan: UploadRoutingPlan,
+    message,
+    user_id: int,
+    video_msg,
+    video_path: str,
+    caption_text: str,
+    duration: int,
+    width: int,
+    height: int,
+    thumb_path: str | None,
+    already_forwarded_to_log: bool,
+) -> dict:
+    result = {
+        "forwarded_msgs": None,
+        "already_forwarded_to_log": already_forwarded_to_log,
+        "is_nsfw": plan.is_nsfw,
+        "is_paid": plan.is_paid,
+        "should_retry_manual": plan.should_retry_manual,
+    }
+    logger.info(
+        f"[VIDEO CACHE] URL analysis: url={getattr(message, 'text', '') or getattr(message, 'caption', '')}, "
+        f"is_nsfw={plan.is_nsfw}, is_private_chat={getattr(message.chat, 'type', None) == enums.ChatType.PRIVATE}, "
+        f"is_paid={plan.is_paid}"
+    )
+    if plan.mode == "paid":
+        log_channel_paid = get_log_channel("video", paid=True)
+        try:
+            safe_forward_messages(log_channel_paid, user_id, [video_msg.id])
+            logger.info("down_and_up: NSFW content paid copy sent to PAID channel")
+        except Exception as e:
+            logger.error(f"down_and_up: failed to send paid copy to PAID channel: {e}")
+        result["already_forwarded_to_log"] = _send_open_nsfw_history_copy(
+            message=message,
+            video_path=video_path,
+            caption_text=caption_text,
+            duration=duration,
+            width=width,
+            height=height,
+            thumb_path=thumb_path,
+        ) or already_forwarded_to_log
+        logger.info(
+            "down_and_up: NSFW content sent to user (paid), PAID channel "
+            "(paid copy), and NSFW channel (open copy), not cached"
+        )
+        return result
+    if plan.mode == "nsfw":
+        if plan.should_force_forward or not already_forwarded_to_log:
+            log_channel = get_log_channel("video", nsfw=True)
+            if log_channel and log_channel != 0:
+                try:
+                    result["forwarded_msgs"] = safe_forward_messages(
+                        log_channel, user_id, [video_msg.id]
+                    )
+                    logger.info("down_and_up: NSFW content sent to NSFW channel")
+                except Exception as e:
+                    logger.error(f"down_and_up: failed to forward to NSFW channel: {e}")
+            else:
+                logger.warning(
+                    f"down_and_up: NSFW channel not available (ID: {log_channel}), skipping forward"
+                )
+            if result["forwarded_msgs"] and not plan.should_force_forward:
+                result["already_forwarded_to_log"] = True
+        else:
+            logger.info("down_and_up: skipping forward to NSFW channel - already forwarded to log")
+        logger.info("down_and_up: NSFW content sent to NSFW channel, not cached")
+        return result
+    if plan.mode == "paid_message":
+        logger.info("down_and_up: skipping forward to LOGS_VIDEO_ID for paid media")
+        result["should_retry_manual"] = False
+        return result
+    if plan.should_force_forward or not already_forwarded_to_log:
+        log_channel = get_log_channel("video")
+        try:
+            result["forwarded_msgs"] = safe_forward_messages(log_channel, user_id, [video_msg.id])
+        except Exception as e:
+            logger.error(f"down_and_up: failed to forward to LOGS_VIDEO_ID: {e}")
+        if result["forwarded_msgs"] and not plan.should_force_forward:
+            result["already_forwarded_to_log"] = True
+    else:
+        logger.info("down_and_up: skipping forward to LOGS_VIDEO_ID - already forwarded to log")
+    return result
+
+
 def _build_download_terminal_plan(
     *,
     user_id: int,
@@ -652,85 +798,28 @@ def _route_uploaded_video_to_logs(
     height: int,
     thumb_path: str | None,
 ):
-    is_nsfw = _is_nsfw_video_delivery(url, user_forced_nsfw)
-    is_private_chat = getattr(message.chat, "type", None) == enums.ChatType.PRIVATE
-    msg_is_paid = _is_paid_video_message(video_msg)
-    is_paid = msg_is_paid or (is_nsfw and is_private_chat)
-    should_force_forward = is_playlist or is_split_item
-    result = {
-        "forwarded_msgs": None,
-        "already_forwarded_to_log": already_forwarded_to_log,
-        "is_nsfw": is_nsfw,
-        "is_paid": is_paid,
-        "should_retry_manual": True,
-    }
-
-    logger.info(
-        f"[VIDEO CACHE] URL analysis: url={url}, is_nsfw={is_nsfw}, "
-        f"is_private_chat={is_private_chat}, is_paid={is_paid}"
+    plan = _build_upload_routing_plan(
+        message=message,
+        url=url,
+        user_forced_nsfw=user_forced_nsfw,
+        already_forwarded_to_log=already_forwarded_to_log,
+        is_playlist=is_playlist,
+        is_split_item=is_split_item,
+        video_msg=video_msg,
     )
-
-    if is_paid:
-        log_channel_paid = get_log_channel("video", paid=True)
-        try:
-            safe_forward_messages(log_channel_paid, user_id, [video_msg.id])
-            logger.info("down_and_up: NSFW content paid copy sent to PAID channel")
-        except Exception as e:
-            logger.error(f"down_and_up: failed to send paid copy to PAID channel: {e}")
-        result["already_forwarded_to_log"] = _send_open_nsfw_history_copy(
-            message=message,
-            video_path=video_path,
-            caption_text=caption_text,
-            duration=duration,
-            width=width,
-            height=height,
-            thumb_path=thumb_path,
-        ) or already_forwarded_to_log
-        logger.info(
-            "down_and_up: NSFW content sent to user (paid), PAID channel "
-            "(paid copy), and NSFW channel (open copy), not cached"
-        )
-        result["should_retry_manual"] = False
-        return result
-
-    if is_nsfw:
-        if should_force_forward or not already_forwarded_to_log:
-            log_channel = get_log_channel("video", nsfw=True)
-            if log_channel and log_channel != 0:
-                try:
-                    result["forwarded_msgs"] = safe_forward_messages(
-                        log_channel, user_id, [video_msg.id]
-                    )
-                    logger.info("down_and_up: NSFW content sent to NSFW channel")
-                except Exception as e:
-                    logger.error(f"down_and_up: failed to forward to NSFW channel: {e}")
-            else:
-                logger.warning(
-                    f"down_and_up: NSFW channel not available (ID: {log_channel}), skipping forward"
-                )
-            if result["forwarded_msgs"] and not should_force_forward:
-                result["already_forwarded_to_log"] = True
-        else:
-            logger.info("down_and_up: skipping forward to NSFW channel - already forwarded to log")
-        logger.info("down_and_up: NSFW content sent to NSFW channel, not cached")
-        return result
-
-    if msg_is_paid:
-        logger.info("down_and_up: skipping forward to LOGS_VIDEO_ID for paid media")
-        result["should_retry_manual"] = False
-        return result
-
-    if should_force_forward or not already_forwarded_to_log:
-        log_channel = get_log_channel("video")
-        try:
-            result["forwarded_msgs"] = safe_forward_messages(log_channel, user_id, [video_msg.id])
-        except Exception as e:
-            logger.error(f"down_and_up: failed to forward to LOGS_VIDEO_ID: {e}")
-        if result["forwarded_msgs"] and not should_force_forward:
-            result["already_forwarded_to_log"] = True
-    else:
-        logger.info("down_and_up: skipping forward to LOGS_VIDEO_ID - already forwarded to log")
-    return result
+    return _execute_upload_routing_plan(
+        plan=plan,
+        message=message,
+        user_id=user_id,
+        video_msg=video_msg,
+        video_path=video_path,
+        caption_text=caption_text,
+        duration=duration,
+        width=width,
+        height=height,
+        thumb_path=thumb_path,
+        already_forwarded_to_log=already_forwarded_to_log,
+    )
 
 
 def _cache_playlist_video_delivery(
