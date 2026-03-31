@@ -32,40 +32,16 @@ def _resolve_format_download_error(
     if "LIVE_STREAM_DETECTED" in error_text and LimitsConfig.ENABLE_LIVE_STREAM_BLOCKING:
         return {'error': 'LIVE_STREAM_DETECTED'}
 
-    if is_youtube_url(url) and user_id is not None:
-        from COMMANDS.cookies_cmd import is_youtube_cookie_error, retry_download_with_different_cookies
-
-        if is_youtube_cookie_error(error_text):
-            logger.info(
-                f"YouTube cookie error detected in get_video_formats for user {user_id}, "
-                "attempting automatic retry"
-            )
-            retry_result = retry_download_with_different_cookies(
-                user_id, url, extract_info_operation, opts
-            )
-            if retry_result is not None:
-                logger.info(f"get_video_formats retry with different cookies successful for user {user_id}")
-                return retry_result
-            logger.warning(f"All cookie retry attempts failed in get_video_formats for user {user_id}")
-    elif not is_youtube_url(url) and user_id is not None:
-        logger.info(
-            f"Non-YouTube error detected in get_video_formats for user {user_id}, "
-            "attempting cookie fallback"
+    if user_id is not None:
+        retry_result = _attempt_format_cookie_recovery(
+            url=url,
+            user_id=user_id,
+            error_text=error_text,
+            extract_info_operation=extract_info_operation,
+            opts=opts,
         )
-        error_str = error_text.lower()
-        if any(keyword in error_str for keyword in ['cookie', 'auth', 'login', 'sign in', '403', '401', 'forbidden', 'unauthorized']):
-            logger.info(f"Error appears to be cookie-related for {url}, trying cookie fallback")
-            from COMMANDS.cookies_cmd import try_non_youtube_cookie_fallback
-
-            retry_result = try_non_youtube_cookie_fallback(
-                user_id, url, extract_info_operation, opts
-            )
-            if retry_result is not None:
-                logger.info(f"get_video_formats retry with cookie fallback successful for user {user_id}")
-                return retry_result
-            logger.warning(f"get_video_formats retry with cookie fallback failed for user {user_id}")
-        else:
-            logger.info(f"Error appears to be non-cookie-related for {url}, skipping cookie fallback")
+        if retry_result is not None:
+            return retry_result
 
     if "tiktok.com" in url.lower() and "private" in error_text.lower() and "account" in error_text.lower():
         logger.info(f"TikTok private account detected for {url}, recommending gallery-dl fallback")
@@ -75,6 +51,53 @@ def _resolve_format_download_error(
         logger.info(f"Fallback to gallery-dl recommended for {url} due to error: {error_text[:200]}...")
         return {'error': 'FALLBACK_TO_GALLERY_DL', 'original_error': error_text}
 
+    return None
+
+
+def _attempt_format_cookie_recovery(
+    *,
+    url: str,
+    user_id: int,
+    error_text: str,
+    extract_info_operation,
+    opts: dict,
+) -> dict | None:
+    if is_youtube_url(url):
+        from COMMANDS.cookies_cmd import is_youtube_cookie_error, retry_download_with_different_cookies
+
+        if not is_youtube_cookie_error(error_text):
+            return None
+        logger.info(
+            f"YouTube cookie error detected in get_video_formats for user {user_id}, "
+            "attempting automatic retry"
+        )
+        retry_result = retry_download_with_different_cookies(
+            user_id, url, extract_info_operation, opts
+        )
+        if retry_result is not None:
+            logger.info(f"get_video_formats retry with different cookies successful for user {user_id}")
+            return retry_result
+        logger.warning(f"All cookie retry attempts failed in get_video_formats for user {user_id}")
+        return None
+
+    logger.info(
+        f"Non-YouTube error detected in get_video_formats for user {user_id}, "
+        "attempting cookie fallback"
+    )
+    error_str = error_text.lower()
+    if any(keyword in error_str for keyword in ['cookie', 'auth', 'login', 'sign in', '403', '401', 'forbidden', 'unauthorized']):
+        logger.info(f"Error appears to be cookie-related for {url}, trying cookie fallback")
+        from COMMANDS.cookies_cmd import try_non_youtube_cookie_fallback
+
+        retry_result = try_non_youtube_cookie_fallback(
+            user_id, url, extract_info_operation, opts
+        )
+        if retry_result is not None:
+            logger.info(f"get_video_formats retry with cookie fallback successful for user {user_id}")
+            return retry_result
+        logger.warning(f"get_video_formats retry with cookie fallback failed for user {user_id}")
+    else:
+        logger.info(f"Error appears to be non-cookie-related for {url}, skipping cookie fallback")
     return None
 
 
