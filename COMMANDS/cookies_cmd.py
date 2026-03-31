@@ -152,6 +152,22 @@ class CookieFallbackOutcomePlan:
     result: object | None = None
 
 
+@dataclass(frozen=True)
+class NonYoutubeCookieFallbackAttemptPlan:
+    mode: str
+    source_name: str
+    cookie_file_path: str | None = None
+    temp_cookie_path: str | None = None
+
+
+@dataclass(frozen=True)
+class NonYoutubeCookieFallbackOutcomePlan:
+    mode: str
+    log_text: str | None = None
+    finish_success: bool | None = None
+    finish_cookie_path: str | None = None
+
+
 def _get_cookie_state_store() -> CookieStateStore:
     return CookieStateStore(
         youtube_cache=_youtube_cookie_cache,
@@ -494,6 +510,63 @@ def _build_cookie_fallback_outcome_plan(
             log_text=f"Failed to download {service_name} cookies: {url}",
         )
     return CookieFallbackOutcomePlan(mode=mode)
+
+
+def _build_non_youtube_cookie_fallback_attempt_plan(
+    mode: str,
+    user_cookie_path: str | None = None,
+    temp_cookie_path: str | None = None,
+) -> NonYoutubeCookieFallbackAttemptPlan:
+    return NonYoutubeCookieFallbackAttemptPlan(
+        mode=mode,
+        source_name=mode,
+        cookie_file_path=user_cookie_path,
+        temp_cookie_path=temp_cookie_path,
+    )
+
+
+def _build_non_youtube_cookie_fallback_outcome_plan(
+    *,
+    mode: str,
+    url: str,
+    source_name: str | None = None,
+    cookie_file_path: str | None = None,
+) -> NonYoutubeCookieFallbackOutcomePlan:
+    if mode == "success":
+        return NonYoutubeCookieFallbackOutcomePlan(
+            mode=mode,
+            log_text=f"Successfully downloaded {url} with {source_name} cookies",
+            finish_success=True,
+            finish_cookie_path=cookie_file_path,
+        )
+    if mode == "without_cookies_success":
+        return NonYoutubeCookieFallbackOutcomePlan(
+            mode=mode,
+            log_text=f"Successfully downloaded {url} without cookies",
+            finish_success=True,
+            finish_cookie_path=None,
+        )
+    if mode == "all_failed":
+        return NonYoutubeCookieFallbackOutcomePlan(
+            mode=mode,
+            log_text=f"All cookie attempts failed for {url}",
+            finish_success=False,
+            finish_cookie_path=None,
+        )
+    return NonYoutubeCookieFallbackOutcomePlan(mode=mode)
+
+
+def _execute_non_youtube_cookie_fallback_outcome_plan(
+    task_id: str,
+    plan: NonYoutubeCookieFallbackOutcomePlan,
+) -> None:
+    if plan.finish_success is not None:
+        finish_cookie_task(task_id, plan.finish_success, plan.finish_cookie_path)
+    if plan.log_text:
+        if plan.finish_success:
+            logger.info(plan.log_text)
+        else:
+            logger.warning(plan.log_text)
 
 def generate_task_id(user_id: int, url: str, service: str = None) -> str:
     """
@@ -2966,13 +3039,22 @@ def try_non_youtube_cookie_fallback(user_id: int, url: str, download_func, *args
         # 1) Try user cookies
         cookie_context = _ensure_cookie_user_dir(user_id)
         user_cookie_path = cookie_context.cookie_file_path
+        user_attempt_plan = _build_non_youtube_cookie_fallback_attempt_plan("user", user_cookie_path=user_cookie_path)
         
-        if os.path.exists(user_cookie_path):
+        if os.path.exists(user_attempt_plan.cookie_file_path):
             logger.info(f"Trying user cookies for non-YouTube URL: {url}")
             try:
                 result = download_func(*args)
                 if result is not None:
-                    finish_cookie_task(task_id, True, user_cookie_path)
+                    _execute_non_youtube_cookie_fallback_outcome_plan(
+                        task_id,
+                        _build_non_youtube_cookie_fallback_outcome_plan(
+                            mode="success",
+                            url=url,
+                            source_name=user_attempt_plan.source_name,
+                            cookie_file_path=user_attempt_plan.cookie_file_path,
+                        ),
+                    )
                     return result
             except Exception as e:
                 logger.warning(f"User cookies failed for {url}: {e}")
@@ -2988,20 +3070,32 @@ def try_non_youtube_cookie_fallback(user_id: int, url: str, download_func, *args
                     if ok and content:
                         # Save cookies to a temporary file
                         temp_cookie_path = os.path.join(cookie_context.user_dir, f"temp_{service_name}_cookie.txt")
-                        with open(temp_cookie_path, "wb") as f:
+                        service_attempt_plan = _build_non_youtube_cookie_fallback_attempt_plan(
+                            "service",
+                            temp_cookie_path=temp_cookie_path,
+                        )
+                        with open(service_attempt_plan.temp_cookie_path, "wb") as f:
                             f.write(content)
                         
                         try:
                             result = download_func(*args)
                             if result is not None:
-                                finish_cookie_task(task_id, True, temp_cookie_path)
+                                _execute_non_youtube_cookie_fallback_outcome_plan(
+                                    task_id,
+                                    _build_non_youtube_cookie_fallback_outcome_plan(
+                                        mode="success",
+                                        url=url,
+                                        source_name=service_name,
+                                        cookie_file_path=service_attempt_plan.temp_cookie_path,
+                                    ),
+                                )
                                 return result
                         except Exception as e:
                             logger.warning(f"Service cookies failed for {url}: {e}")
                         finally:
                             # Remove temporary file
-                            if os.path.exists(temp_cookie_path):
-                                os.remove(temp_cookie_path)
+                            if os.path.exists(service_attempt_plan.temp_cookie_path):
+                                os.remove(service_attempt_plan.temp_cookie_path)
                 except Exception as e:
                     logger.warning(f"Failed to download service cookies for {service_name}: {e}")
         
@@ -3012,7 +3106,15 @@ def try_non_youtube_cookie_fallback(user_id: int, url: str, download_func, *args
             try:
                 result = download_func(*args)
                 if result is not None:
-                    finish_cookie_task(task_id, True, global_cookie_path)
+                    _execute_non_youtube_cookie_fallback_outcome_plan(
+                        task_id,
+                        _build_non_youtube_cookie_fallback_outcome_plan(
+                            mode="success",
+                            url=url,
+                            source_name="global",
+                            cookie_file_path=global_cookie_path,
+                        ),
+                    )
                     return result
             except Exception as e:
                 logger.warning(f"Global cookies failed for {url}: {e}")
@@ -3022,18 +3124,36 @@ def try_non_youtube_cookie_fallback(user_id: int, url: str, download_func, *args
         try:
             result = download_func(*args)
             if result is not None:
-                finish_cookie_task(task_id, True, None)
+                _execute_non_youtube_cookie_fallback_outcome_plan(
+                    task_id,
+                    _build_non_youtube_cookie_fallback_outcome_plan(
+                        mode="without_cookies_success",
+                        url=url,
+                    ),
+                )
                 return result
         except Exception as e:
             logger.warning(f"Download without cookies failed for {url}: {e}")
         
         # All attempts failed
-        finish_cookie_task(task_id, False)
+        _execute_non_youtube_cookie_fallback_outcome_plan(
+            task_id,
+            _build_non_youtube_cookie_fallback_outcome_plan(
+                mode="all_failed",
+                url=url,
+            ),
+        )
         return None
         
     except Exception as e:
         logger.error(f"Cookie fallback error for {url}: {e}")
-        finish_cookie_task(task_id, False)
+        _execute_non_youtube_cookie_fallback_outcome_plan(
+            task_id,
+            _build_non_youtube_cookie_fallback_outcome_plan(
+                mode="all_failed",
+                url=url,
+            ),
+        )
         return None
 
 def get_service_name_from_url(url: str) -> str | None:
