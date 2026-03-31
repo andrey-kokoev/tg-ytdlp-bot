@@ -16,9 +16,17 @@ from HELPERS.request_execution import (
     handle_tags_command_request,
 )
 from CONFIG.messages import Messages, safe_get_messages
+from dataclasses import dataclass
 
 # Get app instance for decorators
 app = get_app()
+
+
+@dataclass(frozen=True)
+class TagsCallbackResultPlan:
+    mode: str
+    answer_text: str | None = None
+    log_text: str | None = None
 
 @app.on_message(filters.command("tags") & filters.private)
 # @reply_with_keyboard
@@ -64,15 +72,33 @@ def tags_command_logic(app, message, request=None):
         safe_send_message(user_id, msg, reply_parameters=ReplyParameters(message_id=message.id), reply_markup=keyboard)
         send_to_logger(message, msg)
 
-@app.on_callback_query(filters.regex(r"^tags_close\|"))
-def tags_close_callback(app, callback_query):
-    user_id = callback_query.from_user.id
-    callback_envelope = build_telegram_callback_envelope(callback_query)
-    request = build_close_message_request(callback_envelope, close_scope="tags_close")
+
+def _build_tags_callback_result_plan(user_id: int, data: str) -> TagsCallbackResultPlan:
+    if data == "tags_close|close":
+        return TagsCallbackResultPlan(
+            mode="close",
+            answer_text=safe_get_messages(user_id).TAGS_MESSAGE_CLOSED_MSG,
+            log_text=safe_get_messages(user_id).TAGS_MESSAGE_CLOSED_MSG,
+        )
+    return TagsCallbackResultPlan(mode="noop")
+
+
+def _execute_tags_callback_result_plan(app, callback_query, plan: TagsCallbackResultPlan) -> None:
+    if plan.mode != "close":
+        return
+    request = build_close_message_request(
+        build_telegram_callback_envelope(callback_query),
+        close_scope="tags_close",
+    )
     handle_close_message_request(
         app,
         build_callback_execution_context(callback_query),
         request,
-        answer_text=safe_get_messages(user_id).TAGS_MESSAGE_CLOSED_MSG,
-        log_text=safe_get_messages(user_id).TAGS_MESSAGE_CLOSED_MSG,
+        answer_text=plan.answer_text,
+        log_text=plan.log_text,
     )
+
+@app.on_callback_query(filters.regex(r"^tags_close\|"))
+def tags_close_callback(app, callback_query):
+    plan = _build_tags_callback_result_plan(callback_query.from_user.id, callback_query.data)
+    _execute_tags_callback_result_plan(app, callback_query, plan)
