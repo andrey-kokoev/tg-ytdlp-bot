@@ -1333,6 +1333,40 @@ def _handle_quality_key_error(e: Exception, split_msg_ids: list, is_playlist: bo
         logger.warning(f"Upload complete condition NOT met after quality_key error: successful_uploads={successful_uploads}, len(indices_to_download)={len(indices_to_download)}, split_msg_ids={split_msg_ids}, is_playlist={is_playlist}")
         return False
 
+
+def _handle_split_quality_key_terminal_after_error(
+    *,
+    split_msg_ids: list,
+    is_playlist: bool,
+    video_count: int,
+    url: str,
+    safe_quality_key: str,
+    message,
+    user_id: int,
+    proc_msg_id: int,
+    recovery_label: str,
+) -> None:
+    split_terminal_plan = _build_split_quality_key_terminal_plan(
+        split_msg_ids=split_msg_ids,
+        is_playlist=is_playlist,
+        video_count=video_count,
+        url=url,
+        safe_quality_key=safe_quality_key,
+    )
+    if split_terminal_plan.should_finalize:
+        logger.info(
+            f"PREVENTIVE FIX: Processing split video completion after quality_key error in {recovery_label}: {split_msg_ids}"
+        )
+        _execute_split_quality_key_terminal_plan(
+            plan=split_terminal_plan,
+            message=message,
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            url=url,
+            safe_quality_key=safe_quality_key,
+            split_msg_ids=split_msg_ids,
+        )
+
 def _save_video_cache_with_logging(url: str, safe_quality_key: str, message_ids: list, original_text: str = None, user_id: int = None):
     """Save video to cache with channel type logging."""
     try:
@@ -4657,26 +4691,17 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 # Quality_key errors don't affect functionality, just continue
                                 
                                 # PREVENTIVE FIX: Handle split video completion even after quality_key error
-                                split_terminal_plan = _build_split_quality_key_terminal_plan(
+                                _handle_split_quality_key_terminal_after_error(
                                     split_msg_ids=split_msg_ids,
                                     is_playlist=is_playlist,
                                     video_count=video_count,
                                     url=url,
                                     safe_quality_key=safe_quality_key,
+                                    message=message,
+                                    user_id=user_id,
+                                    proc_msg_id=proc_msg_id,
+                                    recovery_label="manual forward",
                                 )
-                                if split_terminal_plan.should_finalize:
-                                    logger.info(
-                                        f"PREVENTIVE FIX: Processing split video completion after quality_key error in manual forward: {split_msg_ids}"
-                                    )
-                                    _execute_split_quality_key_terminal_plan(
-                                        plan=split_terminal_plan,
-                                        message=message,
-                                        user_id=user_id,
-                                        proc_msg_id=proc_msg_id,
-                                        url=url,
-                                        safe_quality_key=safe_quality_key,
-                                        split_msg_ids=split_msg_ids,
-                                    )
                 
                             else:
                                 logger.error(f"Error forwarding video to logger: {e}")
@@ -4735,26 +4760,17 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                     # Quality_key errors don't affect functionality, just continue
                                     
                                     # PREVENTIVE FIX: Handle split video completion even after quality_key error
-                                    split_terminal_plan = _build_split_quality_key_terminal_plan(
+                                    _handle_split_quality_key_terminal_after_error(
                                         split_msg_ids=split_msg_ids,
                                         is_playlist=is_playlist,
                                         video_count=video_count,
                                         url=url,
                                         safe_quality_key=safe_quality_key,
+                                        message=message,
+                                        user_id=user_id,
+                                        proc_msg_id=proc_msg_id,
+                                        recovery_label="manual forward after error",
                                     )
-                                    if split_terminal_plan.should_finalize:
-                                        logger.info(
-                                            f"PREVENTIVE FIX: Processing split video completion after quality_key error in manual forward after error: {split_msg_ids}"
-                                        )
-                                        _execute_split_quality_key_terminal_plan(
-                                            plan=split_terminal_plan,
-                                            message=message,
-                                            user_id=user_id,
-                                            proc_msg_id=proc_msg_id,
-                                            url=url,
-                                            safe_quality_key=safe_quality_key,
-                                            split_msg_ids=split_msg_ids,
-                                        )
                                 # end-of-task subs cache clearing handled in unified success branches below
                                 else:
                                     logger.error(f"Error in manual forward after error: {e2}")
