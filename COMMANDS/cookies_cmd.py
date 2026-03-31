@@ -131,6 +131,13 @@ class CookieValidationOutcomePlan:
     send_to_source: bool = False
 
 
+@dataclass(frozen=True)
+class CookieValidationProgressPlan:
+    mode: str
+    message_text: str
+    parse_mode: object | None = None
+
+
 def _get_cookie_state_store() -> CookieStateStore:
     return CookieStateStore(
         youtube_cache=_youtube_cookie_cache,
@@ -350,6 +357,89 @@ def _execute_cookie_validation_outcome_plan(
             send_to_logger(log_message, plan.log_text)
         else:
             logger.warning(plan.log_text)
+
+
+def _build_cookie_validation_progress_plan(
+    *,
+    mode: str,
+    user_id: str,
+    attempt: int | None = None,
+    total: int | None = None,
+) -> CookieValidationProgressPlan:
+    messages = safe_get_messages(user_id)
+    if mode == "initial":
+        return CookieValidationProgressPlan(
+            mode=mode,
+            message_text=messages.COOKIES_DOWNLOADING_YOUTUBE_MSG.format(
+                attempt=attempt,
+                total=total,
+            ),
+            parse_mode=enums.ParseMode.HTML,
+        )
+    if mode == "checking":
+        return CookieValidationProgressPlan(
+            mode=mode,
+            message_text=messages.COOKIES_DOWNLOADING_CHECKING_MSG.format(
+                attempt=attempt,
+                total=total,
+            ),
+            parse_mode=enums.ParseMode.HTML,
+        )
+    if mode == "testing":
+        return CookieValidationProgressPlan(
+            mode=mode,
+            message_text=messages.COOKIES_DOWNLOADING_TESTING_MSG.format(
+                attempt=attempt,
+                total=total,
+            ),
+            parse_mode=enums.ParseMode.HTML,
+        )
+    if mode == "validated":
+        return CookieValidationProgressPlan(
+            mode=mode,
+            message_text=messages.COOKIES_SUCCESS_VALIDATED_MSG.format(
+                source=attempt,
+                total=total,
+            ),
+            parse_mode=enums.ParseMode.HTML,
+        )
+    if mode == "expired":
+        return CookieValidationProgressPlan(
+            mode=mode,
+            message_text=messages.COOKIES_ALL_EXPIRED_MSG,
+        )
+    return CookieValidationProgressPlan(mode=mode, message_text="")
+
+
+def _execute_cookie_validation_progress_plan(
+    *,
+    app,
+    transport_context: CookieTransportContext,
+    initial_msg,
+    plan: CookieValidationProgressPlan,
+    last_update_text: dict,
+) -> None:
+    if not plan.message_text:
+        return
+
+    if plan.mode == "initial":
+        return
+
+    if plan.message_text == last_update_text.get("text"):
+        return
+
+    if initial_msg and hasattr(initial_msg, "id"):
+        try:
+            app.edit_message_text(
+                transport_context.notify_chat_id,
+                initial_msg.id,
+                plan.message_text,
+                parse_mode=plan.parse_mode,
+            )
+            last_update_text["text"] = plan.message_text
+        except Exception as e:
+            if "MESSAGE_NOT_MODIFIED" not in str(e):
+                logger.error(LoggerMsg.COOKIES_ERROR_UPDATING_MESSAGE_LOG_MSG.format(e=e))
 
 def generate_task_id(user_id: int, url: str, service: str = None) -> str:
     """
@@ -1829,34 +1919,26 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
     # Send initial message and store message ID for updates
     initial_msg = None
     try:
+        initial_plan = _build_cookie_validation_progress_plan(
+            mode="initial",
+            user_id=user_id,
+            attempt=1,
+            total=len(cookie_urls),
+        )
         if transport_context.source_message is not None:
             from HELPERS.logger import send_to_user
-            initial_msg = send_to_user(transport_context.source_message, safe_get_messages(user_id).COOKIES_DOWNLOADING_YOUTUBE_MSG.format(attempt=1, total=len(cookie_urls)))
+            initial_msg = send_to_user(transport_context.source_message, initial_plan.message_text)
         else:
             from HELPERS.safe_messeger import safe_send_message
-            from pyrogram import enums
-            initial_msg = safe_send_message(transport_context.notify_chat_id, safe_get_messages(user_id).COOKIES_DOWNLOADING_YOUTUBE_MSG.format(attempt=1, total=len(cookie_urls)), parse_mode=enums.ParseMode.HTML)
+            initial_msg = safe_send_message(
+                transport_context.notify_chat_id,
+                initial_plan.message_text,
+                parse_mode=initial_plan.parse_mode,
+            )
     except Exception as e:
         logger.error(LoggerMsg.COOKIES_ERROR_SENDING_INITIAL_MESSAGE_LOG_MSG.format(e=e))
-    
-    # Helper function to update the message (avoid MESSAGE_NOT_MODIFIED)
-    _last_update_text = { 'text': None }
-    def update_message(new_text, user_id_param=None):
-        try:
-            if new_text == _last_update_text['text']:
-                return
-            if initial_msg and hasattr(initial_msg, 'id'):
-                app.edit_message_text(
-                    user_id_param or transport_context.notify_chat_id,
-                    initial_msg.id,
-                    new_text,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-                _last_update_text['text'] = new_text
-        except Exception as e:
-            if "MESSAGE_NOT_MODIFIED" in str(e):
-                return
-            logger.error(LoggerMsg.COOKIES_ERROR_UPDATING_MESSAGE_LOG_MSG.format(e=e))
+
+    _last_update_text = {'text': None}
     
     # Determine the order of attempts - only use unchecked sources
     unchecked_indices = get_unchecked_cookie_sources(int(user_id), cookie_urls)
@@ -1929,7 +2011,18 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
         url = cookie_urls[idx]
         try:
             # Update message about the current attempt
-            update_message(safe_get_messages(user_id).COOKIES_DOWNLOADING_CHECKING_MSG.format(attempt=attempt_number, total=len(indices)), user_id)
+            _execute_cookie_validation_progress_plan(
+                app=app,
+                transport_context=transport_context,
+                initial_msg=initial_msg,
+                last_update_text=_last_update_text,
+                plan=_build_cookie_validation_progress_plan(
+                    mode="checking",
+                    user_id=user_id,
+                    attempt=attempt_number,
+                    total=len(indices),
+                ),
+            )
             
             # Mark this source as checked
             mark_cookie_source_checked(int(user_id), idx)
@@ -1954,7 +2047,18 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
             _write_cookie_file(cookie_context, content, binary=True)
             
             # Update message about testing
-            update_message(safe_get_messages(user_id).COOKIES_DOWNLOADING_TESTING_MSG.format(attempt=attempt_number, total=len(indices)), user_id)
+            _execute_cookie_validation_progress_plan(
+                app=app,
+                transport_context=transport_context,
+                initial_msg=initial_msg,
+                last_update_text=_last_update_text,
+                plan=_build_cookie_validation_progress_plan(
+                    mode="testing",
+                    user_id=user_id,
+                    attempt=attempt_number,
+                    total=len(indices),
+                ),
+            )
             
             # Check the functionality of cookies
             if test_youtube_cookies(cookie_file_path, user_id=user_id):
@@ -1982,8 +2086,18 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
             # Remove the file in case of an error
             _remove_cookie_file_if_present(cookie_context)
             continue
-    
+
     # If no source worked
+    _execute_cookie_validation_progress_plan(
+        app=app,
+        transport_context=transport_context,
+        initial_msg=initial_msg,
+        last_update_text=_last_update_text,
+        plan=_build_cookie_validation_progress_plan(
+            mode="expired",
+            user_id=user_id,
+        ),
+    )
     _execute_cookie_validation_outcome_plan(
         app=app,
         transport_context=transport_context,
