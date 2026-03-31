@@ -420,6 +420,15 @@ class AudioCompletionPlan:
     should_send_playlist_status: bool
 
 
+@dataclass(frozen=True)
+class AudioCleanupPlan:
+    mode: str
+    delete_status_message: bool
+    delete_hourglass_message: bool
+    delete_download_started_message: bool
+    stop_animation: bool
+
+
 def _build_audio_completion_plan(
     *,
     is_playlist: bool,
@@ -467,6 +476,35 @@ def _execute_audio_completion_plan(
             quality_key=quality_key,
         )
     return task_context
+
+
+def _build_audio_cleanup_plan() -> AudioCleanupPlan:
+    return AudioCleanupPlan(
+        mode="final",
+        delete_status_message=True,
+        delete_hourglass_message=True,
+        delete_download_started_message=True,
+        stop_animation=True,
+    )
+
+
+def _execute_audio_cleanup_plan(
+    *,
+    plan: AudioCleanupPlan,
+    user_id: int,
+    status_msg_id: int | None,
+    hourglass_msg_id: int | None,
+    download_started_msg_id: int | None,
+    stop_anim,
+) -> None:
+    if plan.delete_status_message and status_msg_id:
+        safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
+    if plan.delete_hourglass_message and hourglass_msg_id:
+        safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
+    if plan.delete_download_started_message and download_started_msg_id:
+        safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
+    if plan.stop_animation:
+        stop_anim.set()
 
 
 def _send_playlist_audio_terminal_status(
@@ -2590,28 +2628,28 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             )
         # Immediate cleanup on error
         try:
-            if status_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
-            if hourglass_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
-            if download_started_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[download_started_msg_id], revoke=True)
-            stop_anim.set()
+            _execute_audio_cleanup_plan(
+                plan=_build_audio_cleanup_plan(),
+                user_id=user_id,
+                status_msg_id=status_msg_id,
+                hourglass_msg_id=hourglass_msg_id,
+                download_started_msg_id=download_started_msg_id,
+                stop_anim=stop_anim,
+            )
         except Exception:
             pass
     finally:
         # Always clean up resources
-        stop_anim.set()
+        _execute_audio_cleanup_plan(
+            plan=_build_audio_cleanup_plan(),
+            user_id=user_id,
+            status_msg_id=status_msg_id,
+            hourglass_msg_id=hourglass_msg_id,
+            download_started_msg_id=download_started_msg_id,
+            stop_anim=stop_anim,
+        )
         if anim_thread:
             anim_thread.join(timeout=1)  # Wait for animation thread with timeout
-
-        try:
-            if status_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[status_msg_id], revoke=True)
-            if hourglass_msg_id:
-                safe_delete_messages(chat_id=user_id, message_ids=[hourglass_msg_id], revoke=True)
-        except Exception as e:
-            logger.error(f"Error deleting status messages: {e}")
 
         # Clean up any remaining audio files
         for audio_file in audio_files:
