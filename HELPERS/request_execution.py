@@ -969,6 +969,21 @@ class UrlRuntimeDecision:
     playlist_name_to_clear: str | None = None
 
 
+@dataclass(frozen=True)
+class UrlRuntimeExecutionPlan:
+    mode: str
+    request: UrlDownloadRequested | SimpleNamespace
+    saved_format: str | None = None
+    tag_error: object | None = None
+    error_text: str | None = None
+    should_clear_playlist_errors: bool = False
+    playlist_name_to_clear: str | None = None
+    tags: tuple[str, ...] = ()
+    tags_text: str = ""
+    video_count: int = 1
+    force_no_title: bool = False
+
+
 def resolve_saved_format_policy(*, user_id: int) -> tuple[bool, str | None]:
     user_dir = os.path.join("users", str(user_id))
     os.makedirs(user_dir, exist_ok=True)
@@ -1049,6 +1064,36 @@ def determine_url_runtime_decision(
         saved_format=saved_format,
         should_clear_playlist_errors=True,
         playlist_name_to_clear=runtime_request.playlist_name or None,
+    )
+
+
+def build_url_runtime_execution_plan(
+    decision: UrlRuntimeDecision,
+) -> UrlRuntimeExecutionPlan:
+    if decision.mode != "saved_format":
+        return UrlRuntimeExecutionPlan(
+            mode=decision.mode,
+            request=decision.request,
+            saved_format=decision.saved_format,
+            tag_error=decision.tag_error,
+            error_text=decision.error_text,
+            should_clear_playlist_errors=decision.should_clear_playlist_errors,
+            playlist_name_to_clear=decision.playlist_name_to_clear,
+        )
+
+    media_policy = derive_url_runtime_media_policy(decision.request)
+    return UrlRuntimeExecutionPlan(
+        mode=decision.mode,
+        request=decision.request,
+        saved_format=decision.saved_format,
+        tag_error=decision.tag_error,
+        error_text=decision.error_text,
+        should_clear_playlist_errors=decision.should_clear_playlist_errors,
+        playlist_name_to_clear=decision.playlist_name_to_clear,
+        tags=tuple(media_policy["all_tags"]),
+        tags_text=media_policy["tags_text"],
+        video_count=media_policy["video_count"],
+        force_no_title=media_policy["force_no_title"],
     )
 
 
@@ -1272,3 +1317,100 @@ def handle_saved_format_url_runtime(
         quality_key=quality_key,
         task_context=task,
     )
+
+
+def execute_url_runtime_plan(
+    app,
+    execution_context: TelegramExecutionContext,
+    *,
+    user_id: int,
+    raw_input: str,
+    plan: UrlRuntimeExecutionPlan,
+) -> object | None:
+    from CONFIG.messages import safe_get_messages
+    from HELPERS.limitter import check_playlist_range_limits
+    from HELPERS.logger import send_to_logger
+
+    message = execution_context.source_message
+    if message is None:
+        raise ValueError("URL runtime execution requires a source message")
+
+    if plan.mode == "quality_menu":
+        logger.info(f"🔍 [DEBUG] video_extractor: full_string='{raw_input}'")
+        logger.info(
+            "🔍 [DEBUG] video_extractor: after extract_url_range_tags: url='%s', video_start_with=%s, video_end_with=%s",
+            plan.request.url,
+            plan.request.video_start_with,
+            plan.request.video_end_with,
+        )
+        if plan.tag_error:
+            send_url_tag_error(app, execution_context, user_id=user_id, tag_error=plan.tag_error)
+            return None
+        logger.info(
+            "🔍 [DEBUG] video_extractor: video_start_with=%s, video_end_with=%s",
+            plan.request.video_start_with,
+            plan.request.video_end_with,
+        )
+        handle_url_quality_menu_runtime(app, execution_context, plan.request)
+        return None
+
+    if plan.should_clear_playlist_errors:
+        clear_user_playlist_error_state(
+            user_id=user_id,
+            playlist_name=plan.playlist_name_to_clear,
+        )
+
+    if plan.mode == "wait_download":
+        send_url_wait_download_notice(
+            app,
+            execution_context,
+            user_id=user_id,
+            text=safe_get_messages(user_id).VIDEO_EXTRACTOR_WAIT_DOWNLOAD_MSG,
+        )
+        return None
+
+    if plan.mode == "tag_error":
+        send_url_tag_error(app, execution_context, user_id=user_id, tag_error=plan.tag_error)
+        return None
+
+    if not check_playlist_range_limits(
+        plan.request.url,
+        plan.request.video_start_with,
+        plan.request.video_end_with,
+        app,
+        message,
+    ):
+        return None
+
+    if plan.mode == "saved_format":
+        users_first_name = message.chat.first_name
+        send_to_logger(
+            message,
+            safe_get_messages(user_id).URL_PARSER_USER_ENTERED_URL_LOG_MSG.format(
+                user_name=users_first_name,
+                url=raw_input,
+            ),
+        )
+        return handle_saved_format_url_runtime(
+            app,
+            execution_context,
+            plan.request,
+            saved_format=plan.saved_format,
+            tags=list(plan.tags),
+            tags_text=plan.tags_text,
+            video_count=plan.video_count,
+            force_no_title=plan.force_no_title,
+        )
+
+    if plan.mode == "blacklisted":
+        send_url_runtime_error(
+            execution_context,
+            safe_get_messages(user_id).PORN_CONTENT_CANNOT_DOWNLOAD_MSG,
+        )
+        return None
+
+    if plan.mode == "invalid_input":
+        send_url_runtime_error(execution_context, plan.error_text)
+        return None
+
+    return None
