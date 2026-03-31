@@ -786,15 +786,87 @@ def _build_audio_retry_outcome_plan(
         should_send_final_error=not error_message_sent,
         failure_kind="download_failed",
     )
-    send_to_logger(
-        message,
-        safe_get_messages(user_id).PLAYLIST_AUDIO_SENT_LOG_MSG.format(
-            sent=outcome.total_sent_count,
-            total=len(requested_indices),
-            quality=quality_key,
-            user_id=user_id,
-        ) + format_playlist_error_summary_suffix(outcome),
+
+
+def _execute_audio_download_error_plan(
+    *,
+    message,
+    user_id: int,
+    url: str,
+    error_text: str,
+    retry_plan: AudioRetryOutcomePlan,
+    did_proxy_retry: bool,
+    error_message_sent: bool,
+    try_download_audio,
+    current_index: int,
+    task_context,
+) -> tuple[object | None, bool, bool]:
+    if "LIVE_STREAM_DETECTED" in error_text and LimitsConfig.ENABLE_LIVE_STREAM_BLOCKING:
+        live_stream_message = (
+            safe_get_messages(user_id).LIVE_STREAM_DETECTED_MSG +
+            "• You can see the final video length\n\n"
+            "Once the stream is completed, you'll be able to download it as a regular video."
+        )
+        _send_audio_failure(
+            message,
+            user_id,
+            failure_kind="live_stream_blocked",
+            error_text=error_text,
+            rendered_text=live_stream_message,
+            use_error_channel=True,
+            task_context=task_context,
+        )
+        return "LIVE_STREAM", did_proxy_retry, error_message_sent
+
+    if retry_plan.mode == "postprocessing_invalid_chars":
+        postprocessing_message = (
+            safe_get_messages(user_id).AUDIO_FILE_PROCESSING_ERROR_INVALID_CHARS_MSG +
+            "**Solutions:**\n"
+            "• Try downloading again - the system will use a safer filename\n"
+            "• If the problem persists, the audio title may contain unsupported characters\n"
+            "• Consider using a different audio source if available\n\n"
+            "The download will be retried automatically with a cleaned filename."
+        )
+        _send_audio_failure(
+            message,
+            user_id,
+            failure_kind="postprocessing_failed",
+            error_text=error_text,
+            rendered_text=postprocessing_message,
+            use_error_channel=True,
+            task_context=task_context,
+        )
+        logger.error(f"Postprocessing error: {error_text}")
+        return "POSTPROCESSING_ERROR", did_proxy_retry, error_message_sent
+
+    if retry_plan.mode == "postprocessing_invalid_argument":
+        logger.error(f"Postprocessing error (Invalid argument): {error_text}")
+        return "POSTPROCESSING_ERROR", did_proxy_retry, error_message_sent
+
+    retry_result, did_proxy_retry = _maybe_retry_audio_download_after_error(
+        user_id=user_id,
+        url=url,
+        error_text=error_text,
+        did_proxy_retry=did_proxy_retry,
+        try_download_audio=try_download_audio,
+        current_index=current_index,
     )
+    if retry_result is not None:
+        return retry_result, did_proxy_retry, error_message_sent
+
+    if retry_plan.should_send_final_error:
+        _maybe_auto_rotate_ip_for_audio_sign_in_required(user_id, error_text)
+        _send_audio_failure(
+            message,
+            user_id,
+            failure_kind="download_failed",
+            error_text=error_text,
+            rendered_text=_render_final_audio_download_error(error_text),
+            use_error_channel=True,
+            task_context=task_context,
+        )
+        error_message_sent = True
+    return None, did_proxy_retry, error_message_sent
 
 
 def _try_remote_audio_youtube_cookie_sources(
@@ -2090,78 +2162,20 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                 )
                 
                 # Check for live stream detection (only if detection is enabled)
-                if "LIVE_STREAM_DETECTED" in error_text:
-                    if LimitsConfig.ENABLE_LIVE_STREAM_BLOCKING:
-                        live_stream_message = (
-                            safe_get_messages(user_id).LIVE_STREAM_DETECTED_MSG +
-                            "• You can see the final video length\n\n"
-                            "Once the stream is completed, you'll be able to download it as a regular video."
-                        )
-                        _send_audio_failure(
-                            message,
-                            user_id,
-                            failure_kind="live_stream_blocked",
-                            error_text=error_text,
-                            rendered_text=live_stream_message,
-                            use_error_channel=True,
-                            task_context=task_context,
-                        )
-                        return "LIVE_STREAM"
-                    # If detection is disabled, continue with live stream download
-                    # This will be handled by the live stream download function
-                
-                # Check for postprocessing errors
-                if retry_plan.mode == "postprocessing_invalid_chars":
-                    postprocessing_message = (
-                        safe_get_messages(user_id).AUDIO_FILE_PROCESSING_ERROR_INVALID_CHARS_MSG +
-                        "**Solutions:**\n"
-                        "• Try downloading again - the system will use a safer filename\n"
-                        "• If the problem persists, the audio title may contain unsupported characters\n"
-                        "• Consider using a different audio source if available\n\n"
-                        "The download will be retried automatically with a cleaned filename."
-                    )
-                    _send_audio_failure(
-                        message,
-                        user_id,
-                        failure_kind="postprocessing_failed",
-                        error_text=error_text,
-                        rendered_text=postprocessing_message,
-                        use_error_channel=True,
-                        task_context=task_context,
-                    )
-                    logger.error(f"Postprocessing error: {error_text}")
-                    return "POSTPROCESSING_ERROR"
-                
-                # Check for postprocessing errors with Invalid argument
-                if retry_plan.mode == "postprocessing_invalid_argument":
-                    logger.error(f"Postprocessing error (Invalid argument): {error_text}")
-                    return "POSTPROCESSING_ERROR"
-                
-                retry_result, did_proxy_retry = _maybe_retry_audio_download_after_error(
+                retry_result, did_proxy_retry, error_message_sent = _execute_audio_download_error_plan(
+                    message=message,
                     user_id=user_id,
                     url=url,
                     error_text=error_text,
+                    retry_plan=retry_plan,
                     did_proxy_retry=did_proxy_retry,
+                    error_message_sent=error_message_sent,
                     try_download_audio=try_download_audio,
                     current_index=current_index,
+                    task_context=task_context,
                 )
                 if retry_result is not None:
                     return retry_result
-                
-                # Send full error message with instructions immediately (only once)
-                if retry_plan.should_send_final_error:
-                    _maybe_auto_rotate_ip_for_audio_sign_in_required(user_id, error_text)
-                    
-                    _send_audio_failure(
-                        message,
-                        user_id,
-                        failure_kind="download_failed",
-                        error_text=error_text,
-                        rendered_text=_render_final_audio_download_error(error_text),
-                        use_error_channel=True,
-                        task_context=task_context,
-                    )
-                    error_message_sent = True
                 return None
             except Exception as e:
                 error_text = str(e)
