@@ -121,6 +121,24 @@ class UrlRouterTerminalPlan:
         self.mode = mode
 
 
+class AddGroupCallbackResultPlan:
+    def __init__(self, mode: str, answer_text: str, *, edit_text: str | None = None, log_text: str | None = None, show_alert: bool = False):
+        self.mode = mode
+        self.answer_text = answer_text
+        self.edit_text = edit_text
+        self.log_text = log_text
+        self.show_alert = show_alert
+
+
+class LanguageCallbackResultPlan:
+    def __init__(self, mode: str, answer_text: str, *, edit_text: str | None = None, lang_code: str | None = None, show_alert: bool = False):
+        self.mode = mode
+        self.answer_text = answer_text
+        self.edit_text = edit_text
+        self.lang_code = lang_code
+        self.show_alert = show_alert
+
+
 def _ensure_command_tokens(message, text: str) -> None:
     if hasattr(message, "command") and message.command is not None:
         return
@@ -641,6 +659,100 @@ def _execute_url_router_terminal_plan(
     return False
 
 
+def _build_add_group_callback_result_plan(user_id: int, request) -> AddGroupCallbackResultPlan:
+    if request.action_kind == "close" and request.action_value == "close":
+        return AddGroupCallbackResultPlan(
+            mode="close",
+            answer_text=safe_get_messages(user_id).URL_EXTRACTOR_CLOSED_MSG,
+            edit_text=LoggerMsg.URL_EXTRACTOR_ADD_GROUP_HELPER_CLOSED_LOG_MSG,
+            log_text=safe_get_messages(user_id).URL_EXTRACTOR_ADD_GROUP_USER_CLOSED_MSG.format(user_id=user_id),
+        )
+    return AddGroupCallbackResultPlan(
+        mode="noop",
+        answer_text=safe_get_messages(user_id).URL_EXTRACTOR_CLOSED_MSG,
+    )
+
+
+def _execute_add_group_callback_result_plan(app, callback_query, plan: AddGroupCallbackResultPlan) -> None:
+    if plan.mode == "close":
+        try:
+            app.delete_messages(
+                callback_query.message.chat.id,
+                callback_query.message.id,
+            )
+        except Exception:
+            app.edit_message_text(
+                callback_query.message.chat.id,
+                callback_query.message.id,
+                plan.edit_text,
+            )
+        callback_query.answer(plan.answer_text, show_alert=plan.show_alert)
+        if plan.log_text:
+            send_to_logger(callback_query.message, plan.log_text)
+        return
+
+    callback_query.answer(plan.answer_text, show_alert=plan.show_alert)
+
+
+def _build_language_callback_result_plan(user_id: int, request) -> LanguageCallbackResultPlan:
+    if request.action_kind == "select" and request.action_value:
+        return LanguageCallbackResultPlan(
+            mode="select",
+            answer_text="",
+            lang_code=request.action_value,
+        )
+    if request.action_kind == "close":
+        close_msg = (
+            safe_get_messages(user_id).LANG_CLOSED_MSG
+            if hasattr(safe_get_messages(user_id), "LANG_CLOSED_MSG")
+            else "Language selection closed"
+        )
+        return LanguageCallbackResultPlan(
+            mode="close",
+            answer_text=close_msg,
+            edit_text=close_msg,
+        )
+    return LanguageCallbackResultPlan(
+        mode="error",
+        answer_text=safe_get_messages(user_id).URL_EXTRACTOR_ERROR_OCCURRED_MSG,
+        show_alert=True,
+    )
+
+
+def _execute_language_callback_result_plan(app, callback_query, user_id: int, plan: LanguageCallbackResultPlan) -> None:
+    if plan.mode == "select" and plan.lang_code:
+        from CONFIG.LANGUAGES.language_router import get_messages, language_router, set_user_language
+
+        success = set_user_language(user_id, plan.lang_code)
+        if success:
+            new_messages = get_messages(user_id, plan.lang_code)
+            lang_name = language_router.get_available_languages().get(plan.lang_code, plan.lang_code)
+            confirmation_msg = getattr(
+                new_messages,
+                "LANG_CHANGED_MSG",
+                f"✅ Language changed to {lang_name}",
+            )
+            if "{lang_name}" in confirmation_msg:
+                confirmation_msg = confirmation_msg.format(lang_name=lang_name)
+            callback_query.answer(confirmation_msg)
+            callback_query.edit_message_text(
+                confirmation_msg,
+                parse_mode=enums.ParseMode.HTML,
+            )
+            return
+        error_msg = (
+            safe_get_messages(user_id).LANG_ERROR_MSG
+            if hasattr(safe_get_messages(user_id), "LANG_ERROR_MSG")
+            else "❌ Error changing language"
+        )
+        callback_query.answer(error_msg)
+        return
+
+    callback_query.answer(plan.answer_text, show_alert=plan.show_alert)
+    if plan.edit_text:
+        callback_query.edit_message_text(plan.edit_text)
+
+
 def _finalize_unmatched_message(
     app,
     message,
@@ -808,28 +920,8 @@ def add_group_msg_callback_logic(app, callback_query, request) -> None:
     """Handle add_bot_to_group command callback queries"""
     try:
         user_id = callback_query.from_user.id
-        
-        if request.action_kind == "close" and request.action_value == "close":
-            # Delete the message with add_bot_to_group instructions
-            try:
-                app.delete_messages(
-                    callback_query.message.chat.id,
-                    callback_query.message.id
-                )
-            except Exception:
-                # If can't delete, just edit to show closed message
-                app.edit_message_text(
-                    callback_query.message.chat.id,
-                    callback_query.message.id,
-                    LoggerMsg.URL_EXTRACTOR_ADD_GROUP_HELPER_CLOSED_LOG_MSG
-                )
-            
-            # Answer callback query
-            callback_query.answer(safe_get_messages(user_id).URL_EXTRACTOR_CLOSED_MSG)
-            
-            # Log the action
-            send_to_logger(callback_query.message, safe_get_messages(user_id).URL_EXTRACTOR_ADD_GROUP_USER_CLOSED_MSG.format(user_id=user_id))
-            
+        plan = _build_add_group_callback_result_plan(user_id, request)
+        _execute_add_group_callback_result_plan(app, callback_query, plan)
     except Exception as e:
         # Log error and answer callback
         send_to_logger(callback_query.message, LoggerMsg.URL_EXTRACTOR_ADD_GROUP_CALLBACK_ERROR_LOG_MSG.format(e=e))
@@ -907,50 +999,8 @@ def lang_callback_logic(app, callback_query, request) -> None:
     try:
         user_id = callback_query.from_user.id
         logger.info(f"Language callback triggered: {request.raw_input} for user {user_id}")
-        
-        if request.action_kind == 'select' and request.action_value:
-            lang_code = request.action_value
-            
-            # Set user language
-            from CONFIG.LANGUAGES.language_router import set_user_language
-            logger.info(f"Setting language {lang_code} for user {user_id}")
-            success = set_user_language(user_id, lang_code)
-            logger.info(f"Language set result: {success}")
-            
-            if success:
-                # Get messages in new language for this user
-                from CONFIG.LANGUAGES.language_router import get_messages
-                new_messages = get_messages(user_id, lang_code)
-                
-                # Get language name
-                from CONFIG.LANGUAGES.language_router import language_router
-                available_languages = language_router.get_available_languages()
-                lang_name = available_languages.get(lang_code, lang_code)
-                
-                # Send confirmation message
-                confirmation_msg = getattr(new_messages, 'LANG_CHANGED_MSG', 
-                    f"✅ Language changed to {lang_name}"
-                )
-                
-                # Format the message with lang_name
-                if '{lang_name}' in confirmation_msg:
-                    confirmation_msg = confirmation_msg.format(lang_name=lang_name)
-                
-                callback_query.answer(confirmation_msg)
-                callback_query.edit_message_text(
-                    confirmation_msg,
-                    parse_mode=enums.ParseMode.HTML
-                )
-            else:
-                error_msg = safe_get_messages(user_id).LANG_ERROR_MSG if hasattr(safe_get_messages(user_id), 'LANG_ERROR_MSG') else "❌ Error changing language"
-                callback_query.answer(error_msg)
-                
-        elif request.action_kind == 'close':
-            # Close language selection
-            close_msg = safe_get_messages(user_id).LANG_CLOSED_MSG if hasattr(safe_get_messages(user_id), 'LANG_CLOSED_MSG') else "Language selection closed"
-            callback_query.answer(close_msg)
-            callback_query.edit_message_text(close_msg)
-            
+        plan = _build_language_callback_result_plan(user_id, request)
+        _execute_language_callback_result_plan(app, callback_query, user_id, plan)
     except Exception as e:
         # Log error and answer callback
         from CONFIG.logger_msg import LoggerMsg
