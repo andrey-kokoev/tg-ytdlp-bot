@@ -13,7 +13,7 @@ Set up Cloudflare Tunnel to expose bot's HTTP API (port 5555) to Cloudflare Work
 ## Architecture
 
 ```
-Cloudflare Worker → bot-api.yourdomain.com → Cloudflare Edge → Tunnel → ZimaBoard:5555
+Cloudflare Worker → ytdlp-bot.yourdomain.com → Cloudflare Edge → Tunnel → ZimaBoard:5555
 ```
 
 ## Prerequisites
@@ -52,8 +52,8 @@ TUNNEL_TOKEN=<your-tunnel-token>
 Add to `.env.example`:
 ```bash
 # Cloudflare Tunnel Token
-# Create tunnel: cloudflared tunnel create bot-api
-# Get token: cloudflared tunnel token bot-api
+# Create tunnel: npx wrangler tunnel create ytdlp-bot
+# Get token: npx wrangler tunnel token ytdlp-bot
 TUNNEL_TOKEN=
 ```
 
@@ -61,7 +61,7 @@ TUNNEL_TOKEN=
 
 In Cloudflare dashboard:
 1. Create CNAME record:
-   - Name: `bot-api` (or subdomain of choice)
+   - Name: `ytdlp-bot` (or subdomain of choice)
    - Target: `<TUNNEL_ID>.cfargotunnel.com`
    - Proxy status: Proxied (orange cloud)
 
@@ -69,7 +69,7 @@ In Cloudflare dashboard:
 
 Option A: Via Cloudflare Dashboard (recommended)
 - Create tunnel in Zero Trust dashboard
-- Add public hostname: `bot-api.yourdomain.com` → `http://app:5555`
+- Add public hostname: `ytdlp-bot.yourdomain.com` → `http://app:5555`
 - Copy token to `.env`
 
 Option B: Via config file
@@ -79,7 +79,7 @@ tunnel: <TUNNEL_ID>
 credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
-  - hostname: bot-api.yourdomain.com
+  - hostname: ytdlp-bot.yourdomain.com
     service: http://app:5555
     originRequest:
       noTLSVerify: true  # If using self-signed cert internally
@@ -120,7 +120,7 @@ docker compose up -d cloudflared
 docker logs cloudflared
 
 # Test from outside (or Cloudflare Worker)
-curl https://bot-api.yourdomain.com/health
+curl https://ytdlp-bot.yourdomain.com/health
 ```
 
 ## Security Configuration
@@ -139,7 +139,7 @@ async def verify_api_key(request: Request):
 ```
 
 **Option B: Cloudflare Access (Zero Trust)**
-- Enable Cloudflare Access on `bot-api.yourdomain.com`
+- Enable Cloudflare Access on `ytdlp-bot.yourdomain.com`
 - Require Service Token authentication
 - Worker includes token in requests
 
@@ -163,7 +163,7 @@ export default {
     
     if (url.pathname === '/submit-download') {
       // Call bot API through tunnel
-      const response = await fetch('https://bot-api.yourdomain.com/api/jobs', {
+      const response = await fetch('https://ytdlp-bot.yourdomain.com/api/jobs', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${env.BOT_API_KEY}`,
@@ -207,13 +207,13 @@ FILE_SERVE_EXPIRY_HOURS = int(os.getenv("FILE_SERVE_EXPIRY_HOURS", "24"))
 
 1. **Tunnel connectivity:**
 ```bash
-curl https://bot-api.yourdomain.com/health
+curl https://ytdlp-bot.yourdomain.com/health
 # Should return: {"status": "ok"}
 ```
 
 2. **Job submission:**
 ```bash
-curl -X POST https://bot-api.yourdomain.com/api/jobs \
+curl -X POST https://ytdlp-bot.yourdomain.com/api/jobs \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://example.com/video", "callback_url": "https://httpbin.org/post"}'
@@ -250,7 +250,7 @@ Check httpbin or your worker logs for callback.
 ## Acceptance Criteria
 
 - [ ] cloudflared service runs in Docker
-- [ ] HTTPS accessible via bot-api.yourdomain.com
+- [ ] HTTPS accessible via ytdlp-bot.yourdomain.com
 - [ ] No firewall ports opened (outbound tunnel only)
 - [ ] API authentication working
 - [ ] Cloudflare Worker can submit jobs
