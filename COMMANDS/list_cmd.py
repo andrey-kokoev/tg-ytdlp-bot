@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from typing import Optional
 from pyrogram import filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -31,6 +32,14 @@ from COMMANDS.proxy_cmd import get_proxy_url
 
 # Get app instance
 app = get_app()
+
+
+@dataclass(frozen=True)
+class ListHelpCallbackResultPlan:
+    mode: str
+    answer_text: str | None = None
+    log_text: str | None = None
+    show_alert: bool = False
 
 def get_user_cookie_path(user_id: int) -> Optional[str]:
     """Get user's cookie file path if it exists"""
@@ -238,20 +247,42 @@ safe_get_messages(user_id).LIST_PROCESSING_MSG,
         logger.error(f"Error in list command: {e}")
         send_error_to_user(message, safe_get_messages(user_id).LIST_ERROR_OCCURRED_MSG)
 
-@app.on_callback_query(filters.regex("^list_help\\|"))
-def list_help_callback(app, callback_query):
-    user_id = callback_query.from_user.id
-    """Handle list help callback"""
-    try:
+
+def _build_list_help_callback_result_plan(user_id: int, data: str) -> ListHelpCallbackResultPlan:
+    if data == "list_help|close":
+        return ListHelpCallbackResultPlan(
+            mode="close",
+            answer_text=safe_get_messages(user_id).HELP_CLOSED_MSG,
+            log_text=safe_get_messages(user_id).HELP_CLOSED_MSG,
+        )
+    return ListHelpCallbackResultPlan(
+        mode="error",
+        answer_text=safe_get_messages(user_id).LIST_ERROR_CALLBACK_MSG,
+        show_alert=True,
+    )
+
+
+def _execute_list_help_callback_result_plan(app, callback_query, plan: ListHelpCallbackResultPlan) -> None:
+    if plan.mode == "close":
         callback_envelope = build_telegram_callback_envelope(callback_query)
         request = build_close_message_request(callback_envelope, close_scope="list_help")
         handle_close_message_request(
             app,
             build_callback_execution_context(callback_query),
             request,
-            answer_text=safe_get_messages(user_id).HELP_CLOSED_MSG,
-            log_text=safe_get_messages(user_id).HELP_CLOSED_MSG,
+            answer_text=plan.answer_text,
+            log_text=plan.log_text,
         )
+        return
+    callback_query.answer(plan.answer_text, show_alert=plan.show_alert)
+
+@app.on_callback_query(filters.regex("^list_help\\|"))
+def list_help_callback(app, callback_query):
+    user_id = callback_query.from_user.id
+    """Handle list help callback"""
+    try:
+        plan = _build_list_help_callback_result_plan(user_id, callback_query.data)
+        _execute_list_help_callback_result_plan(app, callback_query, plan)
     except Exception as e:
         logger.error(LoggerMsg.LIST_ERROR_IN_HELP_CALLBACK_LOG_MSG.format(e=e))
         callback_query.answer(safe_get_messages(user_id).LIST_ERROR_CALLBACK_MSG, show_alert=True)
