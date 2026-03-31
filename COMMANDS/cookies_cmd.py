@@ -120,6 +120,17 @@ class CookieRetryOutcomePlan:
     reset_checked_sources: bool = False
 
 
+@dataclass(frozen=True)
+class CookieValidationOutcomePlan:
+    mode: str
+    message_text: str | None = None
+    log_text: str | None = None
+    clear_cookie_file: bool = False
+    reset_checked_sources: bool = False
+    cache_result: bool | None = None
+    send_to_source: bool = False
+
+
 def _get_cookie_state_store() -> CookieStateStore:
     return CookieStateStore(
         youtube_cache=_youtube_cookie_cache,
@@ -232,6 +243,113 @@ def _execute_cookie_retry_outcome_plan(
             logger.warning(plan.log_text)
         else:
             logger.info(plan.log_text)
+
+
+def _build_cookie_validation_outcome_plan(
+    *,
+    mode: str,
+    user_id: str,
+    selected_index: int | None = None,
+    total_urls: int | None = None,
+    source_index: int | None = None,
+    cookie_file_path: str | None = None,
+) -> CookieValidationOutcomePlan:
+    messages = safe_get_messages(user_id)
+    if mode == "limit_exceeded":
+        from CONFIG.limits import LimitsConfig
+
+        limit_value = LimitsConfig.YOUTUBE_COOKIE_RETRY_LIMIT_PER_HOUR
+        text = getattr(
+            messages,
+            "COOKIES_YOUTUBE_RETRY_LIMIT_EXCEEDED_MSG",
+            f"⚠️ YouTube cookie retry limit exceeded!\n\n🔢 Maximum: {limit_value} attempts per hour\n⏰ Please try again later",
+        ).format(limit=limit_value)
+        return CookieValidationOutcomePlan(
+            mode=mode,
+            message_text=text,
+            log_text=f"YouTube cookie retry limit exceeded for user {user_id}",
+            send_to_source=True,
+        )
+    if mode == "sources_missing":
+        return CookieValidationOutcomePlan(
+            mode=mode,
+            message_text=messages.COOKIES_YOUTUBE_SOURCES_NOT_CONFIGURED_MSG,
+            log_text=LoggerMsg.COOKIES_YOUTUBE_URLS_EMPTY_LOG_MSG.format(user_id=user_id),
+            send_to_source=True,
+        )
+    if mode == "all_expired":
+        return CookieValidationOutcomePlan(
+            mode=mode,
+            message_text=messages.COOKIES_ALL_EXPIRED_MSG,
+            log_text=LoggerMsg.COOKIES_YOUTUBE_ALL_SOURCES_FAILED_LOG_MSG.format(user_id=user_id),
+            reset_checked_sources=True,
+            clear_cookie_file=True,
+        )
+    if mode == "invalid_index":
+        return CookieValidationOutcomePlan(
+            mode=mode,
+            message_text=messages.COOKIES_INVALID_YOUTUBE_INDEX_MSG.format(
+                selected_index=selected_index,
+                total_urls=total_urls,
+            ),
+            clear_cookie_file=True,
+        )
+    if mode == "source_success":
+        return CookieValidationOutcomePlan(
+            mode=mode,
+            message_text=messages.COOKIES_SUCCESS_VALIDATED_MSG.format(
+                source=source_index,
+                total=total_urls,
+            ),
+            log_text=LoggerMsg.COOKIES_YOUTUBE_DOWNLOADED_VALIDATED_LOG_MSG.format(
+                user_id=user_id,
+                source=source_index,
+            ),
+            cache_result=True,
+        )
+    if mode == "all_failed":
+        return CookieValidationOutcomePlan(
+            mode=mode,
+            message_text=messages.COOKIES_ALL_EXPIRED_MSG,
+            log_text=LoggerMsg.COOKIES_YOUTUBE_ALL_FAILED_LOG_MSG.format(user_id=user_id),
+            clear_cookie_file=True,
+            reset_checked_sources=True,
+            cache_result=False,
+        )
+    return CookieValidationOutcomePlan(mode=mode)
+
+
+def _execute_cookie_validation_outcome_plan(
+    *,
+    app,
+    transport_context: CookieTransportContext,
+    cookie_context: CookieFileContext | None,
+    plan: CookieValidationOutcomePlan,
+    log_message,
+) -> None:
+    if plan.reset_checked_sources:
+        reset_checked_cookie_sources(int(transport_context.user_id))
+        logger.info(f"Reset checked cookie sources for user {transport_context.user_id} to allow retry in future")
+    if plan.clear_cookie_file and cookie_context is not None:
+        _remove_cookie_file_if_present(cookie_context)
+    if plan.cache_result is not None and cookie_context is not None and plan.mode == "source_success":
+        _set_youtube_cookie_cache_entry(int(transport_context.user_id), plan.cache_result, cookie_context.cookie_file_path)
+    if plan.message_text:
+        if transport_context.source_message is not None and plan.send_to_source:
+            from HELPERS.logger import send_to_user
+            send_to_user(transport_context.source_message, plan.message_text)
+        else:
+            from HELPERS.safe_messeger import safe_send_message
+            safe_send_message(
+                transport_context.notify_chat_id,
+                plan.message_text,
+                parse_mode=enums.ParseMode.HTML,
+            )
+    if plan.log_text:
+        if log_message is not None:
+            send_to_logger(log_message, plan.log_text)
+        else:
+            logger.warning(plan.log_text)
 
 def generate_task_id(user_id: int, url: str, service: str = None) -> str:
     """
@@ -1654,52 +1772,16 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
 
     # Check the YouTube cookie rotation retry limit
     if not check_youtube_cookie_retry_limit(int(user_id)):
-        # Create a helper to send a "limit exceeded" message
-        def send_limit_message():
-            try:
-                from CONFIG.limits import LimitsConfig
-                
-                # Get and format the message
-                messages = safe_get_messages(user_id)
-                limit_value = LimitsConfig.YOUTUBE_COOKIE_RETRY_LIMIT_PER_HOUR
-                
-                # Ensure the message exists
-                if hasattr(messages, 'COOKIES_YOUTUBE_RETRY_LIMIT_EXCEEDED_MSG'):
-                    limit_message = messages.COOKIES_YOUTUBE_RETRY_LIMIT_EXCEEDED_MSG.format(limit=limit_value)
-                else:
-                    # Fallback if the message template wasn't found
-                    limit_message = f"⚠️ YouTube cookie retry limit exceeded!\n\n🔢 Maximum: {limit_value} attempts per hour\n⏰ Please try again later"
-                
-                # Log for debugging
-                logger.info(f"Sending limit message to user {user_id}")
-                logger.info(f"Limit value: {limit_value}")
-                logger.info(f"Raw message: {messages.COOKIES_YOUTUBE_RETRY_LIMIT_EXCEEDED_MSG if hasattr(messages, 'COOKIES_YOUTUBE_RETRY_LIMIT_EXCEEDED_MSG') else 'NOT FOUND'}")
-                logger.info(f"Formatted message: {limit_message}")
-                
-                if transport_context.source_message is not None:
-                    from HELPERS.logger import send_to_user
-                    send_to_user(transport_context.source_message, limit_message)
-                else:
-                    from HELPERS.safe_messeger import safe_send_message
-                    from pyrogram import enums
-                    safe_send_message(transport_context.notify_chat_id, limit_message, parse_mode=enums.ParseMode.HTML)
-            except Exception as e:
-                logger.error(f"Error sending retry limit message: {e}")
-                # Fallback message without formatting
-                try:
-                    fallback_message = f"⚠️ YouTube cookie retry limit exceeded!\n\n🔢 Maximum: {LimitsConfig.YOUTUBE_COOKIE_RETRY_LIMIT_PER_HOUR} attempts per hour\n⏰ Please try again later"
-                    if transport_context.source_message is not None:
-                        from HELPERS.logger import send_to_user
-                        send_to_user(transport_context.source_message, fallback_message)
-                    else:
-                        from HELPERS.safe_messeger import safe_send_message
-                        from pyrogram import enums
-                        safe_send_message(transport_context.notify_chat_id, fallback_message, parse_mode=enums.ParseMode.HTML)
-                except Exception as e2:
-                    logger.error(f"Error sending fallback limit message: {e2}")
-        
-        send_limit_message()
-        logger.warning(f"YouTube cookie retry limit exceeded for user {user_id}")
+        _execute_cookie_validation_outcome_plan(
+            app=app,
+            transport_context=transport_context,
+            cookie_context=None,
+            plan=_build_cookie_validation_outcome_plan(
+                mode="limit_exceeded",
+                user_id=user_id,
+            ),
+            log_message=log_message,
+        )
         return False
     
     # Record a cookie rotation attempt
@@ -1728,15 +1810,16 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
     cookie_urls = get_youtube_cookie_urls()
     
     if not cookie_urls:
-        safe_send_to_user(safe_get_messages(user_id).COOKIES_YOUTUBE_SOURCES_NOT_CONFIGURED_MSG)
-        # Safe logging
-        try:
-            if log_message is not None:
-                send_to_logger(log_message, safe_get_messages(user_id).COOKIES_YOUTUBE_URLS_EMPTY_LOG_MSG.format(user_id=user_id))
-            else:
-                logger.error(LoggerMsg.COOKIES_YOUTUBE_URLS_EMPTY_LOG_MSG.format(user_id=user_id))
-        except Exception as e:
-            logger.error(LoggerMsg.COOKIES_ERROR_LOGGING_LOG_MSG.format(e=e))
+        _execute_cookie_validation_outcome_plan(
+            app=app,
+            transport_context=transport_context,
+            cookie_context=None,
+            plan=_build_cookie_validation_outcome_plan(
+                mode="sources_missing",
+                user_id=user_id,
+            ),
+            log_message=log_message,
+        )
         return False
     
     # Create user folder
@@ -1778,11 +1861,16 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
     # Determine the order of attempts - only use unchecked sources
     unchecked_indices = get_unchecked_cookie_sources(int(user_id), cookie_urls)
     if not unchecked_indices:
-        update_message(safe_get_messages(user_id).COOKIES_ALL_EXPIRED_MSG, user_id)
-        logger.warning(f"All cookie sources have been checked for user {user_id}, no more sources to try")
-        # Reset checked-source cache for this user
-        reset_checked_cookie_sources(int(user_id))
-        logger.info(f"Reset checked cookie sources for user {user_id} to allow retry in future")
+        _execute_cookie_validation_outcome_plan(
+            app=app,
+            transport_context=transport_context,
+            cookie_context=cookie_context,
+            plan=_build_cookie_validation_outcome_plan(
+                mode="all_expired",
+                user_id=user_id,
+            ),
+            log_message=log_message,
+        )
         return False
     
     global _yt_round_robin_index
@@ -1792,10 +1880,32 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
             if (selected_index - 1) in unchecked_indices:
                 indices = [selected_index - 1]
             else:
-                update_message(safe_get_messages(user_id).COOKIES_INVALID_YOUTUBE_INDEX_MSG.format(selected_index=selected_index, total_urls=len(cookie_urls)), user_id)
+                _execute_cookie_validation_outcome_plan(
+                    app=app,
+                    transport_context=transport_context,
+                    cookie_context=cookie_context,
+                    plan=_build_cookie_validation_outcome_plan(
+                        mode="invalid_index",
+                        user_id=user_id,
+                        selected_index=selected_index,
+                        total_urls=len(cookie_urls),
+                    ),
+                    log_message=log_message,
+                )
                 return False
         else:
-            update_message(safe_get_messages(user_id).COOKIES_INVALID_YOUTUBE_INDEX_MSG.format(selected_index=selected_index, total_urls=len(cookie_urls)), user_id)
+            _execute_cookie_validation_outcome_plan(
+                app=app,
+                transport_context=transport_context,
+                cookie_context=cookie_context,
+                plan=_build_cookie_validation_outcome_plan(
+                    mode="invalid_index",
+                    user_id=user_id,
+                    selected_index=selected_index,
+                    total_urls=len(cookie_urls),
+                ),
+                log_message=log_message,
+            )
             return False
     else:
         indices = unchecked_indices.copy()
@@ -1848,15 +1958,19 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
             
             # Check the functionality of cookies
             if test_youtube_cookies(cookie_file_path, user_id=user_id):
-                update_message(safe_get_messages(user_id).COOKIES_SUCCESS_VALIDATED_MSG.format(source=idx + 1, total=len(cookie_urls)), user_id)
-                # Safe logging
-                try:
-                    if log_message is not None:
-                        send_to_logger(log_message, safe_get_messages(user_id).COOKIES_YOUTUBE_DOWNLOADED_VALIDATED_LOG_MSG.format(user_id=user_id, source=idx + 1))
-                    else:
-                        logger.info(LoggerMsg.COOKIES_YOUTUBE_DOWNLOADED_VALIDATED_LOG_MSG.format(user_id=user_id, source=idx + 1))
-                except Exception as e:
-                    logger.error(LoggerMsg.COOKIES_ERROR_LOGGING_LOG_MSG.format(e=e))
+                _execute_cookie_validation_outcome_plan(
+                    app=app,
+                    transport_context=transport_context,
+                    cookie_context=cookie_context,
+                    plan=_build_cookie_validation_outcome_plan(
+                        mode="source_success",
+                        user_id=user_id,
+                        source_index=idx + 1,
+                        total_urls=len(cookie_urls),
+                        cookie_file_path=cookie_file_path,
+                    ),
+                    log_message=log_message,
+                )
                 return True
             else:
                 logger.warning(LoggerMsg.COOKIES_YOUTUBE_FROM_SOURCE_FAILED_VALIDATION_LOG_MSG.format(source_index=idx + 1))
@@ -1870,15 +1984,16 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
             continue
     
     # If no source worked
-    update_message(safe_get_messages(user_id).COOKIES_ALL_EXPIRED_MSG, user_id)
-    # Safe logging
-    try:
-        if log_message is not None:
-            send_to_logger(log_message, safe_get_messages(user_id).COOKIES_YOUTUBE_ALL_FAILED_LOG_MSG.format(user_id=user_id))
-        else:
-            logger.error(LoggerMsg.COOKIES_YOUTUBE_ALL_SOURCES_FAILED_LOG_MSG.format(user_id=user_id))
-    except Exception as e:
-        logger.error(LoggerMsg.COOKIES_YOUTUBE_ALL_SOURCES_FAILED_ERROR_LOG_MSG.format(e=e))
+    _execute_cookie_validation_outcome_plan(
+        app=app,
+        transport_context=transport_context,
+        cookie_context=cookie_context,
+        plan=_build_cookie_validation_outcome_plan(
+            mode="all_failed",
+            user_id=user_id,
+        ),
+        log_message=log_message,
+    )
     return False
 
 def ensure_working_youtube_cookies(user_id: int) -> bool:
