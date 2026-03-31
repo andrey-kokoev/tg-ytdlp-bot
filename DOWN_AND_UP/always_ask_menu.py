@@ -371,6 +371,13 @@ class AlwaysAskClosePlan:
 
 
 @dataclass(frozen=True)
+class OtherQualitiesMenuPlan:
+    text: str
+    reply_markup: InlineKeyboardMarkup
+    answer_text: str
+
+
+@dataclass(frozen=True)
 class AlwaysAskGalleryFallbackPrompt:
     message_text: str
     callback_data: str
@@ -687,6 +694,119 @@ def _execute_askq_close_plan(app, callback_query, close_plan: AlwaysAskClosePlan
                 reply_markup=None,
             )
     safe_callback_answer(callback_query, close_plan.answer_text)
+
+
+def _build_other_qualities_menu_plan(
+    callback_query,
+    *,
+    format_lines,
+    page: int,
+    url: str,
+    video_title: str,
+    is_nsfw: bool,
+    is_private_chat: bool,
+    from_cache: bool = False,
+) -> OtherQualitiesMenuPlan:
+    user_id = callback_query.from_user.id
+    cap = f"<b>{video_title}</b>\n"
+    cap += f"\n<b>{safe_get_messages(user_id).ALWAYS_ASK_ALL_AVAILABLE_FORMATS_MSG}</b>\n"
+    if isinstance(url, str) and is_nsfw and is_private_chat:
+        cap += "\n<b>⭐️ — 🔞NSFW is paid (⭐️$0.02)</b>\n"
+    cap += f"\n<i>{safe_get_messages(user_id).PAGE_NUMBER_MSG.format(page=page + 1)}</i>\n"
+
+    formats_per_page = 10
+    total_formats = len(format_lines)
+    total_pages = (total_formats + formats_per_page - 1) // formats_per_page
+    start_idx = page * formats_per_page
+    end_idx = min(start_idx + formats_per_page, total_formats)
+    page_formats = format_lines[start_idx:end_idx]
+
+    user_args = get_user_args(user_id)
+    send_as_file = user_args.get("send_as_file", False)
+    cached_qualities = set()
+    if not send_as_file:
+        try:
+            cached_qualities = get_cached_qualities(url)
+        except Exception:
+            pass
+
+    keyboard_rows = []
+    for format_line in page_formats:
+        format_id = format_line.split()[0].strip()
+        if format_id and not format_id.startswith("[") and not format_id.startswith("(") and format_id != "unknown":
+            button_parts = extract_button_data(format_line)
+            if button_parts:
+                button_text = " | ".join(button_parts)
+                if format_id in cached_qualities and not is_nsfw:
+                    button_text = f"🚀 {button_text}"
+                elif is_nsfw and is_private_chat:
+                    button_text = f"1⭐️ {button_text}"
+                if len(button_text) > (64 if from_cache else 40):
+                    limit = 61 if from_cache else 37
+                    button_text = button_text[:limit] + "..."
+                callback_data = create_safe_callback_data("askq|other_id", format_id)
+                logger.info(f"Created callback_data '{callback_data}' for format_id '{format_id}'")
+                keyboard_rows.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_PREV_BUTTON_MSG, callback_data=f"askq|other_page_{page-1}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_NEXT_BUTTON_MSG, callback_data=f"askq|other_page_{page+1}"))
+    if nav_row:
+        keyboard_rows.append(nav_row)
+
+    keyboard_rows.append([
+        InlineKeyboardButton(safe_get_messages(user_id).BACK_BUTTON_TEXT if not from_cache else "🔙Back", callback_data="askq|other_back"),
+        InlineKeyboardButton(
+            safe_get_messages(user_id).CLOSE_BUTTON_TEXT if not from_cache else safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG,
+            callback_data="askq|close",
+        ),
+    ])
+
+    answer_text = (
+        f"{safe_get_messages(user_id).ALWAYS_ASK_FORMATS_PAGE_FROM_CACHE_MSG} {page + 1}/{total_pages} {safe_get_messages(user_id).ALWAYS_ASK_FROM_CACHE_MSG}"
+        if from_cache
+        else f"Formats page {page + 1}/{total_pages}"
+    )
+    return OtherQualitiesMenuPlan(
+        text=cap,
+        reply_markup=InlineKeyboardMarkup(keyboard_rows),
+        answer_text=answer_text,
+    )
+
+
+def _emit_other_qualities_menu_plan(app, callback_query, *, menu_plan: OtherQualitiesMenuPlan, original_message) -> None:
+    user_id = callback_query.from_user.id
+    try:
+        if callback_query.message.photo:
+            callback_query.edit_message_caption(
+                caption=menu_plan.text,
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=menu_plan.reply_markup,
+            )
+        else:
+            callback_query.edit_message_text(
+                text=menu_plan.text,
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=menu_plan.reply_markup,
+            )
+        safe_callback_answer(callback_query, menu_plan.answer_text)
+    except Exception:
+        try:
+            chat_id = callback_query.message.chat.id
+            ref_id = original_message.id if original_message else None
+            app.send_message(
+                chat_id,
+                menu_plan.text,
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=menu_plan.reply_markup,
+                reply_parameters=ReplyParameters(message_id=ref_id) if ref_id else None,
+            )
+            safe_callback_answer(callback_query, menu_plan.answer_text)
+        except Exception as e2:
+            logger.error(f"Error showing other qualities menu: {e2}")
+            safe_callback_answer(callback_query, safe_get_messages(user_id).ALWAYS_ASK_ERROR_SHOWING_FORMATS_MENU_MSG, show_alert=True)
 
 # Proxy functionality is now handled by COMMANDS.proxy_cmd
 logger.info(LoggerMsg.ALWAYS_ASK_IMPORTED_LOG_MSG.format(app_available=app is not None))
@@ -3529,94 +3649,17 @@ def show_other_qualities_menu(app, callback_query, page=0):
                     except Exception as e:
                         logger.warning(f"Failed to cache formats: {e}")
         
-        # Pagination: 10 formats per page (1 row × 10 columns)
-        formats_per_page = 10
-        total_formats = len(format_lines)
-        total_pages = (total_formats + formats_per_page - 1) // formats_per_page
-        
-        start_idx = page * formats_per_page
-        end_idx = min(start_idx + formats_per_page, total_formats)
-        page_formats = format_lines[start_idx:end_idx]
-        
-        # Check if user has send_as_file enabled
-        user_args = get_user_args(user_id)
-        send_as_file = user_args.get("send_as_file", False)
-        
-        # Get cached qualities to show rocket emoji for cached formats (skip if send_as_file is enabled)
-        cached_qualities = set()
-        if not send_as_file:
-            try:
-                cached_qualities = get_cached_qualities(url)
-            except Exception:
-                pass
-        
-        # Build keyboard with format buttons (1 row × 10 columns max)
-        keyboard_rows = []
-        row = []
-        for i, format_line in enumerate(page_formats):
-            format_id = format_line.split()[0].strip()
-            
-            # Additional validation - skip invalid format IDs
-            if format_id and not format_id.startswith('[') and not format_id.startswith('(') and format_id != 'unknown':
-                # Extract only needed data for button display
-                button_parts = extract_button_data(format_line)
-                
-                if button_parts:  # Only create button if we have valid data
-                    # Join with | separator
-                    button_text = ' | '.join(button_parts)
-                    
-                    # Add rocket emoji if format is cached, or paid emoji for NSFW
-                    if format_id in cached_qualities and not is_nsfw:
-                        button_text = f"🚀 {button_text}"
-                    elif is_nsfw and is_private_chat:
-                        button_text = f"1⭐️ {button_text}"
-                    
-                    # Limit button text length
-                    if len(button_text) > 40:
-                        button_text = button_text[:37] + "..."
-                    
-                    # Create safe callback data
-                    callback_data = create_safe_callback_data("askq|other_id", format_id)
-                    logger.info(f"Created callback_data '{callback_data}' for format_id '{format_id}'")
-                    
-                    # Each button goes in its own row (1 column layout)
-                    keyboard_rows.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-        
-        # Add navigation buttons
-        nav_row = []
-        if page > 0:
-            nav_row.append(InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_PREV_BUTTON_MSG, callback_data=f"askq|other_page_{page-1}"))
-        if page < total_pages - 1:
-            nav_row.append(InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_NEXT_BUTTON_MSG, callback_data=f"askq|other_page_{page+1}"))
-        if nav_row:
-            keyboard_rows.append(nav_row)
-        
-        # Add back and close buttons
-        keyboard_rows.append([
-            InlineKeyboardButton(safe_get_messages(user_id).BACK_BUTTON_TEXT, callback_data="askq|other_back"),
-            InlineKeyboardButton(safe_get_messages(user_id).CLOSE_BUTTON_TEXT, callback_data="askq|close")
-        ])
-        
-        keyboard = InlineKeyboardMarkup(keyboard_rows)
-        
-        # Update message
-        try:
-            if callback_query.message.photo:
-                callback_query.edit_message_caption(caption=cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-            else:
-                callback_query.edit_message_text(text=cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-            _safe_answer(f"Formats page {page + 1}/{total_pages}")
-        except Exception as e:
-            # Fallback: send new message
-            try:
-                chat_id = callback_query.message.chat.id
-                ref_id = original_message.id if original_message else None
-                app.send_message(chat_id, cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard,
-                               reply_parameters=ReplyParameters(message_id=ref_id))
-                _safe_answer(f"{safe_get_messages(user_id).ALWAYS_ASK_FORMATS_PAGE_MSG} {page + 1}/{total_pages}")
-            except Exception as e2:
-                logger.error(f"Error showing other qualities menu: {e2}")
-                _safe_answer(safe_get_messages(user_id).ALWAYS_ASK_ERROR_SHOWING_FORMATS_MENU_MSG, show_alert=True)
+        menu_plan = _build_other_qualities_menu_plan(
+            callback_query,
+            format_lines=format_lines,
+            page=page,
+            url=url,
+            video_title=video_title,
+            is_nsfw=is_nsfw,
+            is_private_chat=is_private_chat,
+            from_cache=False,
+        )
+        _emit_other_qualities_menu_plan(app, callback_query, menu_plan=menu_plan, original_message=original_message)
         
             # Clean up temp file
         # No temp file used here; keep block for future extensions
@@ -3670,97 +3713,22 @@ def show_formats_from_cache(app, callback_query, format_lines, page, url):
         cap += "\n<b>⭐️ — 🔞NSFW is paid (⭐️$0.02)</b>\n"
     cap += f"\n<i>{safe_get_messages(user_id).PAGE_NUMBER_MSG.format(page=page + 1)}</i>\n"
     
-    # Pagination: 10 formats per page (1 column × 10 rows)
-    formats_per_page = 10
-    total_formats = len(format_lines)
-    total_pages = (total_formats + formats_per_page - 1) // formats_per_page
-    
-    start_idx = page * formats_per_page
-    end_idx = min(start_idx + formats_per_page, total_formats)
-    page_formats = format_lines[start_idx:end_idx]
-    
-    # Check if user has send_as_file enabled
-    user_args = get_user_args(user_id)
-    send_as_file = user_args.get("send_as_file", False)
-    
-    # Get cached qualities to show rocket emoji for cached formats (skip if send_as_file is enabled)
-    cached_qualities = set()
-    if not send_as_file:
-        try:
-            cached_qualities = get_cached_qualities(url)
-        except Exception:
-            pass
-    
-    # Build keyboard with format buttons (1 column × 10 rows max)
-    keyboard_rows = []
-    for i, format_line in enumerate(page_formats):
-        format_id = format_line.split()[0].strip()
-        
-        # Additional validation - skip invalid format IDs
-        if format_id and not format_id.startswith('[') and not format_id.startswith('(') and format_id != 'unknown':
-            # Extract only needed data for button display
-            button_parts = extract_button_data(format_line)
-            
-            if button_parts:  # Only create button if we have valid data
-                # Join with | separator
-                button_text = ' | '.join(button_parts)
-                
-                # Add rocket emoji if format is cached, or paid emoji for NSFW
-                if format_id in cached_qualities and not is_nsfw:
-                    button_text = f"🚀 {button_text}"
-                elif is_nsfw and is_private_chat:
-                    button_text = f"1⭐️ {button_text}"
-                
-                # Limit button text length
-                if len(button_text) > 64:
-                    button_text = button_text[:61] + "..."
-                
-                # Create safe callback data
-                callback_data = create_safe_callback_data("askq|other_id", format_id)
-                logger.info(f"Created callback_data '{callback_data}' for format_id '{format_id}'")
-                
-                # Each button goes in its own row (1 column layout)
-                keyboard_rows.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-        else:
-            logger.warning(f"Invalid format line structure: {format_line}")
-    else:
-        logger.warning(f"Skipping invalid format_id for button: {format_id}")
-    
-    # Add navigation buttons
-    nav_row = []
-    if page > 0:
-        nav_row.append(InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_PREV_BUTTON_MSG, callback_data=f"askq|other_page_{page-1}"))
-    if page < total_pages - 1:
-        nav_row.append(InlineKeyboardButton(safe_get_messages(user_id).ALWAYS_ASK_NEXT_BUTTON_MSG, callback_data=f"askq|other_page_{page+1}"))
-    if nav_row:
-        keyboard_rows.append(nav_row)
-    
-    # Add back and close buttons
-    keyboard_rows.append([
-        InlineKeyboardButton("🔙Back", callback_data="askq|other_back"),
-        InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_HELP_CLOSE_BUTTON_MSG, callback_data="askq|close")
-    ])
-    
-    keyboard = InlineKeyboardMarkup(keyboard_rows)
-    
-    # Update message
-    try:
-        if callback_query.message.photo:
-            callback_query.edit_message_caption(caption=cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-        else:
-            callback_query.edit_message_text(text=cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
-        callback_query.answer(f"{safe_get_messages(user_id).ALWAYS_ASK_FORMATS_PAGE_FROM_CACHE_MSG} {page + 1}/{total_pages} {safe_get_messages(user_id).ALWAYS_ASK_FROM_CACHE_MSG}")
-    except Exception as e:
-        # Fallback: send new message
-        try:
-            chat_id = callback_query.message.chat.id
-            ref_id = callback_query.message.reply_to_message.id if callback_query.message.reply_to_message else None
-            app.send_message(chat_id, cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard,
-                           reply_parameters=ReplyParameters(message_id=ref_id) if ref_id else None)
-            callback_query.answer(f"{safe_get_messages(user_id).ALWAYS_ASK_FORMATS_PAGE_FROM_CACHE_MSG} {page + 1}/{total_pages} {safe_get_messages(user_id).ALWAYS_ASK_FROM_CACHE_MSG}")
-        except Exception as e2:
-            logger.error(f"Error showing cached formats: {e2}")
-            callback_query.answer("❌ Error showing formats menu", show_alert=True)
+    menu_plan = _build_other_qualities_menu_plan(
+        callback_query,
+        format_lines=format_lines,
+        page=page,
+        url=url,
+        video_title=video_title,
+        is_nsfw=is_nsfw,
+        is_private_chat=is_private_chat,
+        from_cache=True,
+    )
+    _emit_other_qualities_menu_plan(
+        app,
+        callback_query,
+        menu_plan=menu_plan,
+        original_message=callback_query.message.reply_to_message,
+    )
 
 # --- Always ask processing ---
 def sort_quality_key(quality_key):
