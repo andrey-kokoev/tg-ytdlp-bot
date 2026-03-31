@@ -103,6 +103,25 @@ def _emit_subtitle_artifact_plan(
         subtitle_path=artifact_plan.subtitle_path,
     )
 
+
+def _execute_subtitle_artifact_cleanup(
+    *,
+    execution_context: FfmpegExecutionContext | None,
+    artifact_plan: SubtitleArtifactPlan | None,
+) -> None:
+    if artifact_plan is None:
+        return
+    if execution_context is not None and artifact_plan.should_send_to_user:
+        _send_subtitles_document_artifact(
+            execution_context=execution_context,
+            subtitle_path=artifact_plan.subtitle_path,
+        )
+    if artifact_plan.subtitle_path and os.path.exists(artifact_plan.subtitle_path):
+        try:
+            os.remove(artifact_plan.subtitle_path)
+        except Exception as e:
+            logger.error(f"Error deleting srt file: {e}")
+
 def get_ffmpeg_path():
     messages = safe_get_messages(None)
     """Get FFmpeg path - first try system PATH, then fallback to local binary"""
@@ -980,16 +999,12 @@ def embed_subs_to_video(
         if os.path.exists(subs_path):
             try:
                 if app is not None:
-                    _emit_subtitle_artifact_plan(
+                    _execute_subtitle_artifact_cleanup(
                         execution_context=execution_context,
                         artifact_plan=subtitle_artifact_plan,
                     )
             except Exception as e:
                 logger.error(f"Error sending srt file: {e}")
-            try:
-                os.remove(subs_path)
-            except Exception as e:
-                logger.error(f"Error deleting srt file: {e}")
         
         logger.info("Successfully burned-in subtitles")
         return True
