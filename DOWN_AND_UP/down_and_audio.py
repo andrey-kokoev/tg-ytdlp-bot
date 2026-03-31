@@ -927,6 +927,50 @@ def _maybe_auto_rotate_ip_for_audio_sign_in_required(user_id: int, error_text: s
         logger.error("Error during auto-rotate IP: %s", rotate_error)
 
 
+@dataclass(frozen=True)
+class AudioRetryRoutePlan:
+    mode: str
+    should_retry_proxy: bool
+    should_retry_cookie: bool
+    should_skip: bool
+
+
+def _build_audio_retry_route_plan(*, url: str, error_text: str) -> AudioRetryRoutePlan:
+    if is_youtube_url(url):
+        return AudioRetryRoutePlan(
+            mode="proxy",
+            should_retry_proxy=True,
+            should_retry_cookie=False,
+            should_skip=False,
+        )
+
+    error_str = error_text.lower()
+    cookie_keywords = [
+        "cookie",
+        "auth",
+        "login",
+        "sign in",
+        "403",
+        "401",
+        "forbidden",
+        "unauthorized",
+    ]
+    if any(keyword in error_str for keyword in cookie_keywords):
+        return AudioRetryRoutePlan(
+            mode="cookie",
+            should_retry_proxy=False,
+            should_retry_cookie=True,
+            should_skip=False,
+        )
+
+    return AudioRetryRoutePlan(
+        mode="skip",
+        should_retry_proxy=False,
+        should_retry_cookie=False,
+        should_skip=True,
+    )
+
+
 def _maybe_retry_audio_download_after_error(
     *,
     user_id: int,
@@ -936,7 +980,8 @@ def _maybe_retry_audio_download_after_error(
     try_download_audio,
     current_index: int,
 ):
-    if is_youtube_url(url):
+    retry_route_plan = _build_audio_retry_route_plan(url=url, error_text=error_text)
+    if retry_route_plan.should_retry_proxy:
         retry_result, did_proxy_retry = maybe_retry_with_proxy_on_geo_error(
             user_id=user_id,
             url=url,
@@ -953,25 +998,14 @@ def _maybe_retry_audio_download_after_error(
         )
         return retry_result, did_proxy_retry
 
+    if retry_route_plan.should_skip:
+        logger.info("Error appears to be non-cookie-related for %s, skipping cookie fallback", url)
+        return None, did_proxy_retry
+
     logger.info(
         "Non-YouTube audio download error detected for user %s, attempting cookie fallback",
         user_id,
     )
-    error_str = error_text.lower()
-    cookie_keywords = [
-        "cookie",
-        "auth",
-        "login",
-        "sign in",
-        "403",
-        "401",
-        "forbidden",
-        "unauthorized",
-    ]
-    if not any(keyword in error_str for keyword in cookie_keywords):
-        logger.info("Error appears to be non-cookie-related for %s, skipping cookie fallback", url)
-        return None, did_proxy_retry
-
     logger.info("Error appears to be cookie-related for %s, trying cookie fallback", url)
     from COMMANDS.cookies_cmd import try_non_youtube_cookie_fallback
 
