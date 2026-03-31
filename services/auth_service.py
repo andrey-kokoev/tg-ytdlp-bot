@@ -30,11 +30,15 @@ class AuthService:
         # Load username/password from config (strip whitespace)
         username = getattr(Config, "DASHBOARD_USERNAME", "admin")
         password = getattr(Config, "DASHBOARD_PASSWORD", "admin123")
-        self._username = str(username).strip() if username else "admin"
-        self._password_hash = self._hash_password(str(password).strip() if password else "admin123")
+        self._username, self._password_hash = self._normalize_credentials(username, password)
         logger.info(f"[auth] Initialized with username='{self._username}' (length={len(self._username)})")
         
         self._load_sessions()
+
+    def _normalize_credentials(self, username, password) -> tuple[str, str]:
+        username_clean = str(username).strip() if username else "admin"
+        password_clean = str(password).strip() if password else "admin123"
+        return username_clean, self._hash_password(password_clean)
     
     def _hash_password(self, password: str) -> str:
         """Hash a password."""
@@ -138,12 +142,11 @@ class AuthService:
         """Reload settings from config."""
         username = getattr(Config, "DASHBOARD_USERNAME", "admin")
         password = getattr(Config, "DASHBOARD_PASSWORD", "admin123")
-        username_clean = str(username).strip() if username else "admin"
-        password_clean = str(password).strip() if password else "admin123"
+        username_clean, password_hash = self._normalize_credentials(username, password)
         with self._lock:
             old_username = self._username
             self._username = username_clean
-            self._password_hash = self._hash_password(password_clean)
+            self._password_hash = password_hash
             if old_username != username_clean:
                 logger.info(f"[auth] Config reloaded: username changed from '{old_username}' to '{username_clean}'")
     
