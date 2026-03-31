@@ -27,6 +27,13 @@ class LiveStreamExecutionContext:
     ffmpeg_context: FfmpegExecutionContext | None
 
 
+@dataclass(frozen=True)
+class LiveStreamCompletionPlan:
+    mode: str
+    should_emit_final_status: bool
+    successful_chunks: int
+
+
 def _build_live_stream_execution_context(
     *,
     message,
@@ -98,6 +105,27 @@ def _send_live_stream_chunk(
         execution_context.proc_msg_id,
         f"{video_title} - Chunk {chunk_idx + 1}",
         tags_text,
+    )
+
+
+def _build_live_stream_completion_plan(*, successful_chunks: int) -> LiveStreamCompletionPlan:
+    return LiveStreamCompletionPlan(
+        mode="final",
+        should_emit_final_status=True,
+        successful_chunks=successful_chunks,
+    )
+
+
+def _execute_live_stream_completion_plan(
+    execution_context: LiveStreamExecutionContext,
+    *,
+    plan: LiveStreamCompletionPlan,
+) -> None:
+    if not plan.should_emit_final_status:
+        return
+    _emit_live_stream_final_status(
+        execution_context,
+        successful_chunks=plan.successful_chunks,
     )
 
 
@@ -445,9 +473,9 @@ def download_live_stream_chunked(
         
         # Final progress update
         try:
-            _emit_live_stream_final_status(
+            _execute_live_stream_completion_plan(
                 execution_context,
-                successful_chunks=successful_chunks,
+                plan=_build_live_stream_completion_plan(successful_chunks=successful_chunks),
             )
         except Exception as e:
             logger.error(f"Error updating final progress: {e}")
