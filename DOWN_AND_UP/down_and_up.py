@@ -9,6 +9,7 @@ import threading
 import time
 import subprocess
 import traceback
+from dataclasses import dataclass
 import yt_dlp
 import re
 from HELPERS.app_instance import get_app
@@ -246,6 +247,99 @@ def _send_playlist_video_terminal_status(
             user_id=user_id,
         ) + format_playlist_error_summary_suffix(outcome),
     )
+
+
+@dataclass(frozen=True)
+class DownloadTerminalPlan:
+    mode: str
+    status_text: str | None = None
+    log_text: str | None = None
+    clear_subs_state: bool = False
+    clear_playlist_state: bool = False
+    clear_download_dir: bool = False
+    clear_temp_files: bool = False
+    send_playlist_status: bool = False
+    playlist_reply_to_message_id: int | None = None
+
+
+def _build_download_terminal_plan(
+    *,
+    user_id: int,
+    outcome,
+    is_playlist: bool,
+    safe_quality_key: str | None,
+    requested_indices: list | None,
+) -> DownloadTerminalPlan:
+    if outcome.outcome_kind == "completed":
+        status_text = _build_video_terminal_status(user_id, outcome.total_sent_count)
+        if outcome.outcome_kind == "completed" and is_playlist and safe_quality_key:
+            return DownloadTerminalPlan(
+                mode="playlist_completed",
+                status_text=status_text,
+                log_text=safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG,
+                clear_subs_state=True,
+                clear_playlist_state=True,
+                send_playlist_status=True,
+                playlist_reply_to_message_id=None,
+            )
+        return DownloadTerminalPlan(
+            mode="video_completed",
+            status_text=status_text,
+            log_text=safe_get_messages(user_id).VIDEO_UPLOAD_COMPLETED_SPLITTING_LOG_MSG,
+            clear_subs_state=True,
+            clear_download_dir=True,
+        )
+
+    if outcome.outcome_kind == "partial":
+        return DownloadTerminalPlan(
+            mode="video_partial",
+            status_text=_build_video_terminal_status(user_id, outcome.total_sent_count),
+            log_text=format_playlist_error_summary_suffix(outcome),
+            clear_subs_state=True,
+            clear_playlist_state=True,
+            clear_temp_files=True,
+        )
+
+    return DownloadTerminalPlan(
+        mode="unknown",
+        status_text=_build_video_terminal_status(user_id, outcome.total_sent_count),
+        log_text=format_playlist_error_summary_suffix(outcome),
+    )
+
+
+def _execute_download_terminal_plan(
+    *,
+    user_id: int,
+    proc_msg_id: int,
+    message,
+    app,
+    plan: DownloadTerminalPlan,
+    task_context: RuntimeTask | None,
+    outcome,
+    url: str,
+    is_playlist: bool,
+    safe_quality_key: str | None,
+    requested_indices: list | None,
+) -> RuntimeTask | None:
+    if plan.status_text:
+        safe_edit_message_text(user_id, proc_msg_id, plan.status_text)
+    if plan.log_text:
+        send_to_logger(message, plan.log_text)
+    if plan.clear_subs_state:
+        _clear_video_subtitle_state(user_id, url)
+    if plan.clear_download_dir:
+        _cleanup_successful_video_download_dir(user_id)
+    if plan.send_playlist_status and is_playlist and safe_quality_key and requested_indices:
+        _send_playlist_video_terminal_status(
+            app=app,
+            user_id=user_id,
+            reply_to_message_id=plan.playlist_reply_to_message_id or proc_msg_id,
+            message=message,
+            outcome=outcome,
+            requested_indices=requested_indices,
+            safe_quality_key=safe_quality_key,
+        )
+    return task_context
 
 
 def _is_nsfw_video_delivery(url: str, user_forced_nsfw: bool) -> bool:
@@ -3964,25 +4058,37 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                     playlist_error_summary=error_summary,
                 )
         if outcome.outcome_kind == "completed":
-            task_context = _finalize_completed_video_outcome(
+            plan = _build_download_terminal_plan(
+                user_id=user_id,
+                outcome=outcome,
+                is_playlist=is_playlist,
+                safe_quality_key=safe_quality_key,
+                requested_indices=requested_indices,
+            )
+            if plan.send_playlist_status and is_playlist and safe_quality_key:
+                plan = DownloadTerminalPlan(
+                    mode=plan.mode,
+                    status_text=plan.status_text,
+                    log_text=plan.log_text,
+                    clear_subs_state=plan.clear_subs_state,
+                    clear_playlist_state=plan.clear_playlist_state,
+                    clear_download_dir=plan.clear_download_dir,
+                    clear_temp_files=plan.clear_temp_files,
+                    send_playlist_status=plan.send_playlist_status,
+                    playlist_reply_to_message_id=proc_msg_id,
+                )
+            task_context = _execute_download_terminal_plan(
                 user_id=user_id,
                 proc_msg_id=proc_msg_id,
                 message=message,
-                outcome=outcome,
-                task_context=task_context,
-                url=url,
-            )
-            _cleanup_successful_video_download_dir(user_id)
-
-        if is_playlist and safe_quality_key:
-            _send_playlist_video_terminal_status(
                 app=app,
-                user_id=user_id,
-                reply_to_message_id=message.id,
-                message=message,
+                plan=plan,
+                task_context=task_context,
                 outcome=outcome,
-                requested_indices=requested_indices,
+                url=url,
+                is_playlist=is_playlist,
                 safe_quality_key=safe_quality_key,
+                requested_indices=requested_indices,
             )
 
     except Exception as e:
