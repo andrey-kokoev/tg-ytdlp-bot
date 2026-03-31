@@ -96,10 +96,17 @@ def _unblocked_users_node():
     return _db_node("unblocked_users")
 
 
+def _write_user_state_record(node_name: str, user_id: int, payload: Dict[str, Any]) -> None:
+    if node_name == "blocked_users":
+        _blocked_users_node().child(str(user_id)).set(payload)
+    else:
+        _unblocked_users_node().child(str(user_id)).set(payload)
+
+
 def block_user(user_id: int, reason: str = "manual") -> None:
     ts = str(int(time.time()))
     payload = {"ID": str(user_id), "timestamp": ts, "blocked_reason": reason}
-    _blocked_users_node().child(str(user_id)).set(payload)
+    _write_user_state_record("blocked_users", user_id, payload)
     collector = get_stats_collector()
     collector.block_user_local(user_id, reason=reason)
     guard = get_channel_guard()
@@ -110,11 +117,10 @@ def block_user(user_id: int, reason: str = "manual") -> None:
 def unblock_user(user_id: int) -> None:
     ts = str(int(time.time()))
     payload = {"ID": str(user_id), "timestamp": ts}
-    _unblocked_users_node().child(str(user_id)).set(payload)
+    _write_user_state_record("unblocked_users", user_id, payload)
     _blocked_users_node().child(str(user_id)).remove()
     collector = get_stats_collector()
     collector.unblock_user_local(user_id)
     guard = get_channel_guard()
     if guard:
         guard.record_manual_unblock(user_id)
-
