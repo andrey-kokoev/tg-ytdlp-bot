@@ -739,6 +739,101 @@ def _handle_manual_forward_retry(
     return forwarded_msgs, already_forwarded_to_log, is_nsfw
 
 
+def _handle_route_result_post_upload(
+    *,
+    route_result: dict,
+    message,
+    user_id: int,
+    url: str,
+    user_forced_nsfw: bool,
+    is_playlist: bool,
+    current_index: int,
+    safe_quality_key: str,
+    need_subs: bool,
+    playlist_video_urls: dict,
+    playlist_indices: list,
+    playlist_msg_ids: list,
+    found_type,
+    video_msg,
+    after_rename_abs_path: str,
+    original_video_title: str,
+    duration,
+    width,
+    height,
+    thumb_dir,
+    caption_lst,
+    force_no_title: bool,
+) -> tuple[bool, bool]:
+    forwarded_msgs = route_result["forwarded_msgs"]
+    already_forwarded_to_log = route_result["already_forwarded_to_log"]
+    is_nsfw = route_result["is_nsfw"]
+    should_retry_manual = route_result["should_retry_manual"]
+    logger.info(f"down_and_up: forwarded_msgs result: {forwarded_msgs}")
+    if forwarded_msgs:
+        logger.info(f"down_and_up: saving to cache with forwarded message IDs: {[m.id for m in forwarded_msgs]}")
+        cache_plan = _build_upload_cache_writeback_plan(
+            is_playlist=is_playlist,
+            is_nsfw=is_nsfw,
+            need_subs=need_subs,
+            forwarded_msgs=forwarded_msgs,
+        )
+        _execute_upload_cache_writeback_plan(
+            plan=cache_plan,
+            forwarded_msgs=forwarded_msgs,
+            current_video_index=current_index,
+            url=url,
+            safe_quality_key=safe_quality_key,
+            message=message,
+            user_id=user_id,
+            playlist_video_urls=playlist_video_urls,
+            playlist_indices=playlist_indices,
+            playlist_msg_ids=playlist_msg_ids,
+            found_type=found_type,
+            is_nsfw=is_nsfw,
+            need_subs=need_subs,
+        )
+    else:
+        recovery_plan = _build_manual_forward_recovery_plan(
+            is_playlist=is_playlist,
+            already_forwarded_to_log=already_forwarded_to_log,
+            should_retry_manual=should_retry_manual,
+        )
+        if recovery_plan.should_use_recovery_route:
+            logger.info(f"down_and_up: forwarding failed, trying manual forward for video: {video_msg.id}")
+            try:
+                _handle_manual_forward_retry(
+                    message=message,
+                    user_id=user_id,
+                    video_msg=video_msg,
+                    url=url,
+                    user_forced_nsfw=user_forced_nsfw,
+                    already_forwarded_to_log=already_forwarded_to_log,
+                    is_split_item=bool(caption_lst and len(caption_lst) > 1),
+                    video_path=after_rename_abs_path,
+                    caption_text='' if force_no_title else original_video_title,
+                    duration=duration,
+                    width=width,
+                    height=height,
+                    thumb_path=thumb_dir,
+                    recovery_label="successful",
+                    use_manual_suffix=True,
+                    is_playlist=is_playlist,
+                    current_video_index=current_index,
+                    safe_quality_key=safe_quality_key,
+                    playlist_video_urls=playlist_video_urls,
+                    playlist_indices=playlist_indices,
+                    playlist_msg_ids=playlist_msg_ids,
+                    found_type=found_type,
+                    is_nsfw=is_nsfw,
+                    need_subs=need_subs,
+                )
+            except Exception as e:
+                logger.error(f"Error in manual forward: {e}")
+        else:
+            logger.info(f"down_and_up: manual forward skipped ({recovery_plan.mode})")
+    return already_forwarded_to_log, is_nsfw
+
+
 def _build_manual_forward_recovery_plan(
     *,
     is_playlist: bool,
@@ -4668,76 +4763,30 @@ def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video
                                 height=height,
                                 thumb_path=thumb_dir,
                             )
-                            forwarded_msgs = route_result["forwarded_msgs"]
-                            already_forwarded_to_log = route_result["already_forwarded_to_log"]
-                            is_nsfw = route_result["is_nsfw"]
-                            should_retry_manual = route_result["should_retry_manual"]
-                            logger.info(f"down_and_up: forwarded_msgs result: {forwarded_msgs}")
-                            if forwarded_msgs:
-                                logger.info(f"down_and_up: saving to cache with forwarded message IDs: {[m.id for m in forwarded_msgs]}")
-                                cache_plan = _build_upload_cache_writeback_plan(
-                                    is_playlist=is_playlist,
-                                    is_nsfw=is_nsfw,
-                                    need_subs=need_subs,
-                                    forwarded_msgs=forwarded_msgs,
-                                )
-                                _execute_upload_cache_writeback_plan(
-                                    plan=cache_plan,
-                                    forwarded_msgs=forwarded_msgs,
-                                    current_video_index=current_index,
-                                    url=url,
-                                    safe_quality_key=safe_quality_key,
-                                    message=message,
-                                    user_id=user_id,
-                                    playlist_video_urls=playlist_video_urls,
-                                    playlist_indices=playlist_indices,
-                                    playlist_msg_ids=playlist_msg_ids,
-                                    found_type=found_type,
-                                    is_nsfw=is_nsfw,
-                                    need_subs=need_subs,
-                                )
-                            else:
-                                # If forwarding failed, try to forward manually and get log channel IDs
-                                recovery_plan = _build_manual_forward_recovery_plan(
-                                    is_playlist=is_playlist,
-                                    already_forwarded_to_log=already_forwarded_to_log,
-                                    should_retry_manual=should_retry_manual,
-                                )
-                                if recovery_plan.should_use_recovery_route:
-                                    logger.info(f"down_and_up: forwarding failed, trying manual forward for video: {video_msg.id}")
-                                    try:
-                                        forwarded_msgs, already_forwarded_to_log, is_nsfw = _handle_manual_forward_retry(
-                                            message=message,
-                                            user_id=user_id,
-                                            video_msg=video_msg,
-                                            url=url,
-                                            user_forced_nsfw=user_forced_nsfw,
-                                            already_forwarded_to_log=already_forwarded_to_log,
-                                            is_split_item=bool(caption_lst and len(caption_lst) > 1),
-                                            video_path=after_rename_abs_path,
-                                            caption_text='' if force_no_title else original_video_title,
-                                            duration=duration,
-                                            width=width,
-                                            height=height,
-                                            thumb_path=thumb_dir,
-                                            recovery_label="successful",
-                                            use_manual_suffix=True,
-                                            is_playlist=is_playlist,
-                                            current_video_index=current_index,
-                                            safe_quality_key=safe_quality_key,
-                                            playlist_video_urls=playlist_video_urls,
-                                            playlist_indices=playlist_indices,
-                                            playlist_msg_ids=playlist_msg_ids,
-                                            found_type=found_type,
-                                            is_nsfw=is_nsfw,
-                                            need_subs=need_subs,
-                                        )
-                                    except Exception as e:
-                                        logger.error(f"Error in manual forward: {e}")
-                                else:
-                                    logger.info(
-                                        f"down_and_up: manual forward skipped ({recovery_plan.mode})"
-                                    )
+                            already_forwarded_to_log, is_nsfw = _handle_route_result_post_upload(
+                                route_result=route_result,
+                                message=message,
+                                user_id=user_id,
+                                url=url,
+                                user_forced_nsfw=user_forced_nsfw,
+                                is_playlist=is_playlist,
+                                current_index=current_index,
+                                safe_quality_key=safe_quality_key,
+                                need_subs=need_subs,
+                                playlist_video_urls=playlist_video_urls,
+                                playlist_indices=playlist_indices,
+                                playlist_msg_ids=playlist_msg_ids,
+                                found_type=found_type,
+                                video_msg=video_msg,
+                                after_rename_abs_path=after_rename_abs_path,
+                                original_video_title=original_video_title,
+                                duration=duration,
+                                width=width,
+                                height=height,
+                                thumb_dir=thumb_dir,
+                                caption_lst=caption_lst,
+                                force_no_title=force_no_title,
+                            )
                         except Exception as e:
                             # Check if error is related to quality_key - if so, ignore it completely
                             if "'quality_key'" in str(e):
