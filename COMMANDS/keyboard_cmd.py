@@ -30,6 +30,16 @@ class KeyboardCommandContext:
     source_message: object
 
 
+@dataclass(frozen=True)
+class KeyboardCallbackResultPlan:
+    mode: str
+    setting: str | None = None
+    answer_text: str | None = None
+    show_alert: bool = False
+    edit_text: str | None = None
+    log_text: str | None = None
+
+
 def _build_keyboard_command_context(message) -> KeyboardCommandContext:
     return KeyboardCommandContext(
         user_id=str(message.chat.id),
@@ -157,6 +167,84 @@ def _apply_keyboard_setting_and_preview(chat_id: int, source_message_id: int, us
     _send_keyboard_layout_preview(chat_id, source_message_id, user_id, setting)
 
 
+def _build_keyboard_callback_result_plan(user_id: str, setting: str) -> KeyboardCallbackResultPlan:
+    messages = safe_get_messages(user_id)
+    if setting == "close":
+        return KeyboardCallbackResultPlan(
+            mode="close",
+            setting="CLOSE",
+            answer_text=messages.URL_EXTRACTOR_CLOSED_MSG,
+            log_text=messages.KEYBOARD_SET_CALLBACK_LOG_MSG.format(
+                user_id=user_id,
+                setting="CLOSE",
+            ),
+        )
+    if setting in ["OFF", "1x3", "2x3", "FULL"]:
+        return KeyboardCallbackResultPlan(
+            mode="apply",
+            setting=setting,
+            answer_text=messages.KEYBOARD_SET_TO_MSG.format(setting=setting),
+            edit_text=messages.KEYBOARD_SETTING_UPDATED_MSG.format(setting=setting),
+            log_text=messages.KEYBOARD_SET_CALLBACK_LOG_MSG.format(
+                user_id=user_id,
+                setting=setting,
+            ),
+        )
+    return KeyboardCallbackResultPlan(
+        mode="error",
+        setting=setting,
+        answer_text=messages.KEYBOARD_ERROR_PROCESSING_MSG,
+        show_alert=True,
+    )
+
+
+def _execute_keyboard_callback_result_plan(app, execution_context, callback_query, user_id: str, plan: KeyboardCallbackResultPlan) -> None:
+    messages = safe_get_messages(user_id)
+
+    if plan.mode == "close":
+        close_request = build_close_message_request(
+            build_telegram_callback_envelope(callback_query),
+            close_scope="keyboard",
+        )
+        handle_close_message_request(
+            app,
+            execution_context,
+            close_request,
+            answer_text=plan.answer_text,
+            log_text=plan.log_text,
+        )
+        return
+
+    if plan.mode == "error" or plan.setting is None:
+        _answer_keyboard_callback(
+            callback_query,
+            plan.answer_text or messages.KEYBOARD_ERROR_PROCESSING_MSG,
+            show_alert=plan.show_alert,
+        )
+        return
+
+    user_dir, keyboard_file = _keyboard_file_for_user(user_id)
+    _ensure_keyboard_user_dir(user_dir)
+    _write_keyboard_setting(keyboard_file, plan.setting)
+    _edit_or_send_keyboard_message(
+        callback_query.message,
+        plan.edit_text or messages.KEYBOARD_SETTING_UPDATED_MSG.format(setting=plan.setting),
+        parse_mode=enums.ParseMode.MARKDOWN,
+    )
+    _answer_keyboard_callback(
+        callback_query,
+        plan.answer_text or messages.KEYBOARD_SET_TO_MSG.format(setting=plan.setting),
+    )
+    _send_keyboard_layout_preview(
+        callback_query.message.chat.id,
+        callback_query.message.id,
+        user_id,
+        plan.setting,
+    )
+    if plan.log_text:
+        send_to_logger(callback_query.message, plan.log_text)
+
+
 def keyboard_command(app, message):
     envelope = build_telegram_command_envelope(message)
     request = build_keyboard_command_request(envelope)
@@ -230,60 +318,18 @@ def keyboard_callback_handler(app, callback_query):
 def keyboard_callback_logic(app, execution_context, request):
     callback_query = execution_context.callback_query
     user_id = str(callback_query.from_user.id)
-    messages = safe_get_messages(user_id)
     setting = request.selection_key
-
-    if setting == "close":
-        close_request = build_close_message_request(
-            build_telegram_callback_envelope(callback_query),
-            close_scope="keyboard",
-        )
-        try:
-            handle_close_message_request(
-                app,
-                execution_context,
-                close_request,
-                answer_text=safe_get_messages(user_id).URL_EXTRACTOR_CLOSED_MSG,
-                log_text=safe_get_messages(user_id).KEYBOARD_SET_CALLBACK_LOG_MSG.format(
-                    user_id=user_id,
-                    setting="CLOSE",
-                ),
-            )
-        except Exception:
-            _answer_keyboard_callback(
-                callback_query,
-                messages.URL_EXTRACTOR_ERROR_OCCURRED_MSG,
-                show_alert=True,
-            )
-        return
-
-    user_dir, keyboard_file = _keyboard_file_for_user(user_id)
-    _ensure_keyboard_user_dir(user_dir)
     try:
-        if setting in ["OFF", "1x3", "2x3", "FULL"]:
-            _write_keyboard_setting(keyboard_file, setting)
-
-        _edit_or_send_keyboard_message(
-            callback_query.message,
-            messages.KEYBOARD_SETTING_UPDATED_MSG.format(setting=setting),
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-        _answer_keyboard_callback(
+        plan = _build_keyboard_callback_result_plan(user_id, setting)
+        _execute_keyboard_callback_result_plan(
+            app,
+            execution_context,
             callback_query,
-            messages.KEYBOARD_SET_TO_MSG.format(setting=setting),
-        )
-        _send_keyboard_layout_preview(
-            callback_query.message.chat.id,
-            callback_query.message.id,
             user_id,
-            setting,
+            plan,
         )
-        send_to_logger(
-            callback_query.message,
-            messages.KEYBOARD_SET_CALLBACK_LOG_MSG.format(user_id=user_id, setting=setting),
-        )
-
     except Exception as e:
+        messages = safe_get_messages(user_id)
         _answer_keyboard_callback(
             callback_query,
             messages.KEYBOARD_ERROR_PROCESSING_MSG,
