@@ -1034,17 +1034,7 @@ def start_command_logic(app, message, request=None) -> None:
     send_to_logger(message, LoggerMsg.USER_STARTED_BOT.format(chat_id=message.chat.id))
 
 
-def add_bot_to_group_command_logic(app, message, request=None) -> None:
-    user_id = message.chat.id
-    if not is_user_in_channel(app, message):
-        return
-
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            safe_get_messages(user_id).URL_EXTRACTOR_ADD_GROUP_CLOSE_BUTTON_MSG,
-            callback_data="add_group_msg|close",
-        )]
-    ])
+def _send_add_bot_to_group_message(app, message, user_id: int, keyboard) -> None:
     from HELPERS.safe_messeger import safe_send_message
 
     try:
@@ -1062,4 +1052,18 @@ def add_bot_to_group_command_logic(app, message, request=None) -> None:
             reply_markup=keyboard,
             message=message,
         )
+
+
+def add_bot_to_group_command_logic(app, message, request=None) -> None:
+    user_id = message.chat.id
+    if not is_user_in_channel(app, message):
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            safe_get_messages(user_id).URL_EXTRACTOR_ADD_GROUP_CLOSE_BUTTON_MSG,
+            callback_data="add_group_msg|close",
+        )]
+    ])
+    _send_add_bot_to_group_message(app, message, user_id, keyboard)
     send_to_logger(message, LoggerMsg.ADD_BOT_TO_GROUP_SENT)
