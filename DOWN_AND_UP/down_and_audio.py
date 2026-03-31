@@ -622,6 +622,42 @@ def _execute_audio_single_cache_replay(
     )
 
 
+def _emit_audio_playlist_cache_replay_status(
+    *,
+    app,
+    message,
+    user_id: int,
+    quality_key,
+    cached_videos: dict,
+    requested_indices: list,
+    uncached_indices: list,
+    replay_plan: AudioCacheReplayPlan,
+) -> bool:
+    if replay_plan.should_return_early and len(uncached_indices) == 0:
+        send_playlist_cache_status(
+            app=app,
+            user_id=user_id,
+            reply_to_message_id=message.id,
+            text=safe_get_messages(user_id).PLAYLIST_CACHE_SENT_MSG.format(
+                cached=len(cached_videos),
+                total=len(requested_indices),
+            ),
+        )
+        send_to_logger(message, LoggerMsg.PLAYLIST_AUDIO_SENT_FROM_CACHE.format(quality=quality_key, user_id=user_id))
+        return True
+
+    send_playlist_cache_status(
+        app=app,
+        user_id=user_id,
+        reply_to_message_id=message.id,
+        text=safe_get_messages(user_id).CACHE_PARTIAL_MSG.format(
+            cached=len(cached_videos),
+            total=len(requested_indices),
+        ),
+    )
+    return False
+
+
 def _execute_audio_cache_replay(
     *,
     app,
@@ -1712,28 +1748,17 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                 # If send_as_file is enabled, treat all indices as uncached
                 logger.info(f"[AUDIO CACHE] send_as_file enabled for user {user_id}, skipping cache repost for playlist")
                 uncached_indices = requested_indices
-            if replay_plan.should_return_early and len(uncached_indices) == 0:
-                send_playlist_cache_status(
-                    app=app,
-                    user_id=user_id,
-                    reply_to_message_id=message.id,
-                    text=safe_get_messages(user_id).PLAYLIST_CACHE_SENT_MSG.format(
-                        cached=len(cached_videos),
-                        total=len(requested_indices),
-                    ),
-                )
-                send_to_logger(message, LoggerMsg.PLAYLIST_AUDIO_SENT_FROM_CACHE.format(quality=quality_key, user_id=user_id))
+            if _emit_audio_playlist_cache_replay_status(
+                app=app,
+                message=message,
+                user_id=user_id,
+                quality_key=quality_key,
+                cached_videos=cached_videos,
+                requested_indices=requested_indices,
+                uncached_indices=uncached_indices,
+                replay_plan=replay_plan,
+            ):
                 return
-            else:
-                send_playlist_cache_status(
-                    app=app,
-                    user_id=user_id,
-                    reply_to_message_id=message.id,
-                    text=safe_get_messages(user_id).CACHE_PARTIAL_MSG.format(
-                        cached=len(cached_videos),
-                        total=len(requested_indices),
-                    ),
-                )
         elif replay_plan.should_skip_partial_replay:
             logger.info("[AUDIO CACHE] Skipping partial cache replay for negative range to avoid duplicate downloads")
             uncached_indices = requested_indices
