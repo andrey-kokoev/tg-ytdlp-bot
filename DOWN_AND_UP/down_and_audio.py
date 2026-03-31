@@ -412,6 +412,63 @@ def _cleanup_successful_audio_download_dir(user_id: int) -> None:
         logger.error(f"Error cleaning up download subdirectory for user {user_id}: {cleanup_error}")
 
 
+@dataclass(frozen=True)
+class AudioCompletionPlan:
+    mode: str
+    should_finalize: bool
+    should_cleanup_download_dir: bool
+    should_send_playlist_status: bool
+
+
+def _build_audio_completion_plan(
+    *,
+    is_playlist: bool,
+    quality_key,
+    outcome,
+) -> AudioCompletionPlan:
+    return AudioCompletionPlan(
+        mode="playlist" if is_playlist and quality_key else "single",
+        should_finalize=True,
+        should_cleanup_download_dir=True,
+        should_send_playlist_status=bool(is_playlist and quality_key and outcome.outcome_kind == "completed"),
+    )
+
+
+def _execute_audio_completion_plan(
+    *,
+    plan: AudioCompletionPlan,
+    app,
+    user_id: int,
+    proc_msg_id: int,
+    message,
+    outcome,
+    task_context: RuntimeTask | None,
+    requested_indices: list,
+    quality_key,
+) -> RuntimeTask | None:
+    if plan.should_finalize:
+        task_context = _finalize_completed_audio_outcome(
+            user_id=user_id,
+            proc_msg_id=proc_msg_id,
+            message=message,
+            outcome=outcome,
+            task_context=task_context,
+        )
+    if plan.should_cleanup_download_dir:
+        _cleanup_successful_audio_download_dir(user_id)
+    if plan.should_send_playlist_status:
+        _send_playlist_audio_terminal_status(
+            app=app,
+            user_id=user_id,
+            reply_to_message_id=message.id,
+            message=message,
+            outcome=outcome,
+            requested_indices=requested_indices,
+            quality_key=quality_key,
+        )
+    return task_context
+
+
 def _send_playlist_audio_terminal_status(
     *,
     app,
@@ -2420,25 +2477,21 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     outcome,
                     playlist_error_summary=error_summary,
                 )
-        task_context = _finalize_completed_audio_outcome(
+        task_context = _execute_audio_completion_plan(
+            plan=_build_audio_completion_plan(
+                is_playlist=is_playlist,
+                quality_key=quality_key,
+                outcome=outcome,
+            ),
+            app=app,
             user_id=user_id,
             proc_msg_id=proc_msg_id,
             message=message,
             outcome=outcome,
             task_context=task_context,
+            requested_indices=requested_indices,
+            quality_key=quality_key,
         )
-        _cleanup_successful_audio_download_dir(user_id)
-
-        if is_playlist and quality_key:
-            _send_playlist_audio_terminal_status(
-                app=app,
-                user_id=user_id,
-                reply_to_message_id=message.id,
-                message=message,
-                outcome=outcome,
-                requested_indices=requested_indices,
-                quality_key=quality_key,
-            )
 
     except Exception as e:
         if "Download timeout exceeded" in str(e):
