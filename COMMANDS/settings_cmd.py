@@ -109,10 +109,12 @@ def settings_command_logic(app, message, request=None):
 @app.on_callback_query(filters.regex(r"^settings__menu__"))
 # @reply_with_keyboard
 def settings_menu_callback(app, callback_query: CallbackQuery):
+    raw_data = callback_query.data
+    data_text = raw_data.decode() if isinstance(raw_data, bytes) else str(raw_data or "")
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_settings_menu_selection_request(
         callback_envelope,
-        selection_key=callback_query.data.split("__")[-1],
+        selection_key=data_text.split("__")[-1],
     )
     handle_settings_menu_selection_request(
         app,
@@ -124,9 +126,9 @@ def settings_menu_callback(app, callback_query: CallbackQuery):
 def _answer_settings_callback(callback_query: CallbackQuery, text: str | None = None, *, show_alert: bool = False) -> None:
     try:
         if text is None:
-            callback_query.answer()
+            _ = callback_query.answer()
         else:
-            callback_query.answer(text, show_alert=show_alert)
+            _ = callback_query.answer(text, show_alert=show_alert)
     except Exception:
         pass
 
@@ -157,7 +159,7 @@ def _run_settings_callback_action(callback_query: CallbackQuery, user_id: int, a
         _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         return True
     except FloodWait as e:
-        _store_settings_flood_wait(user_id, e.value)
+        _store_settings_flood_wait(user_id, int(getattr(e, "value", 0) or 0))
         _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
         return False
 
@@ -191,7 +193,7 @@ def _run_settings_callback_wait_sensitive_action(callback_query: CallbackQuery, 
         _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         return True
     except FloodWait as e:
-        _store_settings_flood_wait(user_id, e.value)
+        _store_settings_flood_wait(user_id, int(getattr(e, "value", 0) or 0))
         _answer_settings_callback(
             callback_query,
             safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG,
@@ -373,10 +375,12 @@ def settings_menu_callback_logic(app, execution_context, request):
 @app.on_callback_query(filters.regex(r"^settings__cmd__"))
 # @reply_with_keyboard
 def settings_cmd_callback(app, callback_query: CallbackQuery):
+    raw_data = callback_query.data
+    data_text = raw_data.decode() if isinstance(raw_data, bytes) else str(raw_data or "")
     callback_envelope = build_telegram_callback_envelope(callback_query)
     request = build_settings_command_selection_request(
         callback_envelope,
-        selection_key=callback_query.data.split("__")[2],
+        selection_key=data_text.split("__")[2],
     )
     handle_settings_command_selection_request(
         app,
@@ -462,7 +466,7 @@ def settings_cmd_callback_logic(app, execution_context, request):
             set_format(app, _bridged_command_message("/format", command=["format"]))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         except FloodWait as e:
-            _store_settings_flood_wait(user_id, e.value)
+            _store_settings_flood_wait(user_id, int(getattr(e, "value", 0) or 0))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
         return
         
@@ -472,7 +476,7 @@ def settings_cmd_callback_logic(app, execution_context, request):
             subs_command(app, _bridged_command_message("/subs"))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         except FloodWait as e:
-            _store_settings_flood_wait(user_id, e.value)
+            _store_settings_flood_wait(user_id, int(getattr(e, "value", 0) or 0))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
         return
 
@@ -481,7 +485,7 @@ def settings_cmd_callback_logic(app, execution_context, request):
             mediainfo_command(app, _bridged_command_message("/mediainfo"))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         except FloodWait as e:
-            _store_settings_flood_wait(user_id, e.value)
+            _store_settings_flood_wait(user_id, int(getattr(e, "value", 0) or 0))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
         return
     if data == "split":
@@ -489,7 +493,7 @@ def settings_cmd_callback_logic(app, execution_context, request):
             split_command(app, _bridged_command_message("/split"))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         except FloodWait as e:
-            _store_settings_flood_wait(user_id, e.value)
+            _store_settings_flood_wait(user_id, int(getattr(e, "value", 0) or 0))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
         return
     if data == "audio":
@@ -503,14 +507,14 @@ def settings_cmd_callback_logic(app, execution_context, request):
             tags_command(app, _bridged_command_message("/tags"))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_COMMAND_EXECUTED_MSG)
         except FloodWait as e:
-            _store_settings_flood_wait(user_id, e.value)
+            _store_settings_flood_wait(user_id, int(getattr(e, "value", 0) or 0))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_WAIT_ACTIVE_MSG, show_alert=False)
         return
     if data == "help":
         try:
             res = command2(app, _bridged_command_message("/help"))
         except FloodWait as e:
-            _store_settings_flood_wait(user_id, e.value)
+            _store_settings_flood_wait(user_id, int(getattr(e, "value", 0) or 0))
             _answer_settings_callback(callback_query, safe_get_messages(user_id).SETTINGS_FLOOD_LIMIT_MSG, show_alert=False)
             return
         # If safe_send_message returned None due to FloodWait, notify via callback
@@ -620,7 +624,9 @@ def hint_callback(app, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     messages = safe_get_messages(user_id)
     """Handle hint callback close buttons"""
-    scope, data = callback_query.data.split("|", 1)
+    raw_data = callback_query.data
+    data_text = raw_data.decode() if isinstance(raw_data, bytes) else str(raw_data or "")
+    scope, data = data_text.split("|", 1)
     
     if data == "close":
         callback_envelope = build_telegram_callback_envelope(callback_query)

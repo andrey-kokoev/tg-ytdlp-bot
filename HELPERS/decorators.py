@@ -1,6 +1,7 @@
 # Decorators for automatic app usage
 from functools import wraps
 import os
+from typing import Any, cast
 # ####################################################################################
 # Decorators for bot functionality
 # ####################################################################################
@@ -51,7 +52,7 @@ def get_main_reply_keyboard(mode="2x3"):
         ]
     
     return ReplyKeyboardMarkup(
-        keyboard,
+        cast(Any, keyboard),
         resize_keyboard=True,
         one_time_keyboard=False
     )

@@ -6,14 +6,14 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'LANGUAGES'))
 
 try:
-    from language_router import get_messages, get_message, set_user_language
+    from CONFIG.LANGUAGES.language_router import get_messages, get_message, set_user_language
 except ImportError:
     # Fallback if language router is not available
     def get_messages(user_id=None, language_code=None):
         return {}
     def get_message(message_key, user_id=None, language_code=None):
         return f"[{message_key}]"
-    def set_user_language(user_id, language_code):
+    def set_user_language(user_id, language_code) -> bool:
         return False
 
 class Messages(object):

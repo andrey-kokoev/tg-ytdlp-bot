@@ -318,7 +318,10 @@ def register_lang_handlers(application):
     """
     Register language command handlers
     """
-    from telegram.ext import CommandHandler, CallbackQueryHandler
+    try:
+        from telegram.ext import CommandHandler, CallbackQueryHandler  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        return
     
     # Register command handler
     application.add_handler(CommandHandler("lang", lang_command_handler))

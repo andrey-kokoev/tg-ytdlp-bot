@@ -199,7 +199,10 @@ def _send_paid_audio_media(
     telegram_thumb: str | None,
     message,
 ):
-    from pyrogram.types import InputPaidMediaAudio
+    from typing import Any
+    from pyrogram import types as pyro_types
+
+    InputPaidMediaAudio = cast(Any, getattr(pyro_types, "InputPaidMediaAudio"))
 
     paid_audio = InputPaidMediaAudio(
         media=audio_file,
@@ -3318,12 +3321,12 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             try:
                 import mutagen
                 from mutagen.mp3 import MP3
-                from mutagen.id3 import ID3NoHeaderError
-                
                 # Try to read metadata from the MP3 file
                 audio_metadata = MP3(audio_file)
-                artist = audio_metadata.get('TPE1', ['Unknown Artist'])[0] if 'TPE1' in audio_metadata else 'Unknown Artist'
-                title = audio_metadata.get('TIT2', ['Unknown Title'])[0] if 'TIT2' in audio_metadata else 'Unknown Title'
+                artist_tag = audio_metadata.get('TPE1') if 'TPE1' in audio_metadata else None
+                title_tag = audio_metadata.get('TIT2') if 'TIT2' in audio_metadata else None
+                artist = artist_tag[0] if artist_tag else 'Unknown Artist'
+                title = title_tag[0] if title_tag else 'Unknown Title'
                 
                 # Create display title: "Artist - Title"
                 display_title = f"{artist} - {title}"

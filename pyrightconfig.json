@@ -32,6 +32,8 @@
       ]
     }
   ],
+  "venvPath": ".",
+  "venv": ".typecheck-venv",
   "pythonVersion": "3.10",
   "typeCheckingMode": "basic",
   "reportMissingTypeStubs": "none",

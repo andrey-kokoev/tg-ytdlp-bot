@@ -3,17 +3,23 @@ import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Callable, Union, cast
 
-from pyrogram import Client as PyroClient
+from pyrogram import Client as PyroClient  # pyright: ignore[reportPrivateImportUsage]
 from pyrogram.errors import RPCError
-from pyrogram.raw.functions.channels import GetAdminLog
-from pyrogram.raw.types import (
+from pyrogram.raw.functions.channels import GetAdminLog  # pyright: ignore[reportPrivateImportUsage]
+from pyrogram.raw.types.channel_admin_log_event_action_participant_leave import (
     ChannelAdminLogEventActionParticipantLeave,
-    ChannelAdminLogEventsFilter,
+)
+from pyrogram.raw.types.channel_admin_log_events_filter import ChannelAdminLogEventsFilter
+from pyrogram.raw.types.channel_admin_log_event_action_participant_join import (
     ChannelAdminLogEventActionParticipantJoin,
+)
+from pyrogram.raw.types.channel_admin_log_event_action_participant_invite import (
     ChannelAdminLogEventActionParticipantInvite,
 )
 try:
-    from pyrogram.raw.types import ChannelAdminLogEventActionParticipantAdd
+    from pyrogram.raw.types.channel_admin_log_event_action_participant_add import (  # pyright: ignore[reportMissingImports]
+        ChannelAdminLogEventActionParticipantAdd,
+    )
 except ImportError:
     ChannelAdminLogEventActionParticipantAdd = None
 
@@ -381,14 +387,14 @@ class ChannelGuard:
             logger.error("[ChannelGuard] No client available for admin logs")
             return []
         # Use the same client for resolve_peer so the user client can access the channel
-        peer = await client.resolve_peer(self._channel_id)
+        peer = cast(Any, await client.resolve_peer(cast(int | str, self._channel_id)))
         events_filter = self._build_events_filter(leave=True)
         try:
             result = await client.invoke(
                 GetAdminLog(
-                    channel=peer,
+                    channel=cast(Any, peer),
                     q="",
-                    events_filter=events_filter,
+                    events_filter=cast(Any, events_filter),
                     admins=None,
                     max_id=0,
                     min_id=0,
@@ -438,14 +444,14 @@ class ChannelGuard:
             logger.error("[ChannelGuard] Cannot read admin logs: bot method invalid and no user session provided")
             return []
         # Use the same client for resolve_peer so the user client can access the channel
-        peer = await client.resolve_peer(self._channel_id)
+        peer = cast(Any, await client.resolve_peer(cast(int | str, self._channel_id)))
         events_filter = self._build_events_filter(join=True, leave=True)
         try:
             result = await client.invoke(
                 GetAdminLog(
-                    channel=peer,
+                    channel=cast(Any, peer),
                     q="",
-                    events_filter=events_filter,
+                    events_filter=cast(Any, events_filter),
                     admins=None,
                     max_id=0,
                     min_id=0,

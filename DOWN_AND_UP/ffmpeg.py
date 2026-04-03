@@ -8,8 +8,6 @@ import shutil
 import logging
 import time
 import re
-from moviepy.editor import VideoFileClip
-from moviepy.video.fx.all import resize
 from HELPERS.app_instance import get_app
 from HELPERS.logger import logger, send_to_all, send_to_logger, get_log_channel
 from CONFIG.config import Config

@@ -56,7 +56,9 @@ import traceback
 import tldextract
 # from moviepy.editor import VideoFileClip
 from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
-from pyrogram import Client, filters, idle
+from pyrogram import filters
+from pyrogram.client import Client
+from pyrogram.sync import idle
 from pyrogram import enums
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import FloodWait

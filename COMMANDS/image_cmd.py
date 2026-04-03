@@ -236,15 +236,15 @@ class ImageCommandContext:
 
 def _answer_image_range_callback(callback_query: CallbackQuery, text: str, *, show_alert: bool = False) -> None:
     try:
-        callback_query.answer(text, show_alert=show_alert)
+        _ = callback_query.answer(text, show_alert=show_alert)
     except Exception:
         pass
 
 
 def _delete_image_range_callback_message(callback_query: CallbackQuery) -> None:
     try:
-        callback_query.message.delete()
-        logger.info(f"[IMG_RANGE_CALLBACK] Deleted message with ID: {callback_query.message.message_id}")
+        _ = callback_query.message.delete()
+        logger.info(f"[IMG_RANGE_CALLBACK] Deleted message with ID: {callback_query.message.id}")
     except Exception as e:
         logger.error(f"[IMG_RANGE_CALLBACK] Failed to delete message: {e}")
 
@@ -4336,7 +4336,7 @@ def img_help_callback(app, callback_query: CallbackQuery):
         return
     
     try:
-        callback_query.answer()
+        _ = callback_query.answer()
     except Exception:
         pass
 
@@ -4348,7 +4348,9 @@ def img_range_callback(app, callback_query: CallbackQuery):
     try:
         user_id = callback_query.from_user.id
         logger.info(f"[IMG_RANGE_CALLBACK] Received callback: {callback_query.data}")
-        data_parts = callback_query.data.split("|")
+        raw_data = callback_query.data
+        data_text = raw_data.decode() if isinstance(raw_data, bytes) else str(raw_data or "")
+        data_parts = data_text.split("|")
         logger.info(f"[IMG_RANGE_CALLBACK] Data parts: {data_parts}")
         
         if len(data_parts) < 2:
@@ -4357,9 +4359,12 @@ def img_range_callback(app, callback_query: CallbackQuery):
         
         if data_parts[1] == "cancel":
             try:
-                callback_query.message.delete()
+                _ = callback_query.message.delete()
             except Exception:
-                callback_query.edit_message_reply_markup(reply_markup=None)
+                try:
+                    _ = callback_query.edit_message_reply_markup()
+                except Exception:
+                    pass
             _answer_image_range_callback(callback_query, "❌ Cancelled")
             return
         
@@ -4369,7 +4374,7 @@ def img_range_callback(app, callback_query: CallbackQuery):
         
         start = int(data_parts[1])
         end = int(data_parts[2])
-        url = data_parts[3]
+        url = str(data_parts[3])
         callback_envelope = build_telegram_callback_envelope(callback_query)
         range_request = build_image_range_selection_request(
             callback_envelope,

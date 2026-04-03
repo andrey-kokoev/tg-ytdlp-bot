@@ -1228,11 +1228,10 @@ def send_url_tag_error(
         tag=wrong,
         example=example,
     )
-    app.send_message(
-        user_id,
-        error_msg,
-        reply_parameters=ReplyParameters(message_id=execution_context.source_message_id),
-    )
+    send_kwargs = {"chat_id": user_id, "text": error_msg}
+    if execution_context.source_message_id is not None:
+        send_kwargs["reply_parameters"] = ReplyParameters(message_id=execution_context.source_message_id)
+    app.send_message(**send_kwargs)
     log_error_to_channel(execution_context.source_message, error_msg)
 
 
@@ -1245,11 +1244,10 @@ def send_url_wait_download_notice(
 ) -> None:
     from pyrogram.types import ReplyParameters
 
-    app.send_message(
-        user_id,
-        text,
-        reply_parameters=ReplyParameters(message_id=execution_context.source_message_id),
-    )
+    send_kwargs = {"chat_id": user_id, "text": text}
+    if execution_context.source_message_id is not None:
+        send_kwargs["reply_parameters"] = ReplyParameters(message_id=execution_context.source_message_id)
+    app.send_message(**send_kwargs)
 
 
 def send_url_runtime_error(

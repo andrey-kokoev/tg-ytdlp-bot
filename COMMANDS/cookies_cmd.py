@@ -1261,13 +1261,18 @@ def _handle_cookie_menu_selection(app, *, execution_context, user_id: int, selec
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(safe_get_messages(user_id).URL_EXTRACTOR_SAVE_AS_COOKIE_HINT_CLOSE_BUTTON_MSG, callback_data="save_as_cookie_hint|close")]
         ])
+        reply_message_id = message.id if hasattr(message, 'id') else None
+        send_kwargs = {
+            "reply_markup": keyboard,
+            "_callback_query": callback_query,
+            "_fallback_notice": safe_get_messages(user_id).FLOOD_LIMIT_TRY_LATER_MSG,
+        }
+        if reply_message_id is not None:
+            send_kwargs["reply_parameters"] = ReplyParameters(message_id=reply_message_id)
         safe_send_message(
             message.chat.id,
             safe_get_messages(user_id).SAVE_AS_COOKIE_HINT,
-            reply_parameters=ReplyParameters(message_id=message.id if hasattr(message, 'id') else None),
-            reply_markup=keyboard,
-            _callback_query=callback_query,
-            _fallback_notice=safe_get_messages(user_id).FLOOD_LIMIT_TRY_LATER_MSG
+            **send_kwargs,
         )
     elif selection_key == "from_browser":
         try:

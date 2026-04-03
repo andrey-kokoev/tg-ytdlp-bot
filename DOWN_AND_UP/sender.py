@@ -101,7 +101,7 @@ def _send_paid_video_media(
             cover=cover_path,
             width=safe_w,
             height=safe_h,
-            duration=safe_paid_dur,
+            duration=int(safe_paid_dur),
             supports_streaming=True,
         )
     except TypeError:

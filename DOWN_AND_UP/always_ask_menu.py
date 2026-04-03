@@ -2277,7 +2277,11 @@ def build_filter_rows(user_id, url=None, is_private_chat=False, download_dir=Non
         format_row = [InlineKeyboardButton(mp4_btn, callback_data="askf|empty"), InlineKeyboardButton(mp3_label, callback_data="askq|mp3")]
     else:
         # Show normal container selection
-        format_row = [InlineKeyboardButton(mp4_btn, callback_data="askf|ext|mp4"), InlineKeyboardButton(mkv_btn, callback_data="askf|ext|mkv"), InlineKeyboardButton(mp3_label, callback_data="askq|mp3")]
+        format_row = [
+            InlineKeyboardButton(str(mp4_btn), callback_data="askf|ext|mp4"),
+            InlineKeyboardButton(str(mkv_btn), callback_data="askf|ext|mkv"),
+            InlineKeyboardButton(str(mp3_label), callback_data="askq|mp3"),
+        ]
     
     rows.append(format_row)
     action_buttons = []
@@ -3292,8 +3296,15 @@ def show_manual_quality_menu(app, callback_query):
     try:
         chat_id = callback_query.message.chat.id if callback_query and getattr(callback_query, 'message', None) else user_id
         ref_id = original_message.id if original_message else None
-        app.send_message(chat_id, cap, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard,
-                         reply_parameters=ReplyParameters(message_id=ref_id))
+        send_kwargs = {
+            "chat_id": chat_id,
+            "text": cap,
+            "parse_mode": enums.ParseMode.HTML,
+            "reply_markup": keyboard,
+        }
+        if ref_id is not None:
+            send_kwargs["reply_parameters"] = ReplyParameters(message_id=ref_id)
+        app.send_message(**send_kwargs)
         if callback_query:
             callback_query.answer("Quality selection menu opened.")
     except Exception as e2:

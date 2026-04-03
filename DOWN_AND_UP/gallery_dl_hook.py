@@ -248,7 +248,7 @@ def _gdl_set(section: str, key: str, value):
         gallery_dl.config.set(section, key, value)
     except TypeError:
         # Tuple signature (older versions)
-        gallery_dl.config.set((section, key), value)
+        gallery_dl.config.set((section, key), None, value)
 
 
 def _apply_config(config: dict[str, Any], user_id=None):

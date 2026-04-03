@@ -74,7 +74,7 @@ app.add_middleware(AuthMiddleware)
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(request, "login.html", {"request": request})
 
 
 class LoginRequest(BaseModel):
@@ -94,7 +94,7 @@ async def api_login(payload: LoginRequest, request: Request):
         response = Response(content='{"status": "ok"}', media_type="application/json")
         response.set_cookie(
             key="auth_token",
-            value=token,
+            value=str(token or ""),
             httponly=True,
             secure=False,  # In production, set True when using HTTPS
             samesite="lax",
@@ -128,6 +128,7 @@ async def api_logout(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
         {
             "request": request,

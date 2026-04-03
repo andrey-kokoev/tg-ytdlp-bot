@@ -65,8 +65,8 @@ class PlanExecutionEvidence:
 
 
 # Type variable for plan types
-P = TypeVar("P")
-R = TypeVar("R")
+P = TypeVar("P", contravariant=True)
+R = TypeVar("R", covariant=True)
 
 
 class PlanExecutor(Protocol[P, R]):
