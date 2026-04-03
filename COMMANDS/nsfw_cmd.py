@@ -50,7 +50,7 @@ def _build_nsfw_command_context(message) -> NsfwCommandContext:
         storage_id=chat_id,
         chat_type=getattr(message.chat, "type", None),
         source_message=message,
-        command_parts=(message.text or "").split(),
+        command_parts=[str(part) for part in (message.text or "").split()],
     )
 
 
@@ -170,13 +170,15 @@ def nsfw_option_callback(app, callback_query):
 
 def nsfw_option_callback_logic(app, execution_context, request) -> None:
     callback_query = execution_context.callback_query
-    user_id = callback_query.from_user.id
+    callback_message = getattr(callback_query, "message", None)
+    callback_from_user = getattr(callback_query, "from_user", None)
+    callback_chat = getattr(callback_message, "chat", None)
+    user_id = getattr(callback_from_user, "id", None) or getattr(callback_chat, "id", 0)
     messages = safe_get_messages(user_id)
     logger.info(f"[NSFW] callback: {callback_query.data}")
     data = request.selection_key
-    chat = getattr(callback_query, "message", None).chat if getattr(callback_query, "message", None) else None
-    chat_id = getattr(chat, "id", None) if chat else user_id
-    storage_id = chat_id
+    chat_id = getattr(callback_chat, "id", None) if callback_chat else user_id
+    storage_id = int(chat_id or user_id or 0)
     _nsfw_file_path(storage_id)
     
     if data == "close":

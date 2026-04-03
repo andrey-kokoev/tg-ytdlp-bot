@@ -4,10 +4,10 @@ import os
 import re
 import subprocess
 from fractions import Fraction
-from typing import Any
+from typing import Any, Sequence, cast
 
 
-def maybe_reverse_concat_order(items: list[dict[str, Any]], reverse_output: bool) -> list[dict[str, Any]]:
+def maybe_reverse_concat_order(items: Sequence[Any], reverse_output: bool) -> list[Any]:
     if not reverse_output:
         return list(items)
     return list(reversed(items))
@@ -256,7 +256,7 @@ def _extract_playlist_entries(*, url: str, user_id: int, start: int, end: int) -
     ytdl_opts = add_proxy_to_ytdl_opts(ytdl_opts, canonical_url, user_id=user_id)
     ytdl_opts = add_pot_to_ytdl_opts(ytdl_opts, canonical_url)
 
-    with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+    with yt_dlp.YoutubeDL(cast(Any, ytdl_opts)) as ydl:
         info = ydl.extract_info(canonical_url, download=False)
 
     playlist_title = None
@@ -265,7 +265,7 @@ def _extract_playlist_entries(*, url: str, user_id: int, start: int, end: int) -
     if isinstance(info, dict):
         playlist_title = info.get("title") or info.get("playlist_title")
         playlist_id = info.get("id") or info.get("playlist_id")
-        entries = [entry for entry in (info.get("entries") or []) if entry]
+        entries = [cast(dict[str, Any], entry) for entry in (info.get("entries") or []) if isinstance(entry, dict)]
     return playlist_title, playlist_id, entries
 
 
@@ -317,7 +317,7 @@ def _download_video_entry(
     ytdl_opts = add_pot_to_ytdl_opts(ytdl_opts, entry_url)
 
     before_files = set(os.listdir(download_dir))
-    with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+    with yt_dlp.YoutubeDL(cast(Any, ytdl_opts)) as ydl:
         ydl.download([entry_url])
     after_files = set(os.listdir(download_dir))
     new_files = sorted(
@@ -358,10 +358,12 @@ def concat_video_playlist_range(
     ordering = "reverse" if reverse_output else "original"
 
     if task_context is not None:
-        task_context.concat_policy = "direct_concat_only"
-        task_context.concat_ordering = ordering
-        task_context.chapter_policy = "none"
-        task_context.output_name_override = output_name_override
+        task_context = task_context.with_concat_request(
+            concat_policy="direct_concat_only",
+            concat_ordering=ordering,
+            chapter_policy="none",
+            output_name_override=output_name_override,
+        )
 
     if video_start_with < 0 or video_end_with < 0:
         if task_context is not None:
@@ -393,7 +395,7 @@ def concat_video_playlist_range(
     try:
         canonical_url = canonicalize_video_concat_playlist_url(url)
         if task_context is not None:
-            task_context.url = canonical_url
+            task_context = task_context.with_url(canonical_url)
         _, download_dir = ensure_user_download_dir(user_id=user_id, url=canonical_url, logger=logger)
         cleanup_download_dir_before_start(download_dir=download_dir, message=message, logger=logger)
 
@@ -414,7 +416,7 @@ def concat_video_playlist_range(
 
         requested_indices = build_selected_playlist_indices(video_start_with, video_end_with)
         entry_pairs = list(zip(requested_indices, entries))
-        ordered_pairs = maybe_reverse_concat_order(entry_pairs, reverse_output)
+        ordered_pairs = cast(list[tuple[int, dict[str, Any]]], maybe_reverse_concat_order(entry_pairs, reverse_output))
         staged_items: list[dict[str, Any]] = []
 
         for sequence_index, (playlist_index, entry) in enumerate(ordered_pairs, start=1):
@@ -456,11 +458,11 @@ def concat_video_playlist_range(
             concat_policy="direct_concat_only",
         )
         if task_context is not None:
-            task_context.video_concat_manifest = manifest
+            task_context = task_context.with_video_concat_manifest(manifest)
 
         compatibility = evaluate_video_concat_compatibility(manifest)
         if task_context is not None:
-            task_context.video_concat_compatibility = compatibility
+            task_context = task_context.with_video_concat_compatibility(compatibility)
         if not compatibility["compatible"]:
             if task_context is not None:
                 with_terminal_outcome(
@@ -492,7 +494,7 @@ def concat_video_playlist_range(
             output_path=output_path,
         )
         if task_context is not None:
-            task_context.video_concat_execution = execution
+            task_context = task_context.with_video_concat_execution(execution)
         if not execution["succeeded"]:
             if task_context is not None:
                 with_terminal_outcome(

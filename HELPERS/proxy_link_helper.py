@@ -1,4 +1,5 @@
 import re
+from typing import Any, cast
 from urllib.parse import urlparse
 from CONFIG.config import Config
 from HELPERS.logger import logger
@@ -166,7 +167,7 @@ def add_proxy_to_ytdl_opts(ytdl_opts, url):
     
     return ytdl_opts
 
-def get_direct_link_with_proxy(url: str, format_spec: str = "bv+ba/best", user_id: int = None) -> dict:
+def get_direct_link_with_proxy(url: str, format_spec: str = "bv+ba/best", user_id: int | None = None) -> dict:
     """
     Get direct stream link using proxy
     
@@ -203,7 +204,7 @@ def get_direct_link_with_proxy(url: str, format_spec: str = "bv+ba/best", user_i
                 ydl_opts['cookiefile'] = cookie_path
         
         # Extract video info
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
             info = ydl.extract_info(url, download=False)
             
         if not info:
@@ -229,7 +230,7 @@ def get_direct_link_with_proxy(url: str, format_spec: str = "bv+ba/best", user_i
         from urllib.parse import quote, urlparse
         
         # Encode URL for iOS VLC (single encoding)
-        encoded_url = quote(direct_url, safe='')
+        encoded_url = quote(str(direct_url), safe='')
         
         # Parse URL to get host and path for Android intent
         parsed_url = urlparse(direct_url)
@@ -237,7 +238,7 @@ def get_direct_link_with_proxy(url: str, format_spec: str = "bv+ba/best", user_i
         
         # For Android VLC: remove scheme and encode URL properly
         # intent:// expects just host/path without https:// or http://, but needs proper encoding
-        android_url_clean = direct_url.replace('https://', '').replace('http://', '')
+        android_url_clean = str(direct_url).replace('https://', '').replace('http://', '')
         android_url_encoded = quote(android_url_clean, safe='')
         
         # For iOS VLC: use encoded URL (prevents issues with special characters)

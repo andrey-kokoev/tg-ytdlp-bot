@@ -3,14 +3,14 @@
 pyrotgfork
 aiohttp
 aiofiles
-requests<3,>=2.8.1
+requests
 fastapi
 uvicorn[standard]
 jinja2
 python-multipart
 psutil
 TgCrypto>=1.2.5
-moviepy==1.0.3
+moviepy==2.2.1
 tldextract
 pillow
 chardet
@@ -18,8 +18,6 @@ sdnotify
 firebase-admin
 bgutil-ytdlp-pot-provider
 
-# Только для yt-dlp — разрешить пре-релизы и переустановить «с нуля»
 --pre
 yt-dlp[default,curl-cffi]
-# Gallery-dl для скачивания картинок
 gallery-dl

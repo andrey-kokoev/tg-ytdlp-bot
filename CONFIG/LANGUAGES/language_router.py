@@ -71,7 +71,7 @@ class LanguageRouter:
             print(f"Error saving user language for {user_id}: {e}")
             return False
     
-    def load_messages(self, language_code: str = None) -> Dict[str, Any]:
+    def load_messages(self, language_code: str | None = None) -> Dict[str, Any]:
         """
         Load messages for specified language
         Falls back to default language if specified language not found
@@ -107,7 +107,7 @@ class LanguageRouter:
                 return self.load_messages(self.default_language)
             return {}
     
-    def get_message(self, message_key: str, user_id: int = None, language_code: str = None) -> str:
+    def get_message(self, message_key: str, user_id: int | None = None, language_code: str | None = None) -> str:
         """
         Get a specific message for user or language
         """
@@ -250,7 +250,7 @@ class LanguageRouter:
             result = ""
             for value in node.values:
                 if isinstance(value, ast.Str):
-                    result += value.s
+                    result += str(value.s)
                 elif isinstance(value, ast.Constant):
                     result += str(value.value)
                 elif isinstance(value, ast.FormattedValue):
@@ -306,7 +306,7 @@ class LanguageRouter:
 # Global instance
 language_router = LanguageRouter()
 
-def get_messages(user_id: int = None, language_code: str = None) -> Dict[str, Any]:
+def get_messages(user_id: int | None = None, language_code: str | None = None) -> Dict[str, Any]:
     """
     Convenience function to get messages for user or language
     """
@@ -317,7 +317,7 @@ def get_messages(user_id: int = None, language_code: str = None) -> Dict[str, An
         
     return language_router.load_messages(language_code)
 
-def get_message(message_key: str, user_id: int = None, language_code: str = None) -> str:
+def get_message(message_key: str, user_id: int | None = None, language_code: str | None = None) -> str:
     """
     Convenience function to get a specific message
     """

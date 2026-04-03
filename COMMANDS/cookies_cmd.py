@@ -47,6 +47,7 @@ import requests
 import re
 import time
 from dataclasses import dataclass
+from typing import Any, cast
 from requests import Session
 from requests.adapters import HTTPAdapter
 import yt_dlp
@@ -57,6 +58,7 @@ from URL_PARSERS.youtube import is_youtube_url
 
 # Get app instance for decorators
 app = get_app()
+assert app is not None
 
 # Cache for YouTube cookie validation results
 # Format: {user_id: {'result': bool, 'timestamp': float, 'cookie_path': str, 'task_id': str, 'active': bool}}
@@ -87,9 +89,9 @@ _active_retry_keys = set()
 
 @dataclass(frozen=True)
 class CookieTransportContext:
-    user_id: str
+    user_id: int
     source_message: object | None
-    notify_chat_id: int | str
+    notify_chat_id: int
     log_message: object | None
 
 
@@ -179,7 +181,12 @@ def _get_cookie_state_store() -> CookieStateStore:
     )
 
 
-def _set_youtube_cookie_cache_entry(user_id: int, result: bool, cookie_path: str = None, task_id: str = None) -> None:
+def _set_youtube_cookie_cache_entry(
+    user_id: int,
+    result: bool,
+    cookie_path: str | None = None,
+    task_id: str | None = None,
+) -> None:
     _get_cookie_state_store().youtube_cache[user_id] = {
         'result': result,
         'timestamp': time.time(),
@@ -189,7 +196,12 @@ def _set_youtube_cookie_cache_entry(user_id: int, result: bool, cookie_path: str
     }
 
 
-def _set_non_youtube_cookie_cache_entry(cache_key: str, result: bool, cookie_path: str = None, task_id: str = None) -> None:
+def _set_non_youtube_cookie_cache_entry(
+    cache_key: str,
+    result: bool,
+    cookie_path: str | None = None,
+    task_id: str | None = None,
+) -> None:
     _get_cookie_state_store().non_youtube_cache[cache_key] = {
         'result': result,
         'timestamp': time.time(),
@@ -285,7 +297,7 @@ def _execute_cookie_retry_outcome_plan(
 def _build_cookie_validation_outcome_plan(
     *,
     mode: str,
-    user_id: str,
+    user_id: int | str,
     selected_index: int | None = None,
     total_urls: int | None = None,
     source_index: int | None = None,
@@ -348,7 +360,7 @@ def _build_cookie_validation_outcome_plan(
         return CookieValidationOutcomePlan(
             mode=mode,
             message_text=messages.COOKIES_ALL_EXPIRED_MSG,
-            log_text=LoggerMsg.COOKIES_YOUTUBE_ALL_FAILED_LOG_MSG.format(user_id=user_id),
+            log_text=LoggerMsg.COOKIES_YOUTUBE_ALL_SOURCES_FAILED_LOG_MSG.format(user_id=user_id),
             clear_cookie_file=True,
             reset_checked_sources=True,
             cache_result=False,
@@ -392,7 +404,7 @@ def _execute_cookie_validation_outcome_plan(
 def _build_cookie_validation_progress_plan(
     *,
     mode: str,
-    user_id: str,
+    user_id: int | str,
     attempt: int | None = None,
     total: int | None = None,
 ) -> CookieValidationProgressPlan:
@@ -568,7 +580,7 @@ def _execute_non_youtube_cookie_fallback_outcome_plan(
         else:
             logger.warning(plan.log_text)
 
-def generate_task_id(user_id: int, url: str, service: str = None) -> str:
+def generate_task_id(user_id: int, url: str, service: str | None = None) -> str:
     """
     Generate a unique task ID for tracking state.
     
@@ -584,7 +596,7 @@ def generate_task_id(user_id: int, url: str, service: str = None) -> str:
     task_data = f"{user_id}_{url}_{service}_{time.time()}"
     return hashlib.md5(task_data.encode()).hexdigest()[:16]
 
-def start_cookie_task(user_id: int, url: str, service: str = None) -> str:
+def start_cookie_task(user_id: int, url: str, service: str | None = None) -> str:
     """
     Start tracking a cookie validation task.
     
@@ -607,7 +619,7 @@ def start_cookie_task(user_id: int, url: str, service: str = None) -> str:
     logger.info(f"Started cookie task {task_id} for user {user_id}, URL: {url}")
     return task_id
 
-def finish_cookie_task(task_id: str, success: bool, cookie_path: str = None):
+def finish_cookie_task(task_id: str, success: bool, cookie_path: str | None = None):
     """
     Finish a cookie validation task and update cache.
     
@@ -639,7 +651,7 @@ def finish_cookie_task(task_id: str, success: bool, cookie_path: str = None):
     
     logger.info(f"Finished cookie task {task_id} for user {user_id}, success: {success}")
 
-def is_cookie_task_active(user_id: int, url: str, service: str = None) -> bool:
+def is_cookie_task_active(user_id: int, url: str, service: str | None = None) -> bool:
     """
     Check whether a cookie validation task is active for the user.
     
@@ -829,7 +841,7 @@ def get_youtube_cookie_retry_status(user_id: int) -> dict:
             'can_retry': True
         }
 
-def reset_youtube_cookie_retry_tracking(user_id: int = None):
+def reset_youtube_cookie_retry_tracking(user_id: int | None = None):
     """
     Reset tracking of YouTube cookie-rotation attempts.
     
@@ -1065,6 +1077,8 @@ def browser_choice_callback_logic(app, execution_context, request):
                     _answer_cookie_browser_callback(execution_context, safe_get_messages(user_id).COOKIES_FILE_TOO_LARGE_CALLBACK_MSG)
                     return
                 with open(cookie_file, "wb") as f:
+                    if content is None:
+                        raise ValueError("cookie download returned no content")
                     f.write(content)
                 _edit_cookie_browser_callback_message(execution_context, safe_get_messages(user_id).COOKIE_YT_FALLBACK_SAVED_MSG)
                 _answer_cookie_browser_callback(execution_context, safe_get_messages(user_id).COOKIES_DOWNLOADED_SUCCESSFULLY_MSG)
@@ -1323,7 +1337,7 @@ def checking_cookie_file_logic(app, message, request=None):
     - Contains YouTube domains
     - Works via test_youtube_cookies()
     """
-    user_id = str(message.chat.id)
+    user_id = int(message.chat.id)
     cookie_context = _build_cookie_file_context(user_id)
     file_path = cookie_context.cookie_file_path
 
@@ -1389,7 +1403,7 @@ def download_cookie_logic(app, message, request=None):
         app: Application instance
         message: Command message
     """
-    user_id = str(message.chat.id)
+    user_id = int(message.chat.id)
     
     # Check for fast command with arguments: /cookie youtube, /cookie youtube <n>, /cookie instagram, etc.
     try:
@@ -1398,7 +1412,7 @@ def download_cookie_logic(app, message, request=None):
             service = parts[1].lower()
             if service == "youtube":
                 # Handle YouTube cookies directly
-                user_id = str(message.chat.id)
+                user_id = int(message.chat.id)
                 cookie_context = _ensure_cookie_user_dir(user_id)
                 cookie_file_path = cookie_context.cookie_file_path
                 
@@ -1567,10 +1581,16 @@ def _ensure_cookie_user_dir(user_id: int | str) -> CookieFileContext:
 
 def _write_cookie_file(cookie_context: CookieFileContext, content: bytes | str, *, binary: bool) -> None:
     create_directory(cookie_context.user_dir)
-    mode = "wb" if binary else "w"
-    kwargs = {} if binary else {"encoding": "utf-8"}
-    with open(cookie_context.cookie_file_path, mode, **kwargs) as cookie_file:
-        cookie_file.write(content)
+    if binary:
+        if not isinstance(content, bytes):
+            raise TypeError("binary cookie content must be bytes")
+        with open(cookie_context.cookie_file_path, "wb") as cookie_file:
+            cookie_file.write(content)
+    else:
+        if not isinstance(content, str):
+            raise TypeError("text cookie content must be str")
+        with open(cookie_context.cookie_file_path, "w", encoding="utf-8") as cookie_file:
+            cookie_file.write(content)
 
 
 def _remove_cookie_file_if_present(cookie_context: CookieFileContext) -> None:
@@ -1603,7 +1623,7 @@ def download_and_save_cookie(app, execution_context, url, service):
         return
 
     try:
-        ok, status, content, err = _download_content(url, timeout=30, user_id=user_id)
+        ok, status, content, err = _download_content(url, timeout=30, user_id=int(user_id))
         if ok:
             # Optional: validate extension (do not expose URL); keep internal check
             if not url.lower().endswith('.txt'):
@@ -1615,6 +1635,10 @@ def download_and_save_cookie(app, execution_context, url, service):
             if content_size and content_size > 100 * 1024:
                 send_to_user(source_message, safe_get_messages(user_id).COOKIES_FILE_TOO_LARGE_DOWNLOAD_MSG.format(service=service.capitalize(), size=content_size // 1024))
                 send_to_logger(source_message, safe_get_messages(user_id).COOKIES_SERVICE_FILE_TOO_LARGE_LOG_MSG.format(service=service.capitalize(), size=content_size))
+                return
+            if content is None:
+                send_to_user(source_message, safe_get_messages(user_id).COOKIES_ERROR_DOWNLOADING_MSG.format(service=service.capitalize()))
+                send_to_logger(source_message, safe_get_messages(user_id).COOKIES_DOWNLOAD_ERROR_LOG_MSG.format(service=service.capitalize(), error="empty response"))
                 return
             # Save to user folder
             cookie_context = _ensure_cookie_user_dir(user_id)
@@ -1720,7 +1744,7 @@ def test_youtube_cookies_on_url(cookie_file_path: str, url: str, user_id: int | 
         # Add PO token provider for YouTube domains
         ydl_opts = add_pot_to_ytdl_opts(ydl_opts, url)
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
             info = ydl.extract_info(url, download=False)
             
         # Ensure we extracted video info
@@ -1734,7 +1758,7 @@ def test_youtube_cookies_on_url(cookie_file_path: str, url: str, user_id: int | 
             return False
             
         # Ensure formats exist
-        formats = info.get('formats', [])
+        formats = cast(list[dict[str, Any]], info.get('formats') or [])
         if len(formats) < 2:
             logger.warning(LoggerMsg.COOKIES_YOUTUBE_TEST_FAILED_INSUFFICIENT_FORMATS_LOG_MSG.format(formats_count=len(formats), cookie_file_path=cookie_file_path))
             return False
@@ -1783,7 +1807,7 @@ def test_youtube_cookies(cookie_file_path: str, user_id: int | None = None) -> b
         # Add PO token provider for YouTube domains
         ydl_opts = add_pot_to_ytdl_opts(ydl_opts, test_url)
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
             info = ydl.extract_info(test_url, download=False)
             
         # Ensure we got full video info
@@ -1818,15 +1842,16 @@ def test_youtube_cookies(cookie_file_path: str, user_id: int | None = None) -> b
             # Continue to check other fields
             
         # Validate extracted info quality
-        title = info.get('title', '')
+        title = str(info.get('title') or '')
         if len(title) < 5:  # Title should be reasonably long
             logger.warning(LoggerMsg.COOKIES_YOUTUBE_TEST_FAILED_TITLE_TOO_SHORT_LOG_MSG.format(title=title, cookie_file_path=cookie_file_path))
             logger.warning(LoggerMsg.COOKIES_YOUTUBE_TEST_FAILED_TITLE_LENGTH_LOG_MSG.format(title_length=len(title)))
             return False
             
         # Validate duration (not 0 and not unreasonably large)
-        duration = info.get('duration', 0)
-        if duration and duration <= 0 or duration > 86400:  # More than 24 hours
+        raw_duration = info.get('duration')
+        duration = raw_duration if isinstance(raw_duration, (int, float)) else 0
+        if (duration and duration <= 0) or duration > 86400:  # More than 24 hours
             logger.warning(LoggerMsg.COOKIES_YOUTUBE_TEST_FAILED_INVALID_DURATION_LOG_MSG.format(duration=duration, cookie_file_path=cookie_file_path))
             logger.warning(LoggerMsg.COOKIES_YOUTUBE_TEST_FAILED_DURATION_SECONDS_LOG_MSG.format(duration=duration))
             return False
@@ -1835,6 +1860,7 @@ def test_youtube_cookies(cookie_file_path: str, user_id: int | None = None) -> b
         # Only check if formats exist - if they don't, we already handled that above
         formats_count = len(formats) if formats else 0
         if formats_count > 0 and formats_count < 3:  # At least 3 formats to choose from (only if formats exist)
+            assert formats is not None
             logger.warning(LoggerMsg.COOKIES_YOUTUBE_TEST_FAILED_TOO_FEW_FORMATS_LOG_MSG.format(formats_count=formats_count, cookie_file_path=cookie_file_path))
             logger.warning(LoggerMsg.COOKIES_YOUTUBE_TEST_FAILED_AVAILABLE_FORMATS_LOG_MSG.format(available_formats=[f.get('format_id', 'unknown') for f in formats[:5]]))
             logger.warning(LoggerMsg.COOKIES_YOUTUBE_TEST_FAILED_ALL_FORMAT_IDS_LOG_MSG.format(all_format_ids=[f.get('format_id', 'unknown') for f in formats]))
@@ -1858,7 +1884,7 @@ def test_youtube_cookies(cookie_file_path: str, user_id: int | None = None) -> b
             logger.info("Cookies test: No formats available but all required fields present - cookies are valid")
         return True
             
-    except yt_dlp.utils.DownloadError as e:
+    except Exception as e:
         error_text = str(e).lower()
         
         # Check for specific YouTube errors that are not cookie-related
@@ -1894,7 +1920,7 @@ def test_youtube_cookies(cookie_file_path: str, user_id: int | None = None) -> b
                     'extractor_retries': 1,
                 }
                 ydl_opts_no_format = add_pot_to_ytdl_opts(ydl_opts_no_format, test_url)
-                with yt_dlp.YoutubeDL(ydl_opts_no_format) as ydl:
+                with yt_dlp.YoutubeDL(cast(Any, ydl_opts_no_format)) as ydl:
                     info_retry = ydl.extract_info(test_url, download=False)
                 # Check if we can get basic info
                 if info_retry and info_retry.get('title') and info_retry.get('duration'):
@@ -1911,11 +1937,6 @@ def test_youtube_cookies(cookie_file_path: str, user_id: int | None = None) -> b
             logger.warning(LoggerMsg.COOKIES_YOUTUBE_TEST_OTHER_ERROR_LOG_MSG.format(e=e))
             return False
             
-    except Exception as e:
-        logger.error(LoggerMsg.COOKIES_YOUTUBE_TEST_EXCEPTION_LOG_MSG.format(e=e))
-        logger.error(LoggerMsg.COOKIES_YOUTUBE_TEST_EXCEPTION_TYPE_LOG_MSG.format(exception_type=type(e).__name__))
-        return False
-
 def get_youtube_cookie_urls() -> list:
     """
     Return a list of YouTube cookie URLs in priority order.
@@ -1947,22 +1968,27 @@ def get_youtube_cookie_urls() -> list:
 def _build_cookie_transport_context(message) -> CookieTransportContext | None:
     if hasattr(message, 'chat') and hasattr(message.chat, 'id'):
         return CookieTransportContext(
-            user_id=str(message.chat.id),
+            user_id=int(message.chat.id),
             source_message=message,
-            notify_chat_id=message.chat.id,
+            notify_chat_id=int(message.chat.id),
             log_message=message,
         )
     if hasattr(message, 'from_user') and hasattr(message.from_user, 'id'):
         callback_message = getattr(message, "message", None)
         return CookieTransportContext(
-            user_id=str(message.from_user.id),
+            user_id=int(message.from_user.id),
             source_message=callback_message,
-            notify_chat_id=message.from_user.id,
+            notify_chat_id=int(message.from_user.id),
             log_message=callback_message,
         )
     return None
 
-def download_and_validate_youtube_cookies(app, message, selected_index: int | None = None, user_id: int = None) -> bool:
+def download_and_validate_youtube_cookies(
+    app,
+    message,
+    selected_index: int | None = None,
+    user_id: int | None = None,
+) -> bool:
     """
     Download and validate YouTube cookies from all available sources.
     
@@ -2169,7 +2195,9 @@ def download_and_validate_youtube_cookies(app, message, selected_index: int | No
             if content_size and content_size > 100 * 1024:
                 logger.warning(LoggerMsg.COOKIES_YOUTUBE_FILE_TOO_LARGE_LOG_MSG.format(url_index=idx + 1, file_size=content_size))
                 continue
-            
+            if content is None:
+                continue
+
             # Save cookies to a temporary file
             _write_cookie_file(cookie_context, content, binary=True)
             
@@ -2359,7 +2387,9 @@ def ensure_working_youtube_cookies(user_id: int) -> bool:
                 if content_size and content_size > 100 * 1024:
                     logger.warning(LoggerMsg.COOKIES_YOUTUBE_FILE_TOO_LARGE_LOG_MSG.format(url_index=idx + 1, file_size=content_size))
                     continue
-                
+                if content is None:
+                    continue
+
                 # Save cookies
                 _write_cookie_file(cookie_context, content, binary=True)
                 
@@ -2634,7 +2664,9 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
                 if content_size and content_size > 100 * 1024:
                     logger.warning(LoggerMsg.COOKIES_YOUTUBE_RETRY_FILE_TOO_LARGE_LOG_MSG.format(source_index=idx + 1, file_size=content_size))
                     continue
-                
+                if content is None:
+                    continue
+
                 # Save cookies
                 _write_cookie_file(cookie_context, content, binary=True)
                 
@@ -2701,7 +2733,7 @@ def retry_download_with_different_cookies(user_id: int, url: str, download_func,
     finally:
         _deactivate_cookie_retry(retry_key)
 
-def clear_youtube_cookie_cache(user_id: int = None):
+def clear_youtube_cookie_cache(user_id: int | None = None):
     """
     Clear the YouTube cookie validation cache.
     
@@ -2820,6 +2852,7 @@ def try_download_with_cookie_fallback(user_id: int, url: str, download_func, *ar
             elif attempt_plan.attempt_type == 'service':
                 # Download service cookies
                 try:
+                    assert attempt_plan.cookie_source is not None
                     ok, status, content, err = _download_content(attempt_plan.cookie_source, timeout=30, user_id=user_id)
                     if ok and content and len(content) <= 100 * 1024:
                         cookie_file_path = user_cookie_path
@@ -2841,6 +2874,7 @@ def try_download_with_cookie_fallback(user_id: int, url: str, download_func, *ar
                 try:
                     import shutil
                     cookie_file_path = user_cookie_path
+                    assert attempt_plan.cookie_source is not None
                     shutil.copy2(attempt_plan.cookie_source, cookie_file_path)
                     logger.info(f"Copied global cookies for {url}")
                 except Exception as e:
@@ -2905,7 +2939,7 @@ def try_download_with_cookie_fallback(user_id: int, url: str, download_func, *ar
     logger.error(outcome_plan.log_text)
     return None
 
-def get_cookie_cache_key(user_id: int, url: str, service: str = None) -> str:
+def get_cookie_cache_key(user_id: int, url: str, service: str | None = None) -> str:
     """
     Create a cache key for cookie validation results.
     
@@ -2927,7 +2961,13 @@ def get_cookie_cache_key(user_id: int, url: str, service: str = None) -> str:
         else:
             return f"{user_id}_other_cookie_cache"
 
-def set_cookie_cache_result(user_id: int, url: str, result: bool, cookie_path: str = None, service: str = None):
+def set_cookie_cache_result(
+    user_id: int,
+    url: str,
+    result: bool,
+    cookie_path: str | None = None,
+    service: str | None = None,
+):
     """
     Store a cookie validation result in the cache.
     
@@ -2943,7 +2983,7 @@ def set_cookie_cache_result(user_id: int, url: str, result: bool, cookie_path: s
     
     logger.info(f"Cached cookie result for {cache_key}: {result}")
 
-def get_cookie_cache_result(user_id: int, url: str, service: str = None) -> dict | None:
+def get_cookie_cache_result(user_id: int, url: str, service: str | None = None) -> dict | None:
     """
     Get a cookie validation result from the cache.
     
@@ -2985,7 +3025,7 @@ def get_cookie_cache_result(user_id: int, url: str, service: str = None) -> dict
     
     return None
 
-def clear_cookie_cache(user_id: int = None):
+def clear_cookie_cache(user_id: int | None = None):
     """
     Clear cookie caches.
     
@@ -3041,6 +3081,7 @@ def try_non_youtube_cookie_fallback(user_id: int, url: str, download_func, *args
         user_cookie_path = cookie_context.cookie_file_path
         user_attempt_plan = _build_non_youtube_cookie_fallback_attempt_plan("user", user_cookie_path=user_cookie_path)
         
+        assert user_attempt_plan.cookie_file_path is not None
         if os.path.exists(user_attempt_plan.cookie_file_path):
             logger.info(f"Trying user cookies for non-YouTube URL: {url}")
             try:
@@ -3074,6 +3115,7 @@ def try_non_youtube_cookie_fallback(user_id: int, url: str, download_func, *args
                             "service",
                             temp_cookie_path=temp_cookie_path,
                         )
+                        assert service_attempt_plan.temp_cookie_path is not None
                         with open(service_attempt_plan.temp_cookie_path, "wb") as f:
                             f.write(content)
                         
@@ -3094,6 +3136,7 @@ def try_non_youtube_cookie_fallback(user_id: int, url: str, download_func, *args
                             logger.warning(f"Service cookies failed for {url}: {e}")
                         finally:
                             # Remove temporary file
+                            assert service_attempt_plan.temp_cookie_path is not None
                             if os.path.exists(service_attempt_plan.temp_cookie_path):
                                 os.remove(service_attempt_plan.temp_cookie_path)
                 except Exception as e:
@@ -3181,26 +3224,25 @@ def get_service_name_from_url(url: str) -> str | None:
     
     return None
 
-def force_reset_youtube_cookie_sources(user_id: int = None):
+def force_reset_youtube_cookie_sources(user_id: int | None = None):
     """
     Force-reset the checked-source cache for YouTube cookies.
     
     Args:
         user_id (int, optional): User ID to reset for. If None, resets for all users.
     """
-    global _checked_cookie_sources
-    
+    checked_sources = _get_cookie_state_store().checked_sources
     if user_id is None:
-        _checked_cookie_sources.clear()
+        checked_sources.clear()
         logger.info("Force reset checked cookie sources for all users")
     else:
-        if user_id in _checked_cookie_sources:
-            _checked_cookie_sources[user_id] = {'checked_sources': set(), 'last_reset': time.time()}
+        if user_id in checked_sources:
+            checked_sources[user_id] = {'checked_sources': set(), 'last_reset': time.time()}
             logger.info(f"Force reset checked cookie sources for user {user_id}")
         else:
             logger.info(f"No checked cookie sources found for user {user_id}")
 
-def get_checked_sources_status(user_id: int = None) -> dict:
+def get_checked_sources_status(user_id: int | None = None) -> dict:
     """
     Return the status of checked cookie sources.
     
@@ -3210,23 +3252,22 @@ def get_checked_sources_status(user_id: int = None) -> dict:
     Returns:
         dict: Checked-source status
     """
-    global _checked_cookie_sources
-    
+    checked_sources = _get_cookie_state_store().checked_sources
     if user_id is None:
         return {
-            'total_users': len(_checked_cookie_sources),
+            'total_users': len(checked_sources),
             'users': {
                 uid: {
                     'checked_count': len(data['checked_sources']),
                     'checked_sources': list(data['checked_sources']),
                     'last_reset': data.get('last_reset', 0)
                 }
-                for uid, data in _checked_cookie_sources.items()
+                for uid, data in checked_sources.items()
             }
         }
     else:
-        if user_id in _checked_cookie_sources:
-            data = _checked_cookie_sources[user_id]
+        if user_id in checked_sources:
+            data = checked_sources[user_id]
             return {
                 'user_id': user_id,
                 'checked_count': len(data['checked_sources']),

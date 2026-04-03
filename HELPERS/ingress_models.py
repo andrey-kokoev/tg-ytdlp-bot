@@ -864,7 +864,7 @@ def build_telegram_callback_envelope(
     return CallbackIngressEnvelope(
         transport="telegram",
         event_kind=event_kind,
-        user_id=getattr(getattr(callback_query, "from_user", None), "id", None),
+        user_id=int(getattr(getattr(callback_query, "from_user", None), "id", 0) or 0),
         chat_id=getattr(getattr(callback_message, "chat", None), "id", None),
         source_message_id=getattr(callback_message, "id", None),
         raw_data=raw_data if raw_data is not None else getattr(callback_query, "data", None),

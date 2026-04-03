@@ -11,7 +11,7 @@ import re
 from moviepy.editor import VideoFileClip
 from moviepy.video.fx.all import resize
 from HELPERS.app_instance import get_app
-from HELPERS.logger import logger, send_to_all, send_to_logger
+from HELPERS.logger import logger, send_to_all, send_to_logger, get_log_channel
 from CONFIG.config import Config
 from CONFIG.messages import Messages, safe_get_messages
 from HELPERS.safe_messeger import safe_forward_messages
@@ -316,7 +316,7 @@ def get_duration_thumb_(dir, video_path, thumb_name):
     thumb_hash = hashlib.md5(thumb_name.encode()).hexdigest()[:10]
     thumb_dir = os.path.abspath(os.path.join(dir, thumb_hash + ".jpg"))
     try:
-        width, height, duration = get_video_info_ffprobe(video_path)
+        width, height, duration = get_video_info_ffprobe(video_path) or (0, 0, 0)
         duration = int(duration)
         orig_w = width if width and width > 0 else 1920
         orig_h = height if height and height > 0 else 1080
@@ -433,7 +433,7 @@ def get_duration_thumb(message, dir_path, video_path, thumb_name, execution_cont
             size_result = subprocess.check_output(ffprobe_size_command, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='replace').strip()
         except UnicodeDecodeError:
             # Fallback with error handling
-            size_result = subprocess.check_output(ffprobe_size_command, stderr=subprocess.STDOUT, encoding='utf-8', errors='replace').decode('utf-8', errors='replace').strip()
+            size_result = str(subprocess.check_output(ffprobe_size_command, stderr=subprocess.STDOUT, encoding='utf-8', errors='replace')).strip()
         # Robust parse of dimensions like "1920x1080"; tolerate any trailing garbage
         dims_match = re.search(r"(\d+)\s*x\s*(\d+)", size_result)
         if dims_match:
@@ -491,7 +491,7 @@ def get_duration_thumb(message, dir_path, video_path, thumb_name, execution_cont
             result = subprocess.check_output(ffprobe_duration_command, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='replace')
         except UnicodeDecodeError:
             # Fallback with error handling
-            result = subprocess.check_output(ffprobe_duration_command, stderr=subprocess.STDOUT, encoding='utf-8', errors='replace').decode('utf-8', errors='replace')
+            result = str(subprocess.check_output(ffprobe_duration_command, stderr=subprocess.STDOUT, encoding='utf-8', errors='replace'))
 
         try:
             # Extract duration robustly from any stdout (handle proxychains noise)
@@ -799,7 +799,7 @@ def embed_subs_to_video(
             return True
 
         # Get video parameters via ffprobe (hard burn-in for MP4 and other containers)
-        width, height, total_time = get_video_info_ffprobe(video_path)
+        width, height, total_time = get_video_info_ffprobe(video_path) or (0, 0, 0)
         if width == 0 or height == 0:
             logger.error(f"Unable to determine video resolution via ffprobe: width={width}, height={height}")
             return False
@@ -896,6 +896,8 @@ def embed_subs_to_video(
         time_pattern = re.compile(r'time=([0-9:.]+)')
         
         while True:
+            if proc.stdout is None:
+                break
             line = proc.stdout.readline()
             if not line:
                 break

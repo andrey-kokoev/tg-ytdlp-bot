@@ -12,6 +12,7 @@ import shutil
 import gallery_dl
 import json
 from dataclasses import dataclass
+from typing import Any, cast
 
 from CONFIG.config import Config
 from CONFIG.messages import Messages, safe_get_messages
@@ -44,7 +45,7 @@ def _run_gallery_count_command(cmd: list[str], *, timeout: int) -> subprocess.Co
         return None
 
 
-def _deep_merge_dicts(target, source):
+def _deep_merge_dicts(target: dict[str, Any], source: dict[str, Any]) -> None:
     for key, value in source.items():
         if key in target and isinstance(target[key], dict) and isinstance(value, dict):
             _deep_merge_dicts(target[key], value)
@@ -52,7 +53,7 @@ def _deep_merge_dicts(target, source):
             target[key] = value
 
 
-def _apply_instagram_gallery_headers(url: str, config: dict) -> None:
+def _apply_instagram_gallery_headers(url: str, config: dict[str, Any]) -> None:
     if "instagram.com" not in url.lower():
         return
     user_has_custom_ua = (
@@ -115,7 +116,7 @@ def _resolve_gallery_cookie_path(url: str, user_id: int, user_cookie_path: str) 
     return None
 
 
-def _resolve_gallery_proxy_url(url: str, user_id: int, use_proxy: bool, config: dict) -> str | None:
+def _resolve_gallery_proxy_url(url: str, user_id: int, use_proxy: bool, config: dict[str, Any]) -> str | None:
     if use_proxy:
         try:
             from COMMANDS.proxy_cmd import get_proxy_config
@@ -152,7 +153,7 @@ def _resolve_gallery_proxy_url(url: str, user_id: int, use_proxy: bool, config: 
 
 # ---------- Low-level helpers ----------
 
-def get_user_gallery_dl_args(user_id: int) -> dict:
+def get_user_gallery_dl_args(user_id: int) -> dict[str, Any]:
     """
     Get user's yt-dlp arguments that are compatible with gallery-dl
     Returns dict with gallery-dl compatible configuration
@@ -222,10 +223,12 @@ def get_user_gallery_dl_args(user_id: int) -> dict:
         logger.error(f"Error getting user gallery-dl args for user {user_id}: {e}")
         return {}
 
-def _add_cookies_to_cmd(cmd: list, url: str, user_id: int) -> list:
+def _add_cookies_to_cmd(cmd: list[str], url: str, user_id: int | None) -> list[str]:
     """
     Add cookies to gallery-dl CLI command for all sites
     """
+    if user_id is None:
+        return cmd
     user_dir = os.path.join("users", str(user_id))
     user_cookie_path = os.path.join(user_dir, "cookie.txt")
     if os.path.exists(user_cookie_path):
@@ -248,7 +251,7 @@ def _gdl_set(section: str, key: str, value):
         gallery_dl.config.set((section, key), value)
 
 
-def _apply_config(config: dict, user_id=None):
+def _apply_config(config: dict[str, Any], user_id=None):
     messages = safe_get_messages(user_id)
     """
     Apply dict config to gallery-dl config safely.
@@ -268,7 +271,7 @@ def _apply_config(config: dict, user_id=None):
             _gdl_set(section, key, value)
 
 
-def _prepare_user_cookies_and_proxy(url: str, user_id, use_proxy: bool, config: dict):
+def _prepare_user_cookies_and_proxy(url: str, user_id, use_proxy: bool, config: dict[str, Any]) -> dict[str, Any]:
     messages = safe_get_messages(user_id)
     """
     Fill cookies/proxy into config['extractor'] according to your logic.
@@ -457,13 +460,13 @@ def get_image_info(url: str, user_id=None, use_proxy: bool = False):
         return None
 
 
-def download_image(url: str, user_id=None, use_proxy: bool = False, output_dir: str = None):
+def download_image(url: str, user_id=None, use_proxy: bool = False, output_dir: str | None = None):
     messages = safe_get_messages(user_id)
     """
     Download using gallery-dl DownloadJob, return list of paths to downloaded files or None.
     """
     # Simple configuration: let gallery-dl use defaults
-    config = {
+    config: dict[str, Any] = {
         "extractor": {
             "timeout": 30,
             "retries": 3,
@@ -739,8 +742,14 @@ def _get_instagram_media_count(url: str, user_id, use_proxy: bool, cfg_path: str
         
         # Add proxy if enabled
         if use_proxy:
-            from HELPERS.proxy_helper import get_proxy_for_url
-            proxy = get_proxy_for_url(url)
+            from HELPERS.proxy_helper import add_proxy_to_gallery_dl_config
+
+            proxy = None
+            updated_proxy_cfg = add_proxy_to_gallery_dl_config({"extractor": {}}, url, user_id)
+            if isinstance(updated_proxy_cfg, dict):
+                extractor_cfg = updated_proxy_cfg.get("extractor")
+                if isinstance(extractor_cfg, dict):
+                    proxy = extractor_cfg.get("proxy")
             if proxy:
                 instagram_config["extractor"]["proxy"] = proxy
         
@@ -790,7 +799,7 @@ def _get_instagram_media_count(url: str, user_id, use_proxy: bool, cfg_path: str
         logger.error(f"Instagram media count error: {e}")
         return None
 
-def _try_without_cookies(url: str, cfg_path: str, user_id: int = None) -> int | None:
+def _try_without_cookies(url: str, cfg_path: str, user_id: int | None = None) -> int | None:
     """Try without cookies as fallback for problematic sites"""
     try:
         # Create config without cookies
@@ -827,12 +836,12 @@ def _try_without_cookies(url: str, cfg_path: str, user_id: int = None) -> int | 
         return None
 
 
-def download_image_range(url: str, range_expr: str, user_id=None, use_proxy: bool = False, output_dir: str = None) -> bool | str:
+def download_image_range(url: str, range_expr: str, user_id=None, use_proxy: bool = False, output_dir: str | None = None) -> bool | str:
     """
     Download only a range of items using extractor.range option.
     Returns True on success (status 0), False otherwise, or error message string for 401 Unauthorized.
     """
-    config = {
+    config: dict[str, Any] = {
         "extractor": {
             "timeout": 30,
             "retries": 3,
@@ -1128,7 +1137,7 @@ def download_image_range_cli(url: str, range_expr: str, user_id=None, use_proxy:
         logger.error(f"Invalid range expression: '{range_expr}'. Expected 'start-end' or 'start-' format.")
         return False
 
-    cfg = {"extractor": {"timeout": 30, "retries": 3}}
+    cfg: dict[str, Any] = {"extractor": {"timeout": 30, "retries": 3}}
     # Scope outputs to a specific run directory if provided
     if output_dir:
         try:

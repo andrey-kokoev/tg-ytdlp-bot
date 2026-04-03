@@ -37,6 +37,7 @@ from HELPERS.filesystem_hlp import create_directory
 
 from CONFIG.config import Config
 from CONFIG.messages import Messages, safe_get_messages
+from CONFIG.logger_msg import LoggerMsg
 
 from URL_PARSERS.tags import extract_url_range_tags
 

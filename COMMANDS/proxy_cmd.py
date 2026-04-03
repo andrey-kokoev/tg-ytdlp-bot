@@ -43,7 +43,7 @@ def _build_proxy_command_context(message) -> ProxyCommandContext:
     return ProxyCommandContext(
         user_id=message.chat.id,
         source_message=message,
-        command_parts=(message.text or "").split(),
+        command_parts=[str(part) for part in (message.text or "").split()],
     )
 
 

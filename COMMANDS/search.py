@@ -111,8 +111,8 @@ def _execute_search_callback_result_plan(client, callback_query, user_id: int, p
             client,
             build_callback_execution_context(callback_query),
             request,
-            answer_text=plan.answer_text,
-            log_text=plan.log_text,
+            answer_text=plan.answer_text or "",
+            log_text=plan.log_text or "",
         )
         return
     callback_query.answer(plan.answer_text, show_alert=plan.show_alert)

@@ -8,6 +8,7 @@ from HELPERS.request_execution import (
     determine_url_runtime_decision,
     execute_url_runtime_plan,
 )
+from CONFIG.messages import safe_get_messages
 
 # Get app instance for decorators
 app = get_app()

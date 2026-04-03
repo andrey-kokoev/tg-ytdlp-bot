@@ -408,7 +408,7 @@ def send_videos(
     else:
         # For the rest - define the size of the video dynamically
         try:
-            width, height, _ = get_video_info_ffprobe(video_abs_path)
+            width, height, _ = get_video_info_ffprobe(video_abs_path) or (0, 0, 0)
         except Exception as e:
             logger.error(safe_get_messages(user_id).SENDER_FFPROBE_BYPASS_ERROR_MSG.format(video_path=video_abs_path, error=e))
             import traceback
@@ -599,21 +599,21 @@ def send_videos(
             )
             if delivery_plan.send_as_paid:
                 try:
-                    v_w, v_h, v_dur = get_video_info_ffprobe(video_abs_path)
+                    v_w, v_h, v_dur = get_video_info_ffprobe(video_abs_path) or (width, height, duration)
                 except Exception:
                     v_w, v_h, v_dur = width, height, duration
                 was_paid = True
                 return _send_paid_video_media(
                     sender_context=sender_context,
                     media_path=video_abs_path,
-                    duration=v_dur or duration,
+                    duration=int(v_dur or duration or 0),
                     width=v_w or width,
                     height=v_h or height,
                     cover_path=_gen_paid_cover(video_abs_path),
                 )
             # For free media, also keep correct metadata and thumbnail
             try:
-                v_w2, v_h2, v_dur2 = get_video_info_ffprobe(video_abs_path)
+                v_w2, v_h2, v_dur2 = get_video_info_ffprobe(video_abs_path) or (width, height, duration)
             except Exception:
                 v_w2, v_h2, v_dur2 = width, height, duration
             result = _send_regular_video_media(
@@ -666,14 +666,14 @@ def send_videos(
             )
             if delivery_plan.send_as_paid:
                 try:
-                    v_w, v_h, v_dur = get_video_info_ffprobe(video_abs_path)
+                    v_w, v_h, v_dur = get_video_info_ffprobe(video_abs_path) or (width, height, duration)
                 except Exception:
                     v_w, v_h, v_dur = width, height, duration
                 was_paid = True
                 return _send_paid_video_media(
                     sender_context=sender_context,
                     media_path=video_abs_path,
-                    duration=v_dur or duration,
+                    duration=int(v_dur or duration or 0),
                     width=v_w or width,
                     height=v_h or height,
                     cover_path=_gen_paid_cover(video_abs_path),

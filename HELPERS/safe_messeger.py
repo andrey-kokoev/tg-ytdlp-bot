@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Global message sending throttle to prevent msg_seqno issues
 _last_message_sent = {}
+_last_edit_ts_per_chat = {}
 _message_send_lock = threading.Lock()
 
 # Get app instance dynamically to avoid None issues
@@ -25,7 +26,7 @@ def get_app_safe():
     messages = safe_get_messages(None)
     app = get_app()
     if app is None:
-        raise RuntimeError(safe_get_messages(user_id).HELPER_APP_INSTANCE_NOT_AVAILABLE_MSG)
+        raise RuntimeError(messages.HELPER_APP_INSTANCE_NOT_AVAILABLE_MSG)
     return app
 
 def fake_message(
@@ -96,7 +97,8 @@ def fake_message_with_context(text, user_id, context_message=None, command=None)
         fake_message with correct message_thread_id
     """
     if context_message:
-        original_chat_id = getattr(context_message, 'chat', {}).id if hasattr(context_message, 'chat') else user_id
+        original_chat = getattr(context_message, "chat", None)
+        original_chat_id = getattr(original_chat, "id", user_id)
         message_thread_id = getattr(context_message, 'message_thread_id', None)
         return fake_message(text, user_id, command=command, original_chat_id=original_chat_id, 
                           message_thread_id=message_thread_id, original_message=context_message)
@@ -172,6 +174,7 @@ def safe_send_message(chat_id, text, **kwargs):
     # Extract internal helper kwargs (not supported by pyrogram)
     cb = kwargs.pop('_callback_query', None)
     notice = kwargs.pop('_fallback_notice', None)
+    message_strings = safe_get_messages(chat_id)
     # Drop any other underscored keys just in case
     for k in list(kwargs.keys()):
         if isinstance(k, str) and k.startswith('_'):
@@ -217,7 +220,7 @@ def safe_send_message(chat_id, text, **kwargs):
             try:
                 if cb is not None:
                     try:
-                        cb.answer(notice or safe_get_messages(user_id).HELPER_FLOOD_LIMIT_TRY_LATER_MSG, show_alert=False)
+                        cb.answer(notice or message_strings.HELPER_FLOOD_LIMIT_TRY_LATER_MSG, show_alert=False)
                     except Exception:
                         pass
             except Exception:
@@ -229,17 +232,17 @@ def safe_send_message(chat_id, text, **kwargs):
                 wait_match = re.search(r'A wait of (\d+) seconds is required', str(e))
                 if wait_match:
                     wait_seconds = int(wait_match.group(1))
-                    logger.warning(safe_get_messages(user_id).HELPER_FLOOD_WAIT_DETECTED_SLEEPING_MSG.format(wait_seconds=wait_seconds))
+                    logger.warning(message_strings.HELPER_FLOOD_WAIT_DETECTED_SLEEPING_MSG.format(wait_seconds=wait_seconds))
                     time.sleep(min(wait_seconds + 1, 5))  # short backoff
                 else:
-                    logger.warning(safe_get_messages(user_id).HELPER_FLOOD_WAIT_DETECTED_COULDNT_EXTRACT_MSG.format(retry_delay=retry_delay))
+                    logger.warning(message_strings.HELPER_FLOOD_WAIT_DETECTED_COULDNT_EXTRACT_MSG.format(retry_delay=retry_delay))
                     time.sleep(retry_delay)
                 if attempt and attempt < max_retries - 1:
                     continue
             
             # Handle msg_seqno errors
             elif "msg_seqno is too high" in str(e):
-                logger.warning(safe_get_messages(user_id).HELPER_MSG_SEQNO_ERROR_DETECTED_MSG.format(retry_delay=retry_delay))
+                logger.warning(message_strings.HELPER_MSG_SEQNO_ERROR_DETECTED_MSG.format(retry_delay=retry_delay))
                 time.sleep(retry_delay)
                 if attempt and attempt < max_retries - 1:
                     continue
@@ -272,6 +275,7 @@ def safe_forward_messages(chat_id, from_chat_id, message_ids, **kwargs):
     """
     max_retries = 3
     retry_delay = 5
+    message_strings = safe_get_messages(chat_id)
 
     for attempt in range(max_retries):
         try:
@@ -283,10 +287,10 @@ def safe_forward_messages(chat_id, from_chat_id, message_ids, **kwargs):
                 wait_match = re.search(r'A wait of (\d+) seconds is required', str(e))
                 if wait_match:
                     wait_seconds = int(wait_match.group(1))
-                    logger.warning(safe_get_messages(user_id).HELPER_FLOOD_WAIT_DETECTED_SLEEPING_MSG.format(wait_seconds=wait_seconds))
+                    logger.warning(message_strings.HELPER_FLOOD_WAIT_DETECTED_SLEEPING_MSG.format(wait_seconds=wait_seconds))
                     time.sleep(min(wait_seconds + 1, 30))  # Wait the required time (max 30 sec)
                 else:
-                    logger.warning(safe_get_messages(user_id).HELPER_FLOOD_WAIT_DETECTED_COULDNT_EXTRACT_MSG.format(retry_delay=retry_delay))
+                    logger.warning(message_strings.HELPER_FLOOD_WAIT_DETECTED_COULDNT_EXTRACT_MSG.format(retry_delay=retry_delay))
                     time.sleep(retry_delay)
 
                 if attempt and attempt < max_retries - 1:
@@ -318,13 +322,6 @@ def safe_edit_message_text(chat_id, message_id, text, **kwargs):
         is_group = isinstance(chat_id, int) and chat_id < 0
     except Exception:
         is_group = False
-
-    # Module-level storage for last edit timestamps
-    global _last_edit_ts_per_chat
-    try:
-        _last_edit_ts_per_chat
-    except NameError:
-        _last_edit_ts_per_chat = {}
 
     if is_group:
         last_ts = _last_edit_ts_per_chat.get(chat_id, 0.0)
@@ -371,6 +368,7 @@ def safe_edit_reply_markup(chat_id, message_id, reply_markup=None, **kwargs):
     """
     max_retries = 3
     retry_delay = 5
+    message_strings = safe_get_messages(chat_id)
 
     # Inherit thread context from helpers
     original_message = kwargs.get('message')
@@ -407,15 +405,15 @@ def safe_edit_reply_markup(chat_id, message_id, reply_markup=None, **kwargs):
                 wait_match = re.search(r'A wait of (\d+) seconds is required', str(e))
                 if wait_match:
                     wait_seconds = int(wait_match.group(1))
-                    logger.warning(safe_get_messages(user_id).HELPER_FLOOD_WAIT_DETECTED_SLEEPING_MSG.format(wait_seconds=wait_seconds))
+                    logger.warning(message_strings.HELPER_FLOOD_WAIT_DETECTED_SLEEPING_MSG.format(wait_seconds=wait_seconds))
                     time.sleep(min(wait_seconds + 1, 5))
                 else:
-                    logger.warning(safe_get_messages(user_id).HELPER_FLOOD_WAIT_DETECTED_COULDNT_EXTRACT_MSG.format(retry_delay=retry_delay))
+                    logger.warning(message_strings.HELPER_FLOOD_WAIT_DETECTED_COULDNT_EXTRACT_MSG.format(retry_delay=retry_delay))
                     time.sleep(retry_delay)
                 if attempt and attempt < max_retries - 1:
                     continue
             elif "msg_seqno is too high" in str(e):
-                logger.warning(safe_get_messages(user_id).HELPER_MSG_SEQNO_ERROR_DETECTED_MSG.format(retry_delay=retry_delay))
+                logger.warning(message_strings.HELPER_MSG_SEQNO_ERROR_DETECTED_MSG.format(retry_delay=retry_delay))
                 time.sleep(retry_delay)
                 if attempt and attempt < max_retries - 1:
                     continue
@@ -439,6 +437,7 @@ def safe_delete_messages(chat_id, message_ids, **kwargs):
     """
     max_retries = 3
     retry_delay = 5
+    message_strings = safe_get_messages(chat_id)
 
     for attempt in range(max_retries):
         try:
@@ -450,7 +449,7 @@ def safe_delete_messages(chat_id, message_ids, **kwargs):
                 msg = str(e)
             except Exception:
                 msg = f"{type(e).__name__}"
-            if safe_get_messages(user_id).HELPER_MESSAGE_ID_INVALID_MSG in msg or safe_get_messages(user_id).HELPER_MESSAGE_DELETE_FORBIDDEN_MSG in msg:
+            if message_strings.HELPER_MESSAGE_ID_INVALID_MSG in msg or message_strings.HELPER_MESSAGE_DELETE_FORBIDDEN_MSG in msg:
                 if attempt == 0:
                     logger.debug(f"Tried to delete non-existent message(s): {message_ids}")
                 return None
@@ -459,10 +458,10 @@ def safe_delete_messages(chat_id, message_ids, **kwargs):
                 wait_match = re.search(r'A wait of (\d+) seconds is required', str(e))
                 if wait_match:
                     wait_seconds = int(wait_match.group(1))
-                    logger.warning(safe_get_messages(user_id).HELPER_FLOOD_WAIT_DETECTED_SLEEPING_MSG.format(wait_seconds=wait_seconds))
+                    logger.warning(message_strings.HELPER_FLOOD_WAIT_DETECTED_SLEEPING_MSG.format(wait_seconds=wait_seconds))
                     time.sleep(min(wait_seconds + 1, 30))  # Wait the required time (max 30 sec)
                 else:
-                    logger.warning(safe_get_messages(user_id).HELPER_FLOOD_WAIT_DETECTED_COULDNT_EXTRACT_MSG.format(retry_delay=retry_delay))
+                    logger.warning(message_strings.HELPER_FLOOD_WAIT_DETECTED_COULDNT_EXTRACT_MSG.format(retry_delay=retry_delay))
                     time.sleep(retry_delay)
 
                 if attempt and attempt < max_retries - 1:

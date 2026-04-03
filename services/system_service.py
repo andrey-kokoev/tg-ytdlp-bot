@@ -40,13 +40,13 @@ def get_network_speed() -> Dict[str, Any]:
             sent_diff = net_io.bytes_sent - _network_speed_cache["last_sent"]
             recv_diff = net_io.bytes_recv - _network_speed_cache["last_recv"]
             
-            _network_speed_cache["speed_sent"] = sent_diff / time_diff if time_diff > 0 else 0
-            _network_speed_cache["speed_recv"] = recv_diff / time_diff if time_diff > 0 else 0
+            _network_speed_cache["speed_sent"] = int(sent_diff / time_diff) if time_diff > 0 else 0
+            _network_speed_cache["speed_recv"] = int(recv_diff / time_diff) if time_diff > 0 else 0
         else:
             _network_speed_cache["speed_sent"] = 0
             _network_speed_cache["speed_recv"] = 0
         
-        _network_speed_cache["last_check"] = now
+        _network_speed_cache["last_check"] = int(now)
         _network_speed_cache["last_sent"] = net_io.bytes_sent
         _network_speed_cache["last_recv"] = net_io.bytes_recv
         
@@ -101,7 +101,7 @@ def get_external_ip() -> Dict[str, str]:
                 if response.status_code == 200:
                     data = response.json()
                     if "ip" in data:
-                        ipv6_candidate = data["ip"]
+                        ipv6_candidate = str(data["ip"])
                         # Ensure it's IPv6 (contains ':')
                         if ":" in ipv6_candidate:
                             ipv6 = ipv6_candidate
@@ -156,8 +156,8 @@ def get_system_metrics() -> Dict[str, Any]:
             "network": {
                 "bytes_sent_mb": round(net_io.bytes_sent / (1024**2), 2),
                 "bytes_recv_mb": round(net_io.bytes_recv / (1024**2), 2),
-                "speed_sent_mbps": network_speed.get("speed_sent_mbps", 0),
-                "speed_recv_mbps": network_speed.get("speed_recv_mbps", 0),
+                "speed_sent_mbps": float(network_speed.get("speed_sent_mbps", 0)),
+                "speed_recv_mbps": float(network_speed.get("speed_recv_mbps", 0)),
             },
             "external_ip": external_ip,
             "uptime": {
@@ -599,10 +599,7 @@ def update_config_setting(key: str, value: Any) -> bool:
             updated = True
         elif not updated and key in patterns:
             if key in integer_keys:
-                try:
-                    coerced = int(value)
-                except Exception:
-                    coerced = value
+                coerced = int(value) if isinstance(value, (int, float, bool, str)) else 0
                 lines.append(f"    {key} = {coerced}\n")
             else:
                 lines.append(f"    {key} = \"{value}\"\n")

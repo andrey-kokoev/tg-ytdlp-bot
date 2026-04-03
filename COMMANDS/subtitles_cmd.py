@@ -5,6 +5,7 @@ import time
 import re
 import random
 import json
+from typing import Any, cast
 from HELPERS.app_instance import get_app
 from HELPERS.filesystem_hlp import create_directory
 from HELPERS.decorators import reply_with_keyboard, background_handler
@@ -1048,9 +1049,9 @@ def get_available_subs_languages(url, user_id=None, auto_only=False):
             if client:
                 opts['extractor_args'] = {'youtube': {'player_client': [client]}}
             try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
+                with yt_dlp.YoutubeDL(cast(Any, opts)) as ydl:
                     info = ydl.extract_info(url, download=False)
-            except yt_dlp.utils.DownloadError as e:
+            except Exception as e:
                 if 'Requested format is not available' in str(e):
                     continue
                 raise
@@ -1116,16 +1117,13 @@ def get_available_subs_languages(url, user_id=None, auto_only=False):
                     return tt_auto if auto_only else tt_normal
             return result
 
-        except yt_dlp.utils.DownloadError as e:
+        except Exception as e:
             if "429" in str(e) and attempt < MAX_RETRIES - 1:
                 delay = backoff(attempt)
                 logger.warning(f"{LoggerMsg.SUBS_429_TOO_MANY_REQUESTS_SLEEP_LOG_MSG}")
                 time.sleep(delay)
                 continue
             logger.error(f"{LoggerMsg.SUBS_DOWNLOAD_ERROR_GETTING_SUBTITLES_LOG_MSG}")
-            break
-        except Exception as e:
-            logger.error(f"{LoggerMsg.SUBS_UNEXPECTED_ERROR_GETTING_SUBTITLES_LOG_MSG}")
             break
 
     return []
@@ -1446,7 +1444,7 @@ def download_subtitles_ytdlp(url, user_id, video_dir, available_langs):
             # Add PO token provider for YouTube domains
             info_opts = add_pot_to_ytdl_opts(info_opts, url)
 
-            with yt_dlp.YoutubeDL(info_opts) as ydl:
+            with yt_dlp.YoutubeDL(cast(Any, info_opts)) as ydl:
                 info = ydl.extract_info(url, download=False)
 
             # Prefer union view: sometimes only one dict is filled depending on client
@@ -1485,7 +1483,7 @@ def download_subtitles_ytdlp(url, user_id, video_dir, available_langs):
             is_translated = 'tlang=' in track_url
 
             # Clean filename for Windows compatibility
-            title = info.get('title', 'video')
+            title = str(info.get('title') or 'video')
             # Remove/replace invalid characters for Windows filenames
             invalid_chars = '<>:"/\\|?*'
             for char in invalid_chars:
@@ -1548,7 +1546,7 @@ def download_subtitles_ytdlp(url, user_id, video_dir, available_langs):
             except Exception: pass
             return None
 
-        except yt_dlp.utils.DownloadError as e:
+        except Exception as e:
             if "429" in str(e):
                 logger.warning(f"{LoggerMsg.SUBS_429_TOO_MANY_REQUESTS_LOG_MSG}")
                 if attempt and attempt < MAX_RETRIES - 1:
@@ -1557,9 +1555,6 @@ def download_subtitles_ytdlp(url, user_id, video_dir, available_langs):
                 logger.error(LoggerMsg.SUBS_FINAL_ATTEMPT_FAILED_429_LOG_MSG)
                 return None
             logger.error(f"{LoggerMsg.SUBS_DOWNLOAD_ERROR_LOG_MSG}")
-            return None
-        except Exception as e:
-            logger.error(f"{LoggerMsg.SUBS_UNEXPECTED_ERROR_LOG_MSG}")
             if attempt and attempt < MAX_RETRIES - 1:
                 time.sleep(_rand_jitter(10))
                 continue

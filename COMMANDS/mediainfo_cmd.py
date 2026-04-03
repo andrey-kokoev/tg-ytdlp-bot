@@ -54,7 +54,7 @@ def _build_mediainfo_command_context(message) -> MediaInfoCommandContext:
     return MediaInfoCommandContext(
         user_id=message.chat.id,
         source_message=message,
-        command_parts=(message.text or "").split(),
+        command_parts=[str(part) for part in (message.text or "").split()],
     )
 
 
@@ -135,8 +135,8 @@ def _execute_mediainfo_callback_result_plan(app, execution_context, callback_que
             app,
             execution_context,
             close_request,
-            answer_text=plan.answer_text,
-            log_text=plan.log_text,
+            answer_text=plan.answer_text or "",
+            log_text=plan.log_text or "",
         )
         return
 

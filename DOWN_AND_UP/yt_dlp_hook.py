@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import os
 import yt_dlp
+from typing import Any, cast
 from CONFIG.config import Config
 from CONFIG.messages import Messages, safe_get_messages
 from HELPERS.logger import logger, send_error_to_user
@@ -461,7 +462,9 @@ def get_video_formats(url, user_id=None, playlist_start_index=1, cookies_already
             # For playlists, keep all entries to download thumbnails/covers
             playlist_entries = None
             if isinstance(info, list):
-                info = (info[0] if len(info) > 0 else {})
+                list_info = cast(list[Any], info)
+                first_info = list_info[0] if list_info else {}
+                info = cast(dict[str, Any], first_info if isinstance(first_info, dict) else {})
                 logger.info("🔍 [DEBUG] info was a list; using the first element")
             elif isinstance(info, dict) and 'entries' in info:
                 entries = info.get('entries')
@@ -474,7 +477,7 @@ def get_video_formats(url, user_id=None, playlist_start_index=1, cookies_already
                     info['_playlist_entries'] = playlist_entries
             
             # Check for live stream after extraction (only if detection is enabled)
-            if info and info.get('is_live', False) and LimitsConfig.ENABLE_LIVE_STREAM_BLOCKING:
+            if isinstance(info, dict) and info.get('is_live', False) and LimitsConfig.ENABLE_LIVE_STREAM_BLOCKING:
                 logger.warning(f"Live stream detected in get_video_formats: {url}")
                 return {'error': 'LIVE_STREAM_DETECTED'}
             
@@ -488,7 +491,7 @@ def get_video_formats(url, user_id=None, playlist_start_index=1, cookies_already
             
             logger.info("✅ [DEBUG] extract_info_operation: returning info")
             return info
-        except yt_dlp.utils.DownloadError as e:
+        except Exception as e:
             error_text = str(e)
             logger.error(f"DownloadError in get_video_formats: {error_text}")
             resolved_error = _resolve_format_download_error(
@@ -501,14 +504,11 @@ def get_video_formats(url, user_id=None, playlist_start_index=1, cookies_already
             if resolved_error is not None:
                 return resolved_error
             raise e
-        except Exception as e:
-            logger.error(f"Error extracting info for {url}: {e}")
-            raise e
     
     return _execute_format_proxy_fallback(
         ytdl_opts=ytdl_opts,
         url=url,
-        user_id=user_id,
+        user_id=int(user_id) if user_id is not None else 0,
         extract_info_operation=extract_info_operation,
     )
 

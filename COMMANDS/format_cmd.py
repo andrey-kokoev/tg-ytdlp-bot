@@ -221,7 +221,11 @@ def set_format_logic(app, message, request=None):
             safe_send_message(user_id, messages.FORMAT_BEST_UPDATED_MSG.format(format=custom_format), message=context.source_message)
             send_to_logger(context.source_message, messages.FORMAT_UPDATED_BEST_LOG_MSG.format(format=custom_format))
         elif re.match(r'^id\s*\d+$', arg, re.IGNORECASE):
-            format_id = re.search(r'\d+', arg).group()
+            match = re.search(r'\d+', arg)
+            if match is None:
+                safe_send_message(user_id, messages.FORMAT_NOT_RECOGNIZED_MSG, message=context.source_message)
+                return
+            format_id = match.group()
             try:
                 from DOWN_AND_UP.always_ask_menu import get_video_formats, analyze_format_type
                 custom_format = f"{format_id}+bestaudio/bv+ba/best"
@@ -232,7 +236,11 @@ def set_format_logic(app, message, request=None):
                 safe_send_message(user_id, messages.FORMAT_ID_UPDATED_MSG.format(id=format_id, format=custom_format), message=context.source_message)
                 send_to_logger(context.source_message, messages.FORMAT_UPDATED_ID_LOG_MSG.format(format_id=format_id, format=custom_format))
         elif re.match(r'^id\s*\d+\s+audio$', arg, re.IGNORECASE):
-            format_id = re.search(r'\d+', arg).group()
+            match = re.search(r'\d+', arg)
+            if match is None:
+                safe_send_message(user_id, messages.FORMAT_NOT_RECOGNIZED_MSG, message=context.source_message)
+                return
+            format_id = match.group()
             custom_format = f"{format_id}/bestaudio"
             safe_send_message(user_id, messages.FORMAT_ID_AUDIO_UPDATED_MSG.format(id=format_id, format=custom_format), message=context.source_message)
             send_to_logger(context.source_message, messages.FORMAT_UPDATED_ID_AUDIO_LOG_MSG.format(format_id=format_id, format=custom_format))

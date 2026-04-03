@@ -275,10 +275,14 @@ class TelegramProfileFetcher:
             return None
         cached = self._get_cached_profile(user_id, force_refresh=force_refresh)
         try:
+            session = self._session
+            if session is None:
+                return cached if cached else None
             url = f"https://api.telegram.org/bot{self._token}/getChat"
-            resp = self._session.get(url, params={"chat_id": user_id}, timeout=10)
+            resp = session.get(url, params={"chat_id": user_id}, timeout=10)
             resp.raise_for_status()
-            data = resp.json().get("result", {})
+            payload = resp.json()
+            data = payload.get("result", {}) if isinstance(payload, dict) else {}
         except Exception as exc:
             logger.debug(f"[stats] getChat failed for {user_id}: {exc}")
             return cached if cached else None

@@ -1,0 +1,44 @@
+{
+  "include": [
+    "magic.py",
+    "COMMANDS",
+    "CONFIG",
+    "DATABASE",
+    "DOWN_AND_UP",
+    "HELPERS",
+    "URL_PARSERS",
+    "services",
+    "web"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".git",
+    ".pytest_cache",
+    "docker",
+    "docs",
+    "deploy",
+    "TXT",
+    "users",
+    "worktrees"
+  ],
+  "ignore": [
+    "PATCH"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        "."
+      ]
+    }
+  ],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownLambdaType": "none",
+  "reportUnknownParameterType": "none",
+  "reportMissingImports": "warning"
+}

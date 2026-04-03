@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+import re
+from dataclasses import dataclass
+from typing import Any, cast
 from HELPERS.logger import get_log_channel
 from CONFIG.logger_msg import LoggerMsg
 import threading
@@ -38,6 +40,7 @@ from URL_PARSERS.youtube import is_youtube_url, download_thumbnail
 from URL_PARSERS.thumbnail_downloader import download_thumbnail as download_universal_thumbnail
 from HELPERS.pot_helper import add_pot_to_ytdl_opts
 from CONFIG.limits import LimitsConfig
+from COMMANDS.cookies_cmd import is_youtube_geo_error, retry_download_with_proxy
 import subprocess
 from urllib.parse import urlparse
 from PIL import Image
@@ -358,7 +361,7 @@ def _cache_audio_delivery(
             [original_playlist_index],
             msg_ids,
             original_text=message.text or message.caption or "",
-            video_urls_dict=None,
+            video_urls_dict={},
         )
         cached_check = get_cached_playlist_videos(
             get_clean_playlist_url(url), quality_key, [original_playlist_index]
@@ -1299,7 +1302,7 @@ def _execute_audio_download_error_plan_with_evidence(
     try_download_audio,
     current_index: int,
     task_context: RuntimeTask | None,
-) -> tuple[object | None, bool, bool, RuntimeTask]:
+) -> tuple[object | None, bool, bool, RuntimeTask | None]:
     """
     PDA-refactored audio retry executor using TaskPlanExecutor.
 
@@ -2220,6 +2223,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
     from COMMANDS.cookies_cmd import is_youtube_cookie_error, is_youtube_geo_error, retry_download_with_different_cookies, retry_download_with_proxy
     
     playlist_indices = []
+    playlist_msg_ids = []
         
     (
         task_context,
@@ -2303,7 +2307,6 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
     is_playlist = video_count > 1 or is_playlist_with_range(original_text)
     
     # Extract video_end_with from original_text (if present)
-    from URL_PARSERS.tags import extract_url_range_tags
     _, parsed_start, parsed_end, _, _, _, _ = extract_url_range_tags(original_text)
     video_end_with = parsed_end if parsed_end != 1 or parsed_start != 1 else (video_start_with + video_count - 1)
     
@@ -2424,7 +2427,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     url=url,
                     quality_key=quality_key,
                     cached_ids=cached_ids,
-                    is_nsfw=is_nsfw,
+                    is_nsfw=bool(is_nsfw),
                     logger=logger,
                     send_to_logger=send_to_logger,
                 )
@@ -2616,7 +2619,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                 try:
                     update_download_progress(
                         user_id=user_id,
-                        progress=None,
+                        progress=0.0,
                         url=url,
                         title=title,
                         metadata=build_progress_metadata(downloaded, total),
@@ -2738,7 +2741,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             # match_filter will be added later for domain filtering only
             
             try:
-                with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+                with yt_dlp.YoutubeDL(cast(Any, ytdl_opts)) as ydl:
                     info_dict = ydl.extract_info(url, download=False)
                 info_dict = _normalize_audio_extracted_info(
                     info_dict,
@@ -2806,7 +2809,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                 remove_protection_file(user_folder)
                 
                 return info_dict
-            except yt_dlp.utils.DownloadError as e:
+            except Exception as e:
                 error_text = str(e)
                 logger.error(f"DownloadError: {error_text}")
                 retry_plan = _build_audio_retry_outcome_plan(
@@ -2829,11 +2832,6 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                 )
                 if retry_result is not None:
                     return retry_result
-                return None
-            except Exception as e:
-                error_text = str(e)
-                logger.error(f"Audio download attempt failed: {e}")
-                
                 return _handle_generic_audio_download_exception(
                     message=message,
                     user_id=user_id,
@@ -2854,11 +2852,14 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     import re
                     yt_id = None
                     if "youtube.com/watch?v=" in url:
-                        yt_id = re.search(r'v=([^&]+)', url).group(1)
+                        match = re.search(r'v=([^&]+)', url)
+                        yt_id = match.group(1) if match else None
                     elif "youtu.be/" in url:
-                        yt_id = re.search(r'youtu\.be/([^?]+)', url).group(1)
+                        match = re.search(r'youtu\.be/([^?]+)', url)
+                        yt_id = match.group(1) if match else None
                     elif "youtube.com/shorts/" in url:
-                        yt_id = re.search(r'shorts/([^?]+)', url).group(1)
+                        match = re.search(r'shorts/([^?]+)', url)
+                        yt_id = match.group(1) if match else None
                     
                     if yt_id:
                         youtube_thumb_path = os.path.join(user_folder, f"yt_thumb_{yt_id}.jpg")
@@ -2898,12 +2899,13 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                         total_playlist_count = len(temp_info["entries"])
                     elif "_playlist_entries" in temp_info:
                         total_playlist_count = len(temp_info["_playlist_entries"])
-                if total_playlist_count:
-                    logger.info(f"Total playlist count (audio): {total_playlist_count}")
+                    if total_playlist_count is not None:
+                        logger.info(f"Total playlist count (audio): {total_playlist_count}")
                     # Convert negative indices to positive:
                     # -1 = last video (total_playlist_count), -2 = second-to-last (total_playlist_count - 1), etc.
                     # Formula: positive_index = total_playlist_count + negative_index + 1
                     converted_indices = []
+                    assert total_playlist_count is not None
                     for neg_idx in playlist_indices_all:
                         if neg_idx < 0:
                             pos_idx = total_playlist_count + neg_idx + 1
@@ -2956,7 +2958,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             # For negative indices, don't use reuse_range_download; download each index separately
             reuse_range_download = use_range_download and range_entries_metadata is not None and not has_negative_indices_for_download
             if reuse_range_download:
-                if idx < len(range_entries_metadata):
+                if range_entries_metadata is not None and idx < len(range_entries_metadata):
                     info_dict = range_entries_metadata[idx]
                     logger.info(f"[AUDIO RANGE] Reusing cached entry #{idx + 1} for playlist index {original_playlist_index}")
                     result = info_dict
@@ -3076,7 +3078,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                         ytdl_opts = add_pot_to_ytdl_opts(ytdl_opts, url)
                         
                         # Try download with safe filename
-                        with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+                        with yt_dlp.YoutubeDL(cast(Any, ytdl_opts)) as ydl:
                             info_dict = ydl.extract_info(url, download=False)
                             if "entries" in info_dict:
                                 entries = info_dict["entries"]
@@ -3134,7 +3136,8 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
             if info_dict is None:
                 logger.error("info_dict is None, cannot proceed with audio processing")
                 # Send specific error message if available
-                if error_text and "Postprocessing" in error_text and "Invalid argument" in error_text:
+                last_error_text = locals().get("error_text")
+                if last_error_text and "Postprocessing" in last_error_text and "Invalid argument" in last_error_text:
                     postprocessing_message = (
                         safe_get_messages(user_id).AUDIO_FILE_PROCESSING_ERROR_INVALID_ARG_MSG +
                         "**Possible causes:**\n"
@@ -3270,7 +3273,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     logger.info(f"Embedding cover {cover_path} into {audio_file}")
                     
                     # Extract metadata for embedding
-                    original_title = info_dict.get("original_title", info_dict.get("title", ""))
+                    original_title = str(info_dict.get("original_title", info_dict.get("title", "")) or "")
                     artist = info_dict.get("artist") or info_dict.get("uploader") or info_dict.get("channel", "")
                     album = info_dict.get("album", "")
                     
@@ -3278,7 +3281,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                     title_for_metadata = original_title
                     if artist and artist in original_title:
                         # Remove artist name from title (e.g., "Rick Astley - Never Gonna Give You Up" -> "Never Gonna Give You Up")
-                        title_for_metadata = original_title.replace(f"{artist} - ", "").replace(f"{artist}: ", "").strip()
+                        title_for_metadata = str(original_title).replace(f"{artist} - ", "").replace(f"{artist}: ", "").strip()
                         logger.info(f"Removed artist from title: '{original_title}' -> '{title_for_metadata}'")
                     
                     logger.info(f"Metadata - Title: {title_for_metadata}, Artist: {artist}, Album: {album}")
@@ -3328,7 +3331,7 @@ def down_and_audio(app, message, url=None, tags=None, quality_key=None, playlist
                 
             except Exception as e:
                 logger.warning(f"Failed to read MP3 metadata, using original title: {e}")
-                display_title = original_audio_title
+                display_title = str(original_audio_title or "audio")
             
             # Use display title from metadata for caption
             caption_with_link = f"{display_title}\n{tags_block}[🔗 Audio URL]({url}){bot_mention}"

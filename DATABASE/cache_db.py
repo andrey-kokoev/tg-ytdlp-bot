@@ -311,7 +311,7 @@ def _persist_reload_interval_in_config(new_hours: int) -> bool:
 
 def set_reload_interval_hours(new_hours: int) -> bool:
     """Set a new reload interval in hours (1..168). Restarts the reloader if needed and persists to config.py."""
-    global reload_interval_hours
+    global auto_cache_enabled, reload_interval_hours
     try:
         new_val = int(new_hours)
     except Exception:
@@ -457,7 +457,7 @@ def auto_cache_command(app, message):
 # Added playlist caching - separate functions for saving and retrieving playlist cache
 def save_to_playlist_cache(playlist_url: str, quality_key: str, video_indices: list, message_ids: list,
                            messages = safe_get_messages(None),
-                           clear: bool = False, original_text: str = None, video_urls_dict: dict = None):
+                           clear: bool = False, original_text: str | None = None, video_urls_dict: dict | None = None):
     global firebase_cache
     # Lazy imports to avoid circular imports
     from URL_PARSERS.normalizer import normalize_url_for_cache, strip_range_from_url
@@ -548,7 +548,7 @@ def save_to_playlist_cache(playlist_url: str, quality_key: str, video_indices: l
                         if idx_pos < len(message_ids):
                             video_msg_id = message_ids[idx_pos]
                             # Save video separately by its unique URL
-                            save_to_video_cache(video_url, quality_key, [video_msg_id], clear=False, original_text=None, user_id=None)
+                            save_to_video_cache(video_url, quality_key, [video_msg_id], clear=False)
                             logger.info(f"✅ [CACHE] Saved video separately: index={video_index}, url={video_url}, msg_id={video_msg_id}")
                 except Exception as e:
                     logger.warning(f"⚠️ [CACHE] Failed to save separate video for index={video_index}, url={video_url}: {e}")
@@ -720,7 +720,7 @@ def get_cached_qualities(url: str) -> set:
         return set()
 
 # --- Quickly get the number of cached videos for quality ---
-def get_cached_playlist_count(playlist_url: str, quality_key: str, indices: list = None) -> int:
+def get_cached_playlist_count(playlist_url: str, quality_key: str, indices: list | None = None) -> int:
     """
     Returns the number of cached videos for the given quality (based on the number of keys in the database),
     considering and rounded quality_key (ceil_to_popular).
@@ -1012,7 +1012,7 @@ def get_cached_image_post_indices(url: str) -> set:
         logger.error(f"Failed to get cached image indices: {e}")
         return set()
 
-def save_to_video_cache(url: str, quality_key: str, message_ids: list, clear: bool = False, original_text: str = None, user_id: int = None):
+def save_to_video_cache(url: str, quality_key: str, message_ids: list, clear: bool = False, original_text: str | None = None, user_id: int | None = None):
     """Saves message IDs to Firebase video cache after checking local cache to avoid duplication."""
     global firebase_cache
     from URL_PARSERS.normalizer import normalize_url_for_cache
@@ -1128,7 +1128,7 @@ def save_to_video_cache(url: str, quality_key: str, message_ids: list, clear: bo
         logger.error(f"Failed to save to video cache: {e}")
         
 
-def get_cached_message_ids(url: str, quality_key: str) -> list:
+def get_cached_message_ids(url: str, quality_key: str) -> list[int] | None:
     """Searches cache for both versions of YouTube link (long/short)."""
     messages = safe_get_messages(None)
     from URL_PARSERS.normalizer import normalize_url_for_cache
@@ -1155,7 +1155,7 @@ def get_cached_message_ids(url: str, quality_key: str) -> list:
             ids_string = get_from_local_cache(path_parts)
             
             logger.info(f"get_cached_message_ids: raw value from local cache: {ids_string} (type: {type(ids_string)})")
-            if ids_string:
+            if isinstance(ids_string, str) and ids_string:
                 result = [int(msg_id) for msg_id in ids_string.split(',')]
                 logger.info(
                     f"get_cached_message_ids: found cached message_ids {result} for URL: {url}, quality: {quality_key}")

@@ -1,13 +1,14 @@
 import yt_dlp
 import logging
 import os
+from typing import Any, cast
 from urllib.parse import quote
 from COMMANDS.proxy_cmd import get_proxy_config
 from CONFIG.messages import Messages, safe_get_messages
 
 logger = logging.getLogger(__name__)
 
-def get_direct_link_with_proxy(url: str, format_spec: str = "bv+ba/best", user_id: int = None) -> dict:
+def get_direct_link_with_proxy(url: str, format_spec: str = "bv+ba/best", user_id: int | None = None) -> dict:
     """
     Get direct stream link using proxy
     
@@ -70,7 +71,7 @@ def get_direct_link_with_proxy(url: str, format_spec: str = "bv+ba/best", user_i
                 ydl_opts['cookiefile'] = cookie_path
         
         # Extract video info
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
             info = ydl.extract_info(url, download=False)
             
         if not info:
@@ -93,7 +94,7 @@ def get_direct_link_with_proxy(url: str, format_spec: str = "bv+ba/best", user_i
             raise Exception("No direct URL found")
             
         # Create player-specific URLs
-        encoded_url = quote(direct_url, safe='')
+        encoded_url = quote(str(direct_url), safe='')
         
         # Parse URL to get host and path for Android intent
         from urllib.parse import urlparse
@@ -151,7 +152,7 @@ def build_proxy_url(proxy_config):
         else:
             return f"http://{proxy_config['ip']}:{proxy_config['port']}"
 
-def add_proxy_to_ytdl_opts(ytdl_opts: dict, url: str, user_id: int = None) -> dict:
+def add_proxy_to_ytdl_opts(ytdl_opts: dict, url: str, user_id: int | None = None) -> dict:
     """Add proxy to yt-dlp options if proxy is enabled for user or domain requires it"""
     logger.info(f"add_proxy_to_ytdl_opts called: user_id={user_id}, url={url}")
     
@@ -192,7 +193,7 @@ def add_proxy_to_ytdl_opts(ytdl_opts: dict, url: str, user_id: int = None) -> di
     
     return ytdl_opts
 
-def try_with_proxy_fallback(ytdl_opts: dict, url: str, user_id: int = None, operation_func=None, *args, **kwargs):
+def try_with_proxy_fallback(ytdl_opts: dict, url: str, user_id: int | None = None, operation_func=None, *args, **kwargs):
     """
     Try operation with different proxies in case of failure when user proxy is enabled
     
@@ -414,7 +415,7 @@ def select_proxy_for_user():
         select_proxy_for_user.counter += 1
         return selected
 
-def add_proxy_to_gallery_dl_config(config: dict, url: str, user_id: int = None) -> dict:
+def add_proxy_to_gallery_dl_config(config: dict, url: str, user_id: int | None = None) -> dict:
     """Add proxy to gallery-dl config if proxy is enabled for user or domain requires it"""
     logger.info(f"add_proxy_to_gallery_dl_config called: user_id={user_id}, url={url}")
     

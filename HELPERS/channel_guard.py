@@ -1,7 +1,7 @@
 import asyncio
 import concurrent.futures
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple, Callable, Union
+from typing import Any, Dict, List, Optional, Tuple, Callable, Union, cast
 
 from pyrogram import Client as PyroClient
 from pyrogram.errors import RPCError
@@ -151,14 +151,15 @@ class ChannelGuard:
         self._running = True
         if self._user_session_string:
             try:
-                self._user_client = PyroClient(
+                user_client = PyroClient(
                     name="channel_guard_user",
                     api_id=Config.API_ID,
                     api_hash=Config.API_HASH,
                     session_string=self._user_session_string,
                     no_updates=True,
                 )
-                await self._user_client.start()
+                await user_client.start()
+                self._user_client = user_client
                 logger.info("[ChannelGuard] User session connected for admin logs")
             except Exception as exc:
                 logger.error(f"[ChannelGuard] Failed to start user session: {exc}")
@@ -220,7 +221,13 @@ class ChannelGuard:
         return pending
 
     def get_pending_ids(self) -> List[int]:
-        return [int(item.get("ID")) for item in self.get_pending_leavers() if item.get("ID")]
+        result: List[int] = []
+        for item in self.get_pending_leavers():
+            item_id = item.get("ID")
+            if item_id is None:
+                continue
+            result.append(int(item_id))
+        return result
 
     def mark_user_blocked(self, user_id: Union[str, int], reason: str) -> None:
         uid = str(user_id)
@@ -228,13 +235,11 @@ class ChannelGuard:
         blocked_ts = int(datetime.now(tz=timezone.utc).timestamp())
         if not leaver:
             leaver = {"ID": uid}
-        leaver.update(
-            {
-                "blocked": True,
-                "blocked_ts": blocked_ts,
-                "blocked_reason": reason,
-            }
-        )
+        leaver.update(cast(Dict[str, Any], {
+            "blocked": True,
+            "blocked_ts": blocked_ts,
+            "blocked_reason": reason,
+        }))
         self._leavers[uid] = leaver
         self._guard_root.child("leavers").child(uid).update(leaver)
 

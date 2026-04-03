@@ -7,6 +7,7 @@ from typing import Dict, Optional, Tuple
 from datetime import datetime
 
 import requests
+from requests.cookies import RequestsCookieJar
 
 
 DEFAULT_TIMEOUT_SECONDS = 6
@@ -54,7 +55,7 @@ def _load_cookies_for_user(user_id: int) -> Optional[str]:
     return None
 
 
-def _create_session_with_cookies(user_id: int = None) -> requests.Session:
+def _create_session_with_cookies(user_id: int | None = None) -> requests.Session:
     """
     Create a requests session with user cookies.
     Uses managed session for automatic cleanup.
@@ -82,11 +83,11 @@ def _create_session_with_cookies(user_id: int = None) -> requests.Session:
     return session
 
 
-def _load_cookies_from_file(cookie_path: str) -> requests.cookies.RequestsCookieJar:
+def _load_cookies_from_file(cookie_path: str) -> RequestsCookieJar:
     """
     Load cookies from a Netscape-format cookie file.
     """
-    jar = requests.cookies.RequestsCookieJar()
+    jar = RequestsCookieJar()
     
     try:
         with open(cookie_path, 'r', encoding='utf-8') as f:
@@ -121,7 +122,7 @@ def _load_cookies_from_file(cookie_path: str) -> requests.cookies.RequestsCookie
     return jar
 
 
-def _http_get(url: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, user_id: int = None) -> Optional[str]:
+def _http_get(url: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, user_id: int | None = None) -> Optional[str]:
     try:
         session = _create_session_with_cookies(user_id)
         resp = session.get(url, timeout=timeout, allow_redirects=True)
@@ -133,7 +134,7 @@ def _http_get(url: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, user_id: int = N
     return None
 
 
-def _http_get_json(url: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, user_id: int = None) -> Optional[Dict]:
+def _http_get_json(url: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, user_id: int | None = None) -> Optional[Dict]:
     try:
         session = _create_session_with_cookies(user_id)
         resp = session.get(url, timeout=timeout, allow_redirects=True)
@@ -170,7 +171,7 @@ def _extract_meta(html: str) -> Dict[str, str]:
     return metas
 
 
-def _extract_via_oembed(url: str, endpoints: Tuple[str, ...], user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_via_oembed(url: str, endpoints: Tuple[str, ...], user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     """
     Try standard oEmbed endpoints and return (author_name/provider_name, site_label).
     """
@@ -381,7 +382,7 @@ def _detect_service(url: str) -> Optional[str]:
 # -------- Instagram --------
 
 
-def _extract_instagram_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_instagram_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try oEmbed first with cookies
     try:
         data = _http_get_json(f"https://www.instagram.com/oembed/?url={url}", user_id=user_id)
@@ -415,7 +416,7 @@ def _extract_instagram_info(url: str, user_id: int = None) -> Tuple[Optional[str
     return (name, site)
 
 
-def _extract_instagram_date(url: str, user_id: int = None) -> Optional[str]:
+def _extract_instagram_date(url: str, user_id: int | None = None) -> Optional[str]:
     """
     Extract upload date from the Instagram oEmbed API.
     Returns a date in DD.MM.YYYY format or None.
@@ -463,7 +464,7 @@ def _extract_instagram_date(url: str, user_id: int = None) -> Optional[str]:
 # -------- TikTok --------
 
 
-def _extract_tiktok_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_tiktok_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try oEmbed with cookies first
     try:
         oembed_url = f"https://www.tiktok.com/oembed?url={url}"
@@ -506,7 +507,7 @@ def _extract_tiktok_info(url: str, user_id: int = None) -> Tuple[Optional[str], 
     return (None, "TikTok")
 
 
-def _extract_tiktok_date(url: str, user_id: int = None) -> Optional[str]:
+def _extract_tiktok_date(url: str, user_id: int | None = None) -> Optional[str]:
     """Extract upload date from TikTok API."""
     # Try with cookies first
     try:
@@ -547,7 +548,7 @@ def _extract_tiktok_date(url: str, user_id: int = None) -> Optional[str]:
 # -------- X (Twitter) --------
 
 
-def _extract_x_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_x_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try oEmbed with cookies first
     try:
         oembed_url = f"https://publish.twitter.com/oembed?url={url}"
@@ -595,7 +596,7 @@ def _extract_x_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optio
     return (None, "X")
 
 
-def _extract_x_date(url: str, user_id: int = None) -> Optional[str]:
+def _extract_x_date(url: str, user_id: int | None = None) -> Optional[str]:
     """Extract publish date from X (Twitter) API."""
     # Try with cookies first
     try:
@@ -636,7 +637,7 @@ def _extract_x_date(url: str, user_id: int = None) -> Optional[str]:
 # -------- VK --------
 
 
-def _extract_vk_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_vk_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try to resolve owner from wall-<owner>_<post>
     site = "VK"
     try:
@@ -699,7 +700,7 @@ def _extract_vk_info(url: str, user_id: int = None) -> Tuple[Optional[str], Opti
 # -------- YouTube --------
 
 
-def _extract_youtube_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_youtube_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try oEmbed with cookies first
     try:
         name, provider = _extract_via_oembed(url, (
@@ -733,7 +734,7 @@ def _extract_youtube_info(url: str, user_id: int = None) -> Tuple[Optional[str],
         return (None, "YouTube")
 
 
-def _extract_youtube_date(url: str, user_id: int = None) -> Optional[str]:
+def _extract_youtube_date(url: str, user_id: int | None = None) -> Optional[str]:
     """Extract upload date from YouTube API."""
     # Try with cookies first
     try:
@@ -774,7 +775,7 @@ def _extract_youtube_date(url: str, user_id: int = None) -> Optional[str]:
 # -------- Reddit --------
 
 
-def _extract_reddit_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_reddit_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try oEmbed with cookies first
     try:
         name, provider = _extract_via_oembed(url, (
@@ -811,7 +812,7 @@ def _extract_reddit_info(url: str, user_id: int = None) -> Tuple[Optional[str], 
 # -------- Pinterest --------
 
 
-def _extract_pinterest_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_pinterest_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # No official public oEmbed; use OpenGraph only
     try:
         html = _http_get(url, user_id=user_id)
@@ -827,7 +828,7 @@ def _extract_pinterest_info(url: str, user_id: int = None) -> Tuple[Optional[str
 # -------- Flickr --------
 
 
-def _extract_flickr_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_flickr_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try oEmbed with cookies first
     try:
         name, provider = _extract_via_oembed(url, (
@@ -864,7 +865,7 @@ def _extract_flickr_info(url: str, user_id: int = None) -> Tuple[Optional[str], 
 # -------- DeviantArt --------
 
 
-def _extract_deviantart_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_deviantart_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try oEmbed with cookies first
     try:
         name, provider = _extract_via_oembed(url, (
@@ -901,7 +902,7 @@ def _extract_deviantart_info(url: str, user_id: int = None) -> Tuple[Optional[st
 # -------- Imgur --------
 
 
-def _extract_imgur_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_imgur_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try oEmbed with cookies first
     try:
         name, provider = _extract_via_oembed(url, (
@@ -938,7 +939,7 @@ def _extract_imgur_info(url: str, user_id: int = None) -> Tuple[Optional[str], O
 # -------- Tumblr --------
 
 
-def _extract_tumblr_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_tumblr_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try oEmbed with cookies first
     try:
         name, provider = _extract_via_oembed(url, (
@@ -976,7 +977,7 @@ def _extract_tumblr_info(url: str, user_id: int = None) -> Tuple[Optional[str], 
 # -------- Pixiv --------
 
 
-def _extract_pixiv_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_pixiv_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Try OpenGraph with cookies first
     try:
         html = _http_get(url, user_id=user_id)
@@ -1018,7 +1019,7 @@ def _extract_pixiv_info(url: str, user_id: int = None) -> Tuple[Optional[str], O
 # -------- ArtStation --------
 
 
-def _extract_artstation_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_artstation_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # ArtStation has OG meta with title/site
     try:
         html = _http_get(url, user_id=user_id)
@@ -1034,7 +1035,7 @@ def _extract_artstation_info(url: str, user_id: int = None) -> Tuple[Optional[st
 # -------- Danbooru --------
 
 
-def _extract_danbooru_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_danbooru_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     try:
         html = _http_get(url, user_id=user_id)
         metas = _extract_meta(html or "")
@@ -1048,7 +1049,7 @@ def _extract_danbooru_info(url: str, user_id: int = None) -> Tuple[Optional[str]
 # -------- Gelbooru --------
 
 
-def _extract_gelbooru_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_gelbooru_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     try:
         html = _http_get(url, user_id=user_id)
         metas = _extract_meta(html or "")
@@ -1062,7 +1063,7 @@ def _extract_gelbooru_info(url: str, user_id: int = None) -> Tuple[Optional[str]
 # -------- Yande.re --------
 
 
-def _extract_yandere_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_yandere_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     try:
         html = _http_get(url, user_id=user_id)
         metas = _extract_meta(html or "")
@@ -1076,7 +1077,7 @@ def _extract_yandere_info(url: str, user_id: int = None) -> Tuple[Optional[str],
 # -------- Sankaku --------
 
 
-def _extract_sankaku_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_sankaku_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     try:
         html = _http_get(url, user_id=user_id)
         metas = _extract_meta(html or "")
@@ -1091,7 +1092,7 @@ def _extract_sankaku_info(url: str, user_id: int = None) -> Tuple[Optional[str],
 # -------- e621 --------
 
 
-def _extract_e621_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_e621_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     try:
         html = _http_get(url, user_id=user_id)
         metas = _extract_meta(html or "")
@@ -1105,7 +1106,7 @@ def _extract_e621_info(url: str, user_id: int = None) -> Tuple[Optional[str], Op
 # -------- Rule34 --------
 
 
-def _extract_rule34_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_rule34_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     try:
         html = _http_get(url, user_id=user_id)
         metas = _extract_meta(html or "")
@@ -1119,7 +1120,7 @@ def _extract_rule34_info(url: str, user_id: int = None) -> Tuple[Optional[str], 
 # -------- Behance --------
 
 
-def _extract_behance_info(url: str, user_id: int = None) -> Tuple[Optional[str], Optional[str]]:
+def _extract_behance_info(url: str, user_id: int | None = None) -> Tuple[Optional[str], Optional[str]]:
     # Behance has OG meta; sometimes author is in og:title or profile path
     try:
         html = _http_get(url, user_id=user_id)
@@ -1181,7 +1182,7 @@ SERVICE_DATE_HANDLERS = {
 
 
 @lru_cache(maxsize=512)
-def get_service_account_info(url: str, user_id: int = None) -> Dict[str, Optional[str]]:
+def get_service_account_info(url: str, user_id: int | None = None) -> Dict[str, Optional[str]]:
     """
     Return a dict with keys:
       - service: detected service name
@@ -1233,7 +1234,7 @@ def build_tags(info: Dict[str, Optional[str]]) -> Tuple[str, Optional[str]]:
     return (service_tag, account_tag)
 
 
-def get_account_tag(url: str, user_id: int = None) -> str:
+def get_account_tag(url: str, user_id: int | None = None) -> str:
     """
     Convenience helper: return a hashtag string for a message.
     Example: "#instagram #some_account" or just "#instagram".
@@ -1246,7 +1247,7 @@ def get_account_tag(url: str, user_id: int = None) -> str:
 
 
 @lru_cache(maxsize=512)
-def get_service_date(url: str, user_id: int = None) -> Optional[str]:
+def get_service_date(url: str, user_id: int | None = None) -> Optional[str]:
     """
     Extract upload/publish date from various service APIs.
     Returns a date in DD.MM.YYYY format or None.

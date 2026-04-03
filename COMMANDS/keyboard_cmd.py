@@ -210,8 +210,8 @@ def _execute_keyboard_callback_result_plan(app, execution_context, callback_quer
             app,
             execution_context,
             close_request,
-            answer_text=plan.answer_text,
-            log_text=plan.log_text,
+            answer_text=plan.answer_text or "",
+            log_text=plan.log_text or "",
         )
         return
 
@@ -341,7 +341,7 @@ def keyboard_callback_logic(app, execution_context, request):
 def apply_keyboard_setting(app, chat_id, setting, message_id=None, user_id=None):
     """Apply keyboard setting immediately."""
     try:
-        _send_keyboard_layout_preview(chat_id, message_id, user_id, setting)
+        _send_keyboard_layout_preview(chat_id, message_id, str(user_id or chat_id), setting)
     except Exception as e:
         from HELPERS.logger import logger
         logger.error(safe_get_messages(user_id).KEYBOARD_ERROR_APPLYING_MSG.format(setting=setting, error=e))

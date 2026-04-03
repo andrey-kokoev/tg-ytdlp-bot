@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from enum import Enum, auto
-from typing import Any, Callable, TypeVar, Protocol
+from typing import Any, Callable, TypeVar, Protocol, cast
 from time import time
 
 from DOWN_AND_UP.runtime_task import RuntimeTask
@@ -217,7 +217,7 @@ def execute_plan(
     # Attach evidence to task (immutably)
     new_task = _attach_evidence(task, evidence)
 
-    return new_task, result
+    return new_task, cast(R, result)
 
 
 def execute_with_error_evidence(

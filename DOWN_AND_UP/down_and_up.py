@@ -10,6 +10,7 @@ import time
 import subprocess
 import traceback
 from dataclasses import dataclass
+from typing import Any
 import yt_dlp
 import re
 from HELPERS.app_instance import get_app
@@ -45,7 +46,9 @@ from HELPERS.pot_helper import add_pot_to_ytdl_opts
 from CONFIG.config import Config
 from CONFIG.limits import LimitsConfig
 from COMMANDS.subtitles_cmd import is_subs_enabled, check_subs_availability, get_user_subs_auto_mode, _subs_check_cache, download_subtitles_ytdlp, get_user_subs_language, clear_subs_check_cache, is_subs_always_ask
+from COMMANDS.cookies_cmd import is_youtube_geo_error, retry_download_with_proxy
 from COMMANDS.split_sizer import get_user_split_size
+from HELPERS.qualifier import ceil_to_popular
 from COMMANDS.mediainfo_cmd import send_mediainfo_if_enabled
 from DOWN_AND_UP.gallery_command_result import (
     did_gallery_command_fail,
@@ -434,8 +437,9 @@ def _execute_split_quality_key_terminal_plan_core(
     result["status_edited"] = True
     send_to_logger(message, success_msg)
     result["log_sent"] = True
-    _clear_video_subtitle_state(user_id, url)
-    result["subs_state_cleared"] = True
+    if url is not None:
+        _clear_video_subtitle_state(user_id, url)
+        result["subs_state_cleared"] = True
     if plan.should_cache and url and safe_quality_key:
         logger.info(f"down_and_up: saving split video to cache after quality_key error: {split_msg_ids}")
         _save_video_cache_with_logging(
@@ -575,7 +579,7 @@ def _execute_split_upload_completion_plan_core(
         "log_sent": False,
     }
 
-    if plan.should_save_cache:
+    if plan.should_save_cache and plan.final_quality_key is not None:
         _save_video_cache_with_logging(
             url,
             plan.final_quality_key,
@@ -676,6 +680,7 @@ def _build_non_split_upload_completion_plan() -> NonSplitUploadCompletionPlan:
 def _execute_non_split_upload_completion_plan_core(
     *,
     plan: NonSplitUploadCompletionPlan,
+    message,
     user_id: int,
     proc_msg_id: int,
     info_text: str,
@@ -729,6 +734,7 @@ def _execute_non_split_upload_completion_plan(
     """Legacy executor - for backward compatibility."""
     _execute_non_split_upload_completion_plan_core(
         plan=plan,
+        message=message,
         user_id=user_id,
         proc_msg_id=proc_msg_id,
         info_text=info_text,
@@ -759,6 +765,7 @@ def _execute_non_split_upload_completion_plan_with_evidence(
     if task_context is None:
         result = _execute_non_split_upload_completion_plan_core(
             plan=plan,
+            message=message,
             user_id=user_id,
             proc_msg_id=proc_msg_id,
             info_text=info_text,
@@ -772,6 +779,7 @@ def _execute_non_split_upload_completion_plan_with_evidence(
     def _executor(p: NonSplitUploadCompletionPlan) -> dict[str, Any]:
         return _execute_non_split_upload_completion_plan_core(
             plan=p,
+            message=message,
             user_id=user_id,
             proc_msg_id=proc_msg_id,
             info_text=info_text,
@@ -843,7 +851,7 @@ def _execute_upload_cache_writeback_plan_core(
         video_urls_dict = (
             {current_video_index: playlist_video_urls.get(current_video_index)}
             if current_video_index in playlist_video_urls
-            else None
+            else {}
         )
         save_to_playlist_cache(
             get_clean_playlist_url(url),
@@ -1447,7 +1455,7 @@ def _execute_manual_forward_recovery_plan_core(
 
     Returns dict with execution result and state changes.
     """
-    result = {
+    result: dict[str, Any] = {
         "executed": False,
         "forwarded_msgs": None,
         "already_forwarded_to_log": already_forwarded_to_log,
@@ -1672,7 +1680,7 @@ def _execute_upload_routing_plan_with_evidence(
     thumb_path: str | None,
     already_forwarded_to_log: bool,
     task_context: RuntimeTask | None,
-) -> tuple[dict, RuntimeTask]:
+) -> tuple[dict, RuntimeTask | None]:
     """
     PDA-refactored upload routing executor using TaskPlanExecutor.
 
@@ -2391,21 +2399,23 @@ def _execute_download_cache_writeback_plan_core(
             logger.info(plan.skip_log_text)
             result["skip_logged"] = True
     else:
+        assert plan.summary_quality_key is not None
         save_to_playlist_cache(
             get_clean_playlist_url(url),
             plan.summary_quality_key,
             playlist_indices,
             playlist_msg_ids,
             original_text=message.text or message.caption or "",
-            video_urls_dict=playlist_video_urls if playlist_video_urls else None,
+            video_urls_dict=playlist_video_urls if playlist_video_urls else {},
         )
         result["cache_saved"] = True
 
-    cached_check = get_cached_playlist_videos(get_clean_playlist_url(url), plan.summary_quality_key, playlist_indices)
-    summary = "\n".join([f"Index {idx}: msg_id={cached_check.get(idx, '-')}" for idx in playlist_indices])
-    logger.info(f"[SUMMARY] Playlist cache (quality {plan.summary_quality_key}):\n{summary}")
-    result["summary_generated"] = True
-    result["cached_indices_count"] = len(cached_check)
+    if plan.summary_quality_key is not None:
+        cached_check = get_cached_playlist_videos(get_clean_playlist_url(url), plan.summary_quality_key, playlist_indices)
+        summary = "\n".join([f"Index {idx}: msg_id={cached_check.get(idx, '-')}" for idx in playlist_indices])
+        logger.info(f"[SUMMARY] Playlist cache (quality {plan.summary_quality_key}):\n{summary}")
+        result["summary_generated"] = True
+        result["cached_indices_count"] = bool(cached_check)
 
     return result
 
@@ -2520,7 +2530,8 @@ def _send_open_nsfw_history_copy(
         return False
     try:
         try:
-            v_w, v_h, v_dur = get_video_info_ffprobe(video_path)
+            ffprobe_info = get_video_info_ffprobe(video_path) or (width, height, duration)
+            v_w, v_h, v_dur = ffprobe_info
         except Exception:
             v_w, v_h, v_dur = width, height, duration
         app.send_video(
@@ -2609,7 +2620,7 @@ def _cache_playlist_video_delivery(
             [current_video_index],
             [m.id for m in forwarded_msgs],
             original_text=message.text or message.caption or "",
-            video_urls_dict=video_urls_dict,
+            video_urls_dict=video_urls_dict or {},
         )
     else:
         logger.info("Video with subtitles (subs.txt found) is not cached!")
@@ -2649,7 +2660,20 @@ def _cache_single_video_delivery(
         )
 
 
-def _handle_quality_key_error(e: Exception, split_msg_ids: list, is_playlist: bool, successful_uploads: int, indices_to_download: list, video_count: int, user_id: int, proc_msg_id: int, message, app, url: str = None, safe_quality_key: str = None):
+def _handle_quality_key_error(
+    e: Exception,
+    split_msg_ids: list,
+    is_playlist: bool,
+    successful_uploads: int,
+    indices_to_download: list,
+    video_count: int,
+    user_id: int,
+    proc_msg_id: int,
+    message,
+    app,
+    url: str | None = None,
+    safe_quality_key: str | None = None,
+):
     messages = safe_get_messages(user_id)
     """Universal handler for quality_key errors that ensures final actions are completed"""
     logger.info(f"quality_key error ignored (non-critical): {e}")
@@ -2687,8 +2711,8 @@ def _handle_split_quality_key_terminal_after_error(
     split_msg_ids: list,
     is_playlist: bool,
     video_count: int,
-    url: str,
-    safe_quality_key: str,
+    url: str | None,
+    safe_quality_key: str | None,
     message,
     user_id: int,
     proc_msg_id: int,
@@ -2715,7 +2739,13 @@ def _handle_split_quality_key_terminal_after_error(
             split_msg_ids=split_msg_ids,
         )
 
-def _save_video_cache_with_logging(url: str, safe_quality_key: str, message_ids: list, original_text: str = None, user_id: int = None):
+def _save_video_cache_with_logging(
+    url: str,
+    safe_quality_key: str,
+    message_ids: list,
+    original_text: str | None = None,
+    user_id: int | None = None,
+):
     """Save video to cache with channel type logging."""
     try:
         # Check if user has send_as_file enabled
@@ -2739,7 +2769,7 @@ def _save_video_cache_with_logging(url: str, safe_quality_key: str, message_ids:
             return
         
         logger.info(LoggerMsg.DOWN_UP_ABOUT_TO_SAVE_VIDEO_LOG_MSG.format(url=url, quality=safe_quality_key, message_ids=message_ids, channel_type=channel_type))
-        save_to_video_cache(url, safe_quality_key, message_ids, original_text=original_text)
+        save_to_video_cache(url, safe_quality_key, message_ids, original_text=original_text or "")
         logger.info(LoggerMsg.DOWN_UP_SAVE_REQUESTED_LOG_MSG.format(quality=safe_quality_key, channel_type=channel_type))
     except Exception as e:
         logger.error(LoggerMsg.DOWN_UP_SAVE_FAILED_LOG_MSG.format(quality=safe_quality_key, error=e))
@@ -3766,7 +3796,7 @@ def _handle_generic_video_download_exception(
     return None
 
 #@reply_with_keyboard
-def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video_start_with=1, tags_text="", force_no_title=False, format_override=None, quality_key=None, cookies_already_checked=False, use_proxy=False, cached_video_info=None, clear_subs_cache_on_start=True, task_context: RuntimeTask | None = None):
+def down_and_up(app, message, url=None, playlist_name=None, video_count=1, video_start_with=1, tags_text="", force_no_title=False, format_override=None, quality_key=None, cookies_already_checked=False, use_proxy=False, cached_video_info=None, clear_subs_cache_on_start=True, task_context: RuntimeTask | None = None):  # pyright: ignore[reportGeneralTypeIssues]
     # Reset the checked cookie-source cache for a new download task
     user_id = message.chat.id
     from COMMANDS.cookies_cmd import reset_checked_cookie_sources

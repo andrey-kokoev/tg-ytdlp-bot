@@ -4,7 +4,9 @@ import json
 import os
 import re
 import subprocess
-from typing import Any
+from typing import Any, cast
+
+from DOWN_AND_UP.runtime_task import RuntimeTask
 
 def build_playlist_items_selector(start: int, end: int) -> str:
     if start > end:
@@ -122,7 +124,7 @@ def _extract_playlist_entries(*, url: str, user_id: int, start: int, end: int) -
     ytdl_opts = add_proxy_to_ytdl_opts(ytdl_opts, url, user_id=user_id)
     ytdl_opts = add_pot_to_ytdl_opts(ytdl_opts, url)
 
-    with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+    with yt_dlp.YoutubeDL(cast(Any, ytdl_opts)) as ydl:
         info = ydl.extract_info(url, download=False)
 
     playlist_title = None
@@ -182,7 +184,7 @@ def _download_audio_entry(
     ytdl_opts = add_pot_to_ytdl_opts(ytdl_opts, entry_url)
 
     before_files = set(os.listdir(download_dir))
-    with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+    with yt_dlp.YoutubeDL(cast(Any, ytdl_opts)) as ydl:
         ydl.download([entry_url])
     after_files = set(os.listdir(download_dir))
     new_files = sorted(

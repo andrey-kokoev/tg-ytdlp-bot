@@ -48,6 +48,8 @@ def start_watchdog(log_heartbeat: bool = False):
         if _watchdog_started:
             return True
 
+        if SystemdNotifier is None:
+            return False
         notifier = SystemdNotifier()
 
         def watchdog_loop():
@@ -133,7 +135,7 @@ def _extract_url_from_message(message) -> str:
         return ""
 
 # Send Error Message to User and LOG_EXCEPTION channel
-def send_error_to_user(message, msg, url: str = None):
+def send_error_to_user(message, msg, url: str | None = None):
     capture_message_context(message)
     """Send error message to user and log it to LOG_EXCEPTION channel.
 
@@ -152,7 +154,7 @@ def send_error_to_user(message, msg, url: str = None):
     safe_send_message(user_id, msg, parse_mode=enums.ParseMode.HTML, message=message)
 
 # Log error message to LOG_EXCEPTION channel (without sending to user)
-def log_error_to_channel(message, msg, url: str = None):
+def log_error_to_channel(message, msg, url: str | None = None):
     capture_message_context(message)
     """Log error message to LOG_EXCEPTION channel only.
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from typing import Any
+from typing import Any, cast
 import yt_dlp
 import time
 from datetime import datetime
@@ -144,7 +144,7 @@ def _execute_live_stream_chunk(
         "ffmpeg_o": "-f mpegts",
     }
 
-    with yt_dlp.YoutubeDL(chunk_opts) as ydl:
+    with yt_dlp.YoutubeDL(cast(Any, chunk_opts)) as ydl:
         ydl.download([url])
 
     if not os.path.exists(chunk_file):
@@ -165,7 +165,7 @@ def _execute_live_stream_chunk(
         return False
 
     try:
-        _, _, duration = get_video_info_ffprobe(chunk_file)
+        _, _, duration = get_video_info_ffprobe(chunk_file) or (None, None, segment_time)
     except Exception as e:
         logger.error(f"Error getting video info: {e}")
         duration = segment_time

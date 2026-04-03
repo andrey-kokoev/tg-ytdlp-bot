@@ -54,6 +54,9 @@ from HELPERS.request_execution import (
     handle_image_range_selection_request,
 )
 
+app = get_app()
+assert app is not None
+
 # Unified helpers to create thumbnails/covers for videos
 def _get_file_mb(file_path):
     try:
@@ -87,7 +90,7 @@ def _should_generate_cover(video_path):
 
 def _probe_video_info(video_path):
     """Return dict with width,height,duration (seconds, int) using ffprobe."""
-    info = {"width": None, "height": None, "duration": None}
+    info: dict[str, int | None] = {"width": None, "height": None, "duration": None}
     try:
         result = subprocess.run([
             'ffprobe', '-v', 'error',
@@ -132,33 +135,6 @@ def generate_video_thumbnail(video_path):
             '-frames:v', '1', thumb_path
         ], capture_output=True, text=True, timeout=30)
         return thumb_path if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0 else None
-    except Exception:
-        return None
-
-def ensure_paid_cover_embedded(video_path, existing_thumb=None):
-    """Ensure a small JPEG cover (~<=320x320) preserving aspect ratio (padding) for paid media."""
-    try:
-        if not _should_generate_cover(video_path):
-            return None
-        # Prefer an existing thumb if available
-        if existing_thumb and os.path.exists(existing_thumb) and os.path.getsize(existing_thumb) > 0:
-            return existing_thumb
-        base_dir = os.path.dirname(video_path)
-        base_name = os.path.splitext(os.path.basename(video_path))[0]
-        cover_path = os.path.join(base_dir, base_name + '.__tgcover_paid.jpg')
-        if os.path.exists(cover_path) and os.path.getsize(cover_path) > 0:
-            return cover_path
-        # Max 320x320: downscale while preserving aspect ratio, then pad to 320x320; keep the file small
-        subprocess.run([
-            'ffmpeg', '-y', '-i', video_path,
-            '-vf', 'scale=320:320:force_original_aspect_ratio=decrease,pad=320:320:(ow-iw)/2:(oh-ih)/2:black',
-            '-vframes', '1', '-q:v', '4', cover_path
-        ], capture_output=True, text=True, timeout=30)
-        if os.path.exists(cover_path) and os.path.getsize(cover_path) > 0:
-            return cover_path
-        # Fallback to regular thumb if padding failed
-        reg_thumb = generate_video_thumbnail(video_path)
-        return reg_thumb if reg_thumb and os.path.getsize(reg_thumb) > 0 else None
     except Exception:
         return None
 
@@ -891,7 +867,7 @@ def _record_gallery_command_result(
     setattr(message, "_gallery_command_result", result)
     task_context = getattr(message, "_runtime_task", None)
     if task_context is not None:
-        setattr(task_context, "gallery_command_result", result)
+        setattr(message, "_runtime_task", task_context.with_gallery_command_result(result))
     return result
 
 @background_handler(label="image_command")
@@ -1008,7 +984,7 @@ def _execute_gallery_terminal_outcome_plan_with_evidence(
     return outcome
 
 
-def image_command_logic(app, message, request=None):
+def image_command_logic(app, message, request=None):  # pyright: ignore[reportGeneralTypeIssues]
     command_context = _build_image_command_context(message)
     messages = safe_get_messages(command_context.chat_id)
     """Handle /img command for downloading images"""

@@ -159,7 +159,8 @@ def _build_args_text_input_context(execution_context) -> ArgsTextInputContext | 
     if message is None:
         return None
     chat_id = message.chat.id
-    owner_id = getattr(message, "from_user", None).id if getattr(message, "from_user", None) else chat_id
+    from_user = getattr(message, "from_user", None)
+    owner_id = getattr(from_user, "id", chat_id)
     thread_id = getattr(message, "message_thread_id", None) or 0
     state = _get_args_input_state(chat_id, owner_id, thread_id)
     if state is None:
@@ -234,7 +235,9 @@ def _build_args_terminal_callback_result_plan(context: ArgsCallbackContext, data
 def _execute_args_terminal_callback_result_plan(context: ArgsCallbackContext, plan: ArgsCallbackResultPlan) -> None:
     callback_query = context.callback_query
     if plan.mode == "close":
-        context.source_message.delete()
+        delete_message = getattr(context.source_message, "delete", None)
+        if callable(delete_message):
+            delete_message()
         _answer_args_callback(
             callback_query,
             plan.answer_text,
@@ -245,6 +248,7 @@ def _execute_args_terminal_callback_result_plan(context: ArgsCallbackContext, pl
         _answer_args_callback(callback_query, plan.answer_text, show_alert=plan.show_alert)
         return
     if plan.mode == "back":
+        assert plan.edit_text is not None
         try:
             _clear_args_input_state(context.chat_id, context.user_id, context.thread_id)
         except Exception:
@@ -318,6 +322,7 @@ def _build_args_menu_result_plan(context: ArgsCallbackContext, data: str) -> Arg
 def _execute_args_menu_result_plan(context: ArgsCallbackContext, plan: ArgsCallbackResultPlan) -> None:
     callback_query = context.callback_query
     if plan.mode in {"view_current", "export", "reset_all"}:
+        assert plan.edit_text is not None
         _edit_args_callback_message(
             callback_query,
             plan.edit_text,
@@ -445,6 +450,7 @@ def _build_args_value_callback_result_plan(context: ArgsCallbackContext, data: s
 def _execute_args_value_callback_result_plan(context: ArgsCallbackContext, plan: ArgsCallbackResultPlan) -> None:
     callback_query = context.callback_query
     if plan.mode in {"bool_updated", "select_updated"}:
+        assert plan.edit_text is not None
         _edit_args_callback_message(
             callback_query,
             plan.edit_text,
@@ -524,6 +530,7 @@ def _execute_args_set_callback_result_plan(context: ArgsCallbackContext, plan: A
     callback_query = context.callback_query
 
     if plan.mode in {"set_boolean_menu", "set_select_menu"}:
+        assert plan.edit_text is not None
         _edit_args_callback_message(
             callback_query,
             plan.edit_text,
@@ -537,6 +544,7 @@ def _execute_args_set_callback_result_plan(context: ArgsCallbackContext, plan: A
         state = {"param": param_name, "type": param_config["type"]}
         _start_args_input_state(context.chat_id, context.user_id, context.thread_id, state)
         try:
+            assert plan.edit_text is not None
             _edit_args_callback_message(
                 callback_query,
                 plan.edit_text,
@@ -660,7 +668,7 @@ def _update_user_arg_value(user_id: int, param_name: str, value: Any) -> bool:
 
 def _build_args_input_lifecycle_plan(
     user_id: int,
-    thread_id: int = None,
+    thread_id: int | None = None,
     *,
     timeout_triggered: bool = False,
 ) -> ArgsInputLifecyclePlan | None:
@@ -705,7 +713,11 @@ def _build_args_input_lifecycle_plan(
     return ArgsInputLifecyclePlan(mode="dm_clear", clear_state=True)
 
 
-def _execute_args_input_lifecycle_plan(user_id: int, thread_id: int = None, plan: ArgsInputLifecyclePlan | None = None):
+def _execute_args_input_lifecycle_plan(
+    user_id: int,
+    thread_id: int | None = None,
+    plan: ArgsInputLifecyclePlan | None = None,
+):
     if plan is None or not plan.clear_state:
         return
 
@@ -747,12 +759,12 @@ def _execute_args_input_lifecycle_plan(user_id: int, thread_id: int = None, plan
             logger.error(messages.ARGS_ERROR_SENDING_TIMEOUT_MSG.format(error=e))
 
 
-def clear_input_state_timer(user_id: int, thread_id: int = None):
+def clear_input_state_timer(user_id: int, thread_id: int | None = None):
     """Clear input state and its timer"""
     plan = _build_args_input_lifecycle_plan(user_id, thread_id)
     _execute_args_input_lifecycle_plan(user_id, thread_id, plan)
 
-def start_input_state_timer(user_id: int, thread_id: int = None):
+def start_input_state_timer(user_id: int, thread_id: int | None = None):
     """Start a 5-minute timer to auto-close input state"""
     def auto_close():
         plan = _build_args_input_lifecycle_plan(user_id, thread_id, timeout_triggered=True)
@@ -1030,7 +1042,7 @@ YTDLP_PARAMS = {
     }
 }
 
-def validate_input(value: str, param_name: str, user_id: int = None) -> tuple[bool, str]:
+def validate_input(value: str, param_name: str, user_id: int | None = None) -> tuple[bool, str]:
     """
     Validate user input based on parameter type and constraints
     Returns (is_valid, error_message)
@@ -1339,7 +1351,11 @@ def get_args_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     
     return InlineKeyboardMarkup(buttons)
 
-def get_boolean_menu_keyboard(param_name: str, current_value: bool, user_id: int = None) -> InlineKeyboardMarkup:
+def get_boolean_menu_keyboard(
+    param_name: str,
+    current_value: bool,
+    user_id: int | None = None,
+) -> InlineKeyboardMarkup:
     """Generate boolean parameter menu keyboard"""
     messages = get_messages_instance(user_id)
     buttons = [
@@ -1355,7 +1371,11 @@ def get_boolean_menu_keyboard(param_name: str, current_value: bool, user_id: int
     ]
     return InlineKeyboardMarkup(buttons)
 
-def get_select_menu_keyboard(param_name: str, current_value: str, user_id: int = None) -> InlineKeyboardMarkup:
+def get_select_menu_keyboard(
+    param_name: str,
+    current_value: str,
+    user_id: int | None = None,
+) -> InlineKeyboardMarkup:
     """Generate select parameter menu keyboard"""
     messages = get_messages_instance(user_id)
     param_config = YTDLP_PARAMS[param_name]
@@ -1372,7 +1392,7 @@ def get_select_menu_keyboard(param_name: str, current_value: str, user_id: int =
     buttons.append([InlineKeyboardButton(messages.ARGS_BACK_BUTTON_MSG, callback_data="args_back")])
     return InlineKeyboardMarkup(buttons)
 
-def get_text_input_message(param_name: str, current_value: str, user_id: int = None) -> str:
+def get_text_input_message(param_name: str, current_value: str, user_id: int | None = None) -> str:
     """Generate text input message"""
     messages = get_messages_instance(user_id)
     param_config = YTDLP_PARAMS[param_name]
@@ -1393,7 +1413,11 @@ def get_text_input_message(param_name: str, current_value: str, user_id: int = N
     
     return message
 
-def get_number_input_message(param_name: str, current_value: Any, user_id: int = None) -> str:
+def get_number_input_message(
+    param_name: str,
+    current_value: Any,
+    user_id: int | None = None,
+) -> str:
     """Generate number input message"""
     messages = get_messages_instance(user_id)
     param_config = YTDLP_PARAMS[param_name]
@@ -1420,7 +1444,7 @@ def get_number_input_message(param_name: str, current_value: Any, user_id: int =
     
     return message
 
-def get_json_input_message(param_name: str, current_value: str, user_id: int = None) -> str:
+def get_json_input_message(param_name: str, current_value: str, user_id: int | None = None) -> str:
     """Generate JSON input message"""
     messages = get_messages_instance(user_id)
     param_config = YTDLP_PARAMS[param_name]
@@ -1441,7 +1465,7 @@ def get_json_input_message(param_name: str, current_value: str, user_id: int = N
     
     return message
 
-def format_current_args(user_args: Dict[str, Any], user_id: int = None) -> str:
+def format_current_args(user_args: Dict[str, Any], user_id: int | None = None) -> str:
     """Format current args for display with localized names"""
     messages = get_messages_instance(user_id)
     if not user_args:
@@ -1466,13 +1490,15 @@ def format_current_args(user_args: Dict[str, Any], user_id: int = None) -> str:
     
     return message
 
-def get_localized_display_names(user_id: int = None) -> Dict[str, str]:
+def get_localized_display_names(user_id: int | None = None) -> Dict[str, str]:
     """Get localized parameter names for display based on user language"""
     messages = get_messages_instance(user_id)
     
     # Get language-specific parameter names
     if hasattr(messages, 'ARGS_PARAM_NAMES'):
-        return messages.ARGS_PARAM_NAMES
+        localized_names = messages.ARGS_PARAM_NAMES
+        if isinstance(localized_names, dict):
+            return localized_names
     
     # Fallback to English if no localized names available
     return get_export_display_names()
@@ -1572,7 +1598,7 @@ def get_localized_to_english_mapping() -> Dict[str, str]:
         # Add more mappings as needed for other languages
     }
 
-def create_export_message(user_args: Dict[str, Any], user_id: int = None) -> str:
+def create_export_message(user_args: Dict[str, Any], user_id: int | None = None) -> str:
     """Create export message for forwarding to favorites - always in English"""
     if not user_args:
         return "📋 Current yt-dlp Arguments:\n\nNo custom settings configured.\n\n---\n\n<i>Forward this message to your favorites to save these settings as a template.</i> \n\n<i>Forward this message back here to apply these settings.</i>"
@@ -1604,7 +1630,7 @@ def create_export_message(user_args: Dict[str, Any], user_id: int = None) -> str
     
     return message
 
-def parse_import_message(text: str, user_id: int = None) -> Dict[str, Any]:
+def parse_import_message(text: str, user_id: int | None = None) -> Dict[str, Any]:
     """Parse settings from imported message text"""
     messages = get_messages_instance(user_id)
     
@@ -1777,7 +1803,8 @@ def args_command_logic(app, message, request=None):
     messages = get_messages_instance(message.chat.id)
     """Handle /args command"""
     chat_id = message.chat.id
-    invoker_id = getattr(message, 'from_user', None).id if getattr(message, 'from_user', None) else chat_id
+    from_user = getattr(message, "from_user", None)
+    invoker_id = getattr(from_user, "id", chat_id)
     
     # Subscription check for non-admins
     if int(invoker_id) not in Config.ADMIN and not is_user_in_channel(app, message):
@@ -1994,7 +2021,8 @@ def _has_args_state(flt, client, message) -> bool:
         if thread_id:
             return (chat_id, thread_id) in state_store.topic_states
         else:
-            uid = getattr(message, 'from_user', None).id if getattr(message, 'from_user', None) else chat_id
+            from_user = getattr(message, "from_user", None)
+            uid = getattr(from_user, "id", chat_id)
             return uid in state_store.dm_states
     except Exception:
         return False
@@ -2033,7 +2061,8 @@ def args_import_handler(app, message):
         logger.info(f"args_import_handler: Full message text: {message.text}")
         
         user_id = message.chat.id
-        invoker_id = getattr(message, 'from_user', None).id if getattr(message, 'from_user', None) else user_id
+        from_user = getattr(message, "from_user", None)
+        invoker_id = getattr(from_user, "id", user_id)
         
         logger.info(f"args_import_handler: user_id={user_id}, invoker_id={invoker_id}")
         
@@ -2098,7 +2127,7 @@ def args_import_handler(app, message):
             message=message
         )
 
-def get_user_ytdlp_args(user_id: int, url: str = None) -> Dict[str, Any]:
+def get_user_ytdlp_args(user_id: int, url: str | None = None) -> Dict[str, Any]:
     """Get user's yt-dlp arguments for use in download functions"""
     user_args = get_user_args(user_id)
     logger.info(f"User {user_id} args loaded: {user_args}")

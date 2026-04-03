@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 from HELPERS.ingress_models import (
     AddBotToGroupSelectionRequested,
@@ -72,6 +73,8 @@ from HELPERS.ingress_models import (
 import hashlib
 import os
 from types import SimpleNamespace
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -725,8 +728,13 @@ def handle_close_message_request(
     callback_query = execution_context.callback_query
     if callback_query is None:
         return
+    source_message = execution_context.source_message
     try:
-        execution_context.source_message.delete()
+        delete_message = getattr(source_message, "delete", None)
+        if callable(delete_message):
+            delete_message()
+        else:
+            raise AttributeError("source message has no delete")
     except Exception:
         try:
             from HELPERS.safe_messeger import safe_edit_reply_markup
@@ -738,9 +746,13 @@ def handle_close_message_request(
                 _callback_query=callback_query,
             )
         except Exception:
-            callback_query.edit_message_reply_markup(reply_markup=None)
-    callback_query.answer(answer_text)
-    send_to_logger(execution_context.source_message, log_text)
+            edit_reply_markup = getattr(callback_query, "edit_message_reply_markup", None)
+            if callable(edit_reply_markup):
+                edit_reply_markup(reply_markup=None)
+    answer_callback = getattr(callback_query, "answer", None)
+    if callable(answer_callback):
+        answer_callback(answer_text)
+    send_to_logger(source_message, log_text)
 
 
 def handle_proxy_option_selection_request(
@@ -1107,7 +1119,7 @@ def derive_playlist_start_index(video_start_with: int, video_end_with: int) -> i
 def handle_url_quality_menu_runtime(
     app,
     execution_context: TelegramExecutionContext,
-    request: UrlDownloadRequested,
+    request: UrlDownloadRequested | SimpleNamespace,
 ) -> None:
     from DOWN_AND_UP.always_ask_menu import ask_quality_menu
 
@@ -1242,10 +1254,12 @@ def send_url_wait_download_notice(
 
 def send_url_runtime_error(
     execution_context: TelegramExecutionContext,
-    text: str,
+    text: str | None,
 ) -> None:
     from HELPERS.logger import send_error_to_user
 
+    if text is None:
+        return
     send_error_to_user(execution_context.source_message, text)
 
 
@@ -1273,7 +1287,7 @@ def is_url_blacklisted(raw_input: str) -> bool:
 def handle_saved_format_url_runtime(
     app,
     execution_context: TelegramExecutionContext,
-    request: UrlDownloadRequested,
+    request: UrlDownloadRequested | SimpleNamespace,
     *,
     saved_format: str,
     tags: list[str],
@@ -1383,7 +1397,8 @@ def execute_url_runtime_plan(
         return None
 
     if plan.mode == "saved_format":
-        users_first_name = message.chat.first_name
+        users_first_name = getattr(getattr(message, "chat", None), "first_name", "")
+        assert plan.saved_format is not None
         send_to_logger(
             message,
             safe_get_messages(user_id).URL_PARSER_USER_ENTERED_URL_LOG_MSG.format(
@@ -1410,6 +1425,7 @@ def execute_url_runtime_plan(
         return None
 
     if plan.mode == "invalid_input":
+        assert plan.error_text is not None
         send_url_runtime_error(execution_context, plan.error_text)
         return None
 

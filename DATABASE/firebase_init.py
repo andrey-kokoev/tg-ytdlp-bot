@@ -27,7 +27,8 @@ def _get_database_url() -> str:
     messages = safe_get_messages(None)
     
     try:
-        database_url_local = Config.FIREBASE_CONF.get("databaseURL")
+        firebase_conf = getattr(Config, "FIREBASE_CONF", {})
+        database_url_local = firebase_conf.get("databaseURL") if isinstance(firebase_conf, dict) else None
     except Exception:
         database_url_local = None
     if not database_url_local:
@@ -216,7 +217,7 @@ class RestDBAdapter:
     def _auth_params(self) -> Dict[str, str]:
         with self._shared["lock"]:
             token = self._shared.get("id_token")
-        return {"auth": token}
+        return {"auth": str(token or "")}
 
     def child(self, *path_parts: str) -> "RestDBAdapter":
         path = self._path.rstrip("/")
@@ -228,7 +229,7 @@ class RestDBAdapter:
         # IMPORTANT: do not start a new refresher; reuse shared state and session
         return RestDBAdapter(
             self._database_url,
-            self._shared.get("id_token"),
+            str(self._shared.get("id_token") or ""),
             self._shared.get("refresh_token"),
             self._api_key,
             path,
@@ -275,8 +276,8 @@ class RestDBAdapter:
             if hasattr(self, '_session') and self._session:
                 for adapter in self._session.adapters.values():
                     if hasattr(adapter, 'poolmanager'):
-                        pool = adapter.poolmanager
-                        if hasattr(pool, 'clear'):
+                        pool = getattr(adapter, "poolmanager", None)
+                        if pool is not None and hasattr(pool, 'clear'):
                             pool.clear()
                 self._session.close()
                 logger.info("✅ Firebase session closed successfully (root)")

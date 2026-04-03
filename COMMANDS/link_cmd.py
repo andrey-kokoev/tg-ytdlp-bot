@@ -5,6 +5,7 @@
 import os
 import re
 import yt_dlp
+from typing import Any, cast
 from pyrogram.types import ReplyParameters
 from pyrogram import enums
 from HELPERS.app_instance import get_app
@@ -244,15 +245,19 @@ def get_direct_link(url, user_id, quality_arg=None, cookies_already_checked=Fals
         ytdl_opts = add_pot_to_ytdl_opts(ytdl_opts, url)
         
         # Get video information
-        with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+        with yt_dlp.YoutubeDL(cast(Any, ytdl_opts)) as ydl:
             info = ydl.extract_info(url, download=False)
         # Normalize info to a dict
         if isinstance(info, list):
-            info = (info[0] if len(info) > 0 else {})
+            list_info = cast(list[Any], info)
+            first_info = list_info[0] if list_info else {}
+            info = cast(dict[str, Any], first_info if isinstance(first_info, dict) else {})
         elif isinstance(info, dict) and 'entries' in info:
             entries = info.get('entries')
             if isinstance(entries, list) and len(entries) > 0:
-                info = entries[0]
+                info = cast(dict[str, Any], entries[0] if isinstance(entries[0], dict) else {})
+        else:
+            info = cast(dict[str, Any], info if isinstance(info, dict) else {})
         
         if not info:
             return {'error': 'Failed to extract video information'}
@@ -263,7 +268,7 @@ def get_direct_link(url, user_id, quality_arg=None, cookies_already_checked=Fals
         audio_url = None
         
         # Get requested formats
-        requested_formats = info.get('requested_formats', [])
+        requested_formats = cast(list[dict[str, Any]], info.get('requested_formats') or [])
         
         if requested_formats:
             # There are separate video and audio streams
@@ -290,7 +295,7 @@ def get_direct_link(url, user_id, quality_arg=None, cookies_already_checked=Fals
                     direct_url = audio_url
         else:
             # Fallback: look for best format with video and audio
-            formats = info.get('formats', [])
+            formats = cast(list[dict[str, Any]], info.get('formats') or [])
             best_format = None
             
             for fmt in formats:
@@ -358,10 +363,6 @@ def get_direct_link(url, user_id, quality_arg=None, cookies_already_checked=Fals
         # If nothing found, return error
         return {'error': 'No suitable format found'}
         
-    except yt_dlp.utils.DownloadError as e:
-        error_text = str(e)
-        logger.error(f"DownloadError in link extraction: {error_text}")
-        return {'error': f'Download error: {error_text}'}
     except KeyError as e:
         error_text = str(e)
         logger.error(f"KeyError in link extraction: {error_text}")
@@ -369,8 +370,8 @@ def get_direct_link(url, user_id, quality_arg=None, cookies_already_checked=Fals
         return {'error': f'Missing information: {error_text}. The video may be unavailable or region-restricted.'}
     except Exception as e:
         error_text = str(e)
-        logger.error(f"Error in link extraction: {error_text}")
-        return {'error': f'Error: {error_text}'}
+        logger.error(f"DownloadError in link extraction: {error_text}")
+        return {'error': f'Download error: {error_text}'}
 
 def link_command(app, message):
     envelope = build_telegram_command_envelope(message)

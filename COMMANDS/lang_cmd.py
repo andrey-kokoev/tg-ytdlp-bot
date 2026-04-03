@@ -38,7 +38,7 @@ def _build_language_command_context(message) -> LanguageCommandContext:
     return LanguageCommandContext(
         user_id=message.chat.id,
         source_message=message,
-        command_parts=(message.text or "").split(),
+        command_parts=[str(part) for part in (message.text or "").split()],
     )
 
 def lang_command_handler(update, context):

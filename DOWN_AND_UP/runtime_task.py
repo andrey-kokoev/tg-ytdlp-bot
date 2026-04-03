@@ -59,6 +59,7 @@ class RuntimeTask:
     # Legacy/UI fields (attached)
     proc_msg_id: int | None = None
     playlist_error_summary: dict[str, Any] | None = None
+    gallery_command_result: Any | None = None
 
     def with_state(self, new_state: str, provenance: dict[str, Any] | None = None) -> "RuntimeTask":
         """Return new task with updated machine state and history."""
@@ -93,6 +94,46 @@ class RuntimeTask:
             terminal_outcome_result=terminal_outcome_result,
             playlist_error_summary=terminal_outcome_result.playlist_error_summary,
         )
+
+    def with_proc_msg_id(self, proc_msg_id: int | None) -> "RuntimeTask":
+        return replace(self, proc_msg_id=proc_msg_id)
+
+    def with_url(self, url: str) -> "RuntimeTask":
+        return replace(self, url=url)
+
+    def with_cached_video_info(self, cached_video_info: dict[str, Any] | None) -> "RuntimeTask":
+        return replace(self, cached_video_info=cached_video_info)
+
+    def with_force_no_title(self, force_no_title: bool) -> "RuntimeTask":
+        return replace(self, force_no_title=force_no_title)
+
+    def with_concat_request(
+        self,
+        *,
+        concat_policy: str | None = None,
+        concat_ordering: str | None = None,
+        chapter_policy: str | None = None,
+        output_name_override: str | None = None,
+    ) -> "RuntimeTask":
+        return replace(
+            self,
+            concat_policy=concat_policy,
+            concat_ordering=concat_ordering,
+            chapter_policy=chapter_policy,
+            output_name_override=output_name_override,
+        )
+
+    def with_video_concat_manifest(self, manifest: dict[str, Any] | None) -> "RuntimeTask":
+        return replace(self, video_concat_manifest=manifest)
+
+    def with_video_concat_compatibility(self, compatibility: dict[str, Any] | None) -> "RuntimeTask":
+        return replace(self, video_concat_compatibility=compatibility)
+
+    def with_video_concat_execution(self, execution: dict[str, Any] | None) -> "RuntimeTask":
+        return replace(self, video_concat_execution=execution)
+
+    def with_gallery_command_result(self, gallery_command_result: Any) -> "RuntimeTask":
+        return replace(self, gallery_command_result=gallery_command_result)
 
     def with_acquisition_attempt(self, attempt: dict[str, Any]) -> "RuntimeTask":
         """Return new task with acquisition attempt recorded."""

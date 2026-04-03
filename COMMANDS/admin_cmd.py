@@ -118,12 +118,15 @@ def reload_firebase_cache_command_logic(app, message, request=None):
                 log_error_to_channel(message, error_msg)
                 send_to_logger(message, safe_get_messages(message.chat.id).ADMIN_ERROR_RUNNING_SCRIPT_LOG_MSG.format(script_path=script_path, stdout=result.stdout, stderr=result.stderr))
             else:
-                safe_edit_message_text(message.chat.id, status_msg.id, error_msg)
+                status_msg_id = status_msg.id if status_msg else None
+                if status_msg_id is None:
+                    return
+                safe_edit_message_text(message.chat.id, status_msg_id, error_msg)
                 # Schedule deletion after 60 seconds for real messages
                 def delete_msg():
                     messages = safe_get_messages(message.chat.id)
                     time.sleep(60)
-                    safe_delete_messages(message.chat.id, [status_msg.id])
+                    safe_delete_messages(message.chat.id, [status_msg_id])
                 threading.Thread(target=delete_msg, daemon=True).start()
                 from HELPERS.logger import log_error_to_channel
                 log_error_to_channel(message, error_msg)
@@ -135,7 +138,10 @@ def reload_firebase_cache_command_logic(app, message, request=None):
             # Do not send anything to chat on fake_message
             pass
         else:
-            safe_edit_message_text(message.chat.id, status_msg.id, safe_get_messages(message.chat.id).ADMIN_RELOADING_CACHE_MSG)
+            status_msg_id = status_msg.id if status_msg else None
+            if status_msg_id is None:
+                return
+            safe_edit_message_text(message.chat.id, status_msg_id, safe_get_messages(message.chat.id).ADMIN_RELOADING_CACHE_MSG)
         
         # 2) Reload local cache into memory
         from DATABASE.cache_db import reload_firebase_cache as _reload_local
@@ -146,11 +152,14 @@ def reload_firebase_cache_command_logic(app, message, request=None):
                 # Only log to channel/logger
                 send_to_logger(message, safe_get_messages(message.chat.id).ADMIN_CACHE_RELOADED_AUTO_LOG_MSG)
             else:
-                safe_edit_message_text(message.chat.id, status_msg.id, final_msg)
+                status_msg_id = status_msg.id if status_msg else None
+                if status_msg_id is None:
+                    return
+                safe_edit_message_text(message.chat.id, status_msg_id, final_msg)
                 # Schedule deletion after 60 seconds for real messages
                 def delete_msg():
                     time.sleep(60)
-                    safe_delete_messages(message.chat.id, [status_msg.id])
+                    safe_delete_messages(message.chat.id, [status_msg_id])
                 threading.Thread(target=delete_msg, daemon=True).start()
                 send_to_logger(message, safe_get_messages(message.chat.id).ADMIN_CACHE_RELOADED_ADMIN_LOG_MSG)
         else:
@@ -162,11 +171,14 @@ def reload_firebase_cache_command_logic(app, message, request=None):
                 log_error_to_channel(message, final_msg)
                 send_to_logger(message, final_msg)
             else:
-                safe_edit_message_text(message.chat.id, status_msg.id, final_msg)
+                status_msg_id = status_msg.id if status_msg else None
+                if status_msg_id is None:
+                    return
+                safe_edit_message_text(message.chat.id, status_msg_id, final_msg)
                 # Schedule deletion after 60 seconds for real messages
                 def delete_msg():
                     time.sleep(60)
-                    safe_delete_messages(message.chat.id, [status_msg.id])
+                    safe_delete_messages(message.chat.id, [status_msg_id])
                 threading.Thread(target=delete_msg, daemon=True).start()
                 from HELPERS.logger import log_error_to_channel
                 log_error_to_channel(message, final_msg)

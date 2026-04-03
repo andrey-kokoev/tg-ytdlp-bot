@@ -66,10 +66,10 @@ def extract_youtube_id(url: str, user_id=None) -> str:
         m = re.search(pat, url)
         if m:
             return m.group(1)
-    raise ValueError(safe_get_messages(user_id).YOUTUBE_FAILED_EXTRACT_ID_MSG)
+    raise ValueError(safe_get_messages(None).YOUTUBE_FAILED_EXTRACT_ID_MSG)
 
 
-def download_thumbnail(video_id: str, dest: str, url: str = None) -> None:
+def download_thumbnail(video_id: str, dest: str, url: str | None = None) -> None:
     """
     Downloads YouTube (Maxresdefault/Hqdefault) to the disk in the original size.
     URL - it is needed to determine Shorts by link (but now it is not used).
@@ -84,7 +84,7 @@ def download_thumbnail(video_id: str, dest: str, url: str = None) -> None:
             img_bytes = r.content
             break
     if not img_bytes:
-        raise RuntimeError(safe_get_messages(user_id).YOUTUBE_FAILED_DOWNLOAD_THUMBNAIL_MSG)
+        raise RuntimeError(safe_get_messages(None).YOUTUBE_FAILED_DOWNLOAD_THUMBNAIL_MSG)
     # We do nothing else - we keep the original size!
 
 

@@ -229,8 +229,7 @@ class Config(object):
     #######################################################
 
     # Rate limiting configuration - moved to CONFIG/limits.py
-    # Import from LimitsConfig for backward compatibility
-    from CONFIG.limits import LimitsConfig
+    # Reuse the module-level LimitsConfig import for backward compatibility.
     RATE_LIMIT_PER_MINUTE = LimitsConfig.RATE_LIMIT_PER_MINUTE
     RATE_LIMIT_PER_HOUR = LimitsConfig.RATE_LIMIT_PER_HOUR
     RATE_LIMIT_PER_DAY = LimitsConfig.RATE_LIMIT_PER_DAY

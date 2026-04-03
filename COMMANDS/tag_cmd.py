@@ -94,8 +94,8 @@ def _execute_tags_callback_result_plan(app, callback_query, plan: TagsCallbackRe
         app,
         build_callback_execution_context(callback_query),
         request,
-        answer_text=plan.answer_text,
-        log_text=plan.log_text,
+        answer_text=plan.answer_text or "",
+        log_text=plan.log_text or "",
     )
 
 @app.on_callback_query(filters.regex(r"^tags_close\|"))

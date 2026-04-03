@@ -14,17 +14,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from HELPERS.logger import logger
-    from CONFIG.messages import safe_get_messages
 except ImportError:
     # Fallback logger if HELPERS is not available
     import logging
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
-    # Fallback for messages
-    class FallbackMessages:
-        ALWAYS_ASK_DOWNLOADING_DATABASE_MSG = "📥 Downloading database dump..."
-    def safe_get_messages(user_id):
-        return FallbackMessages()
 
 try:
     from CONFIG.config import Config

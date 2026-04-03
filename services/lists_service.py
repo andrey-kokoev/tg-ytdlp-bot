@@ -25,9 +25,9 @@ def get_lists_stats() -> Dict[str, Any]:
     """Return stats for list files."""
     base_dir = Path(__file__).parent.parent
     return {
-        "porn_domains": get_file_line_count(base_dir / Config.PORN_DOMAINS_FILE),
-        "porn_keywords": get_file_line_count(base_dir / Config.PORN_KEYWORDS_FILE),
-        "supported_sites": get_file_line_count(base_dir / Config.SUPPORTED_SITES_FILE),
+        "porn_domains": get_file_line_count(str(base_dir / Config.PORN_DOMAINS_FILE)),
+        "porn_keywords": get_file_line_count(str(base_dir / Config.PORN_KEYWORDS_FILE)),
+        "supported_sites": get_file_line_count(str(base_dir / Config.SUPPORTED_SITES_FILE)),
     }
 
 

@@ -247,7 +247,7 @@ def _dispatch_direct_command(app, message, text: str) -> bool:
         (lambda value: value.startswith(Config.FORMAT_COMMAND), set_format, False),
         (lambda value: value.startswith(Config.MEDIINFO_COMMAND), mediainfo_command, False),
         (lambda value: value.startswith(Config.SETTINGS_COMMAND), settings_command, False),
-        (lambda value: Config.USAGE_COMMAND in value, usage_command, False),
+        (lambda value: Config.USAGE_COMMAND in value, _handle_usage_command, False),
         (lambda value: value.startswith(Config.PLAYLIST_COMMAND), playlist_command, False),
         (lambda value: value.startswith(Config.CLEAN_COMMAND), __import__("COMMANDS.clean_cmd", fromlist=["clean_command"]).clean_command, False),
         (lambda value: Config.TAGS_COMMAND in value, tags_command, False),
@@ -261,6 +261,12 @@ def _dispatch_direct_command(app, message, text: str) -> bool:
             handler(app, message)
             return True
     return False
+
+
+def _handle_usage_command(app, message) -> None:
+    envelope = build_telegram_message_envelope(message, event_kind="command_message")
+    request = build_usage_command_request(envelope)
+    handle_usage_command_request(app, build_message_execution_context(message), request)
 
 
 def _dispatch_admin_command(app, message, text: str) -> bool:

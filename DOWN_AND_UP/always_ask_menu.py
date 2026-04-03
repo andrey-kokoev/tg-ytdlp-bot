@@ -5,10 +5,12 @@ import re
 from datetime import datetime
 import json
 from dataclasses import dataclass
+from typing import Any, cast
 from pyrogram import filters, enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyParameters, WebAppInfo
 import requests
+from HELPERS.porn import is_porn
 from DOWN_AND_UP.branch_selection_result import BranchSelectionResult
 from DOWN_AND_UP.runtime_task import RuntimeTask, ensure_runtime_task, make_runtime_task, with_branch_selection
 from DOWN_AND_UP.task_plan_executor import execute_routing_plan
@@ -151,7 +153,7 @@ def _dispatch_callback_download_branch(
     if branch_result is None:
         raise ValueError("RuntimeTask must carry branch_selection_result before dispatch")
     if proc_msg is not None and task.proc_msg_id is None:
-        task.proc_msg_id = getattr(proc_msg, "id", None)
+        task = task.with_proc_msg_id(getattr(proc_msg, "id", None))
     delete_processing_message(app, user_id, proc_msg)
 
     if branch_result.branch_family == "audio_download":
@@ -298,6 +300,7 @@ from HELPERS.safe_messeger import fake_message
 
 # Get app instance for decorators
 app = get_app()
+assert app is not None
 
 
 def _dispatch_gallery_fallback(
@@ -335,7 +338,7 @@ class GalleryFallbackTransitionPlan:
 
 @dataclass(frozen=True)
 class AlwaysAskSourceContext:
-    original_message: object
+    original_message: Any
     url: str
     url_text: str
 
@@ -623,10 +626,15 @@ def _execute_gallery_fallback_transition_plan_core(
     # Execute gallery-dl command
     fallback_result = image_command(app, fake_msg)
 
+    fallback_outcome_kind = (
+        fallback_result.outcome_kind
+        if fallback_result is not None and is_gallery_command_result(fallback_result)
+        else None
+    )
     logger.info(
         "Gallery-dl fallback result for user %s: outcome=%s success=%s",
         plan.user_id,
-        fallback_result.outcome_kind if hasattr(fallback_result, 'outcome_kind') else None,
+        fallback_outcome_kind,
         None,  # Success check moved to caller
     )
 
@@ -1861,6 +1869,7 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
         if transition.mode == "error":
             safe_callback_answer(callback_query, transition.answer_text, show_alert=transition.show_alert)
             return
+        assert source_context is not None
         try:
             from COMMANDS.subtitles_cmd import get_or_compute_subs_langs
             normal, auto = get_or_compute_subs_langs(user_id, source_context.url)
@@ -1878,6 +1887,7 @@ def ask_filter_callback_logic(app, execution_context, filter_request):
         if transition.mode == "error":
             safe_callback_answer(callback_query, transition.answer_text, show_alert=transition.show_alert)
             return
+        assert source_context is not None
         n_cached, a_cached = load_subs_langs_cache(user_id, source_context.url)
         if n_cached or a_cached:
             normal, auto = n_cached, a_cached
@@ -2345,15 +2355,19 @@ def askq_callback(app, callback_query):
         if special_action_plan.mode == "error":
             return
         if special_action_plan.mode == "link":
+            assert source_context is not None
             _execute_askq_link_action(app, callback_query, user_id, source_context)
             return
         if special_action_plan.mode == "list":
+            assert source_context is not None
             _execute_askq_list_action(app, callback_query, user_id, source_context)
             return
         if special_action_plan.mode == "image":
+            assert source_context is not None
             _execute_askq_image_action(app, callback_query, user_id, source_context)
             return
         if special_action_plan.mode == "quick_embed":
+            assert source_context is not None
             _execute_askq_quick_embed_action(app, callback_query, user_id, source_context)
             return
     
@@ -2449,7 +2463,7 @@ def askq_callback(app, callback_query):
 
     _delete_callback_message()
 
-    original_text = original_message.text or original_message.caption or ""
+    original_text = getattr(original_message, "text", None) or getattr(original_message, "caption", None) or ""
     if is_playlist_with_range(original_text):
         logger.info(f"{LoggerMsg.ALWAYS_ASK_PLAYLIST_WITH_RANGE_DETECTED_LOG_MSG}: {url}")
         _, video_start_with, video_end_with, playlist_name, _, _, tag_error = extract_url_range_tags(original_text)
@@ -3050,8 +3064,12 @@ def fallback_gallery_dl_callback_logic(app, execution_context, request):
         logger.info(
             "Gallery-dl callback fallback result for user %s: outcome=%s success=%s",
             plan.user_id,
-            fallback_result.outcome_kind if is_gallery_command_result(fallback_result) else None,
-            did_gallery_command_succeed(fallback_result) if is_gallery_command_result(fallback_result) else None,
+            fallback_result.outcome_kind
+            if fallback_result is not None and is_gallery_command_result(fallback_result)
+            else None,
+            did_gallery_command_succeed(fallback_result)
+            if fallback_result is not None and is_gallery_command_result(fallback_result)
+            else None,
         )
 
         logger.info(
@@ -3500,6 +3518,8 @@ def show_other_qualities_menu(app, callback_query, page=0):
                 formats = info.get('formats', [])
                 format_lines = []
                 for f in formats:
+                    if not isinstance(f, dict):
+                        continue
                     format_id = f.get('format_id', 'unknown')
                     ext = f.get('ext', 'unknown')
                     resolution = f.get('resolution', 'unknown')
@@ -5131,7 +5151,7 @@ def delete_processing_message(app, user_id, proc_msg):
     else:
         logger.warning(f"proc_msg is None for user {user_id}, cannot delete processing message")
 
-def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, download_dir=None):
+def ask_quality_menu(app, message, url, tags, playlist_start_index=1, cb=None, download_dir=None):  # pyright: ignore[reportGeneralTypeIssues]
     """Show quality selection menu for video"""
     # Detailed debug logging
     logger.info("🔍 [DEBUG] ask_quality_menu called with parameters:")
@@ -6139,11 +6159,15 @@ def askq_callback_logic(
             max_width = 0
             max_height = 0
             for f in formats:
+                if not isinstance(f, dict):
+                    continue
                 if f.get('width') and f.get('height'):
-                    if f['width'] > max_width:
-                        max_width = f['width']
-                    if f['height'] > max_height:
-                        max_height = f['height']
+                    width = int(f.get('width') or 0)
+                    height = int(f.get('height') or 0)
+                    if width > max_width:
+                        max_width = width
+                    if height > max_height:
+                        max_height = height
             
             # If the sizes are not found, use the standard logic
             if max_width == 0 or max_height == 0:
@@ -6409,8 +6433,14 @@ def _execute_askq_list_action(app, callback_query, user_id: int, source_context:
 def _execute_askq_image_action(app, callback_query, user_id: int, source_context: AlwaysAskSourceContext) -> None:
     original_message = source_context.original_message
     url_text = source_context.url_text
-    logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_ORIGINAL_MESSAGE_TEXT_LOG_MSG}: {original_message.text}")
-    logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_ORIGINAL_MESSAGE_CAPTION_LOG_MSG}: {original_message.caption}")
+    logger.info(
+        f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_ORIGINAL_MESSAGE_TEXT_LOG_MSG}: "
+        f"{getattr(original_message, 'text', None)}"
+    )
+    logger.info(
+        f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_ORIGINAL_MESSAGE_CAPTION_LOG_MSG}: "
+        f"{getattr(original_message, 'caption', None)}"
+    )
     logger.info(f"{LoggerMsg.ALWAYS_ASK_FALLBACK_DEBUG_URL_TEXT_LOG_MSG}: {url_text}")
     import re as _re
     range_url_match = _re.search(r'(https?://[^\s\*#]+)\*(\d+)\*(\d+)', url_text)
@@ -6465,8 +6495,12 @@ def _execute_askq_image_action(app, callback_query, user_id: int, source_context
         )
         logger.info(
             "Always Ask image fallback result: outcome=%s success=%s",
-            fallback_result.outcome_kind if is_gallery_command_result(fallback_result) else None,
-            did_gallery_command_succeed(fallback_result) if is_gallery_command_result(fallback_result) else None,
+            fallback_result.outcome_kind
+            if fallback_result is not None and is_gallery_command_result(fallback_result)
+            else None,
+            did_gallery_command_succeed(fallback_result)
+            if fallback_result is not None and is_gallery_command_result(fallback_result)
+            else None,
         )
     except Exception as e:
         logger.error(f"{LoggerMsg.ALWAYS_ASK_IMAGE_FALLBACK_FAILED_LOG_MSG}: {e}")
@@ -6850,7 +6884,7 @@ def down_and_up_with_format(app, message, url=None, fmt=None, tags_text="", qual
     
     # Check if there is a link to Tiktok
     is_tiktok = is_tiktok_url(url)
-    task_context.force_no_title = is_tiktok
+    task_context = task_context.with_force_no_title(is_tiktok)
     
     user_id = message.chat.id
     try:
@@ -6902,7 +6936,11 @@ def down_and_up_with_format(app, message, url=None, fmt=None, tags_text="", qual
         )
         # Delete processing message before starting download
         delete_processing_message(app, user_id, proc_msg)
-        audio_task = with_branch_selection(task_context, audio_branch_result)
+        audio_task = (
+            with_branch_selection(task_context, audio_branch_result)
+            if audio_branch_result is not None
+            else task_context
+        )
         down_and_audio(
             app,
             message,
@@ -6929,12 +6967,14 @@ def down_and_up_with_format(app, message, url=None, fmt=None, tags_text="", qual
         else:
             info = get_video_formats(url, user_id, cookies_already_checked=True)
             logger.info(f"⚠️ [OPTIMIZATION] Had to fetch video info again - consider improving caching")
-        task_context.cached_video_info = info
+        task_context = task_context.with_cached_video_info(info)
         
         if quality_key and info and 'formats' in info:
             # Find the selected format
             selected_format = None
             for f in info['formats']:
+                if not isinstance(f, dict):
+                    continue
                 if f.get('format_id') == quality_key:
                     selected_format = f
                     break
@@ -6954,7 +6994,11 @@ def down_and_up_with_format(app, message, url=None, fmt=None, tags_text="", qual
                     # Pass cookies_already_checked=True since we already checked cookies in get_video_formats
                     # Delete processing message before starting download
                     delete_processing_message(app, user_id, proc_msg)
-                    audio_task = with_branch_selection(task_context, audio_branch_result)
+                    audio_task = (
+                        with_branch_selection(task_context, audio_branch_result)
+                        if audio_branch_result is not None
+                        else task_context
+                    )
                     down_and_audio(
                         app,
                         message,
@@ -7027,9 +7071,11 @@ def down_and_up_with_format(app, message, url=None, fmt=None, tags_text="", qual
         quality_map = {}
         if info and 'formats' in info:
             for f in info.get('formats', []):
+                if not isinstance(f, dict):
+                    continue
                 if f.get('vcodec', 'none') != 'none' and f.get('height') and f.get('width'):
-                    w = f['width']
-                    h = f['height']
+                    w = int(f.get('width') or 0)
+                    h = int(f.get('height') or 0)
                     quality_key = get_quality_by_min_side(w, h)
                     if quality_key != "best":
                         quality_map[quality_key] = f

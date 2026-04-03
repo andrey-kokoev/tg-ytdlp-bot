@@ -270,8 +270,8 @@ def _execute_list_help_callback_result_plan(app, callback_query, plan: ListHelpC
             app,
             build_callback_execution_context(callback_query),
             request,
-            answer_text=plan.answer_text,
-            log_text=plan.log_text,
+            answer_text=plan.answer_text or "",
+            log_text=plan.log_text or "",
         )
         return
     callback_query.answer(plan.answer_text, show_alert=plan.show_alert)
