@@ -21,3 +21,4 @@ bgutil-ytdlp-pot-provider
 --pre
 yt-dlp[default,curl-cffi]
 gallery-dl
+boto3

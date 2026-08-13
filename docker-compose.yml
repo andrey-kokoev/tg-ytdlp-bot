@@ -9,6 +9,22 @@ x-default-logging: &default-logging
     compress: "false"
 
 services:
+  media-api:
+    build: {context: ., dockerfile: Dockerfile, args: {<<: *default-build-args}}
+    env_file: [.env]
+    command: python -m uvicorn media_api.api:app --host 0.0.0.0 --port 5556
+    restart: unless-stopped
+    volumes: [".:/app", "./media-runtime:/app/media-runtime"]
+    ports: ["127.0.0.1:5556:5556"]
+    networks: [bot-network]
+  media-worker:
+    build: {context: ., dockerfile: Dockerfile, args: {<<: *default-build-args}}
+    env_file: [.env]
+    command: python -m media_api.worker
+    restart: unless-stopped
+    volumes: [".:/app", "./media-runtime:/app/media-runtime"]
+    networks: [bot-network]
+    depends_on: [bgutil-provider, configuration-webserver]
   app:
     build:
       context: .
