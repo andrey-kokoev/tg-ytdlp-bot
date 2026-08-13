@@ -22,6 +22,7 @@ from HELPERS.ingress_requests import (
     build_subtitle_settings_command_request,
     build_subtitle_settings_selection_request,
 )
+from HELPERS.subtitle_options import extract_text_only_option
 from HELPERS.request_execution import (
     build_callback_execution_context,
     build_message_execution_context,
@@ -476,10 +477,7 @@ def subtitle_download_command(app, message):
         return
 
     text = message.text or message.caption or ""
-    text_only = False
-    if "--text-only" in text:
-        text_only = True
-        text = re.sub(r"\s*--text-only\b", "", text).strip()
+    text, text_only = extract_text_only_option(text)
     envelope = build_telegram_message_envelope(message, raw_text=text, event_kind="command_message")
     url, video_start_with, video_end_with, playlist_name, tags, _, tag_error = extract_url_range_tags(text)
     if tag_error:
