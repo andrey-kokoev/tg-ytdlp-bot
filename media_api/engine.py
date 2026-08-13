@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, json, mimetypes, os, re, uuid
+import hashlib, json, mimetypes, os, re, shutil, uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -71,3 +71,12 @@ class R2:
         self.c.upload_file(str(path),CONFIG.r2_bucket,key,ExtraArgs={"ContentType":media}); expires=datetime.now(timezone.utc)+timedelta(seconds=CONFIG.artifact_ttl_seconds)
         return {"artifact_id":aid,"filename":path.name,"media_type":media,"size":path.stat().st_size,"sha256":digest,"object_key":key,"expires_at":expires.isoformat()}
     def url(self,key:str)->str: return self.c.generate_presigned_url("get_object",Params={"Bucket":CONFIG.r2_bucket,"Key":key},ExpiresIn=CONFIG.signed_url_ttl_seconds)
+
+class LocalArtifacts:
+    def upload(self,job:str,path:Path)->dict:
+        digest=hashlib.sha256(path.read_bytes()).hexdigest(); aid=str(uuid.uuid4()); target=CONFIG.data_dir/"artifacts"/job/aid/path.name
+        target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(path,target); expires=datetime.now(timezone.utc)+timedelta(seconds=CONFIG.artifact_ttl_seconds)
+        return {"artifact_id":aid,"filename":path.name,"media_type":mimetypes.guess_type(path.name)[0] or "application/octet-stream","size":path.stat().st_size,"sha256":digest,"object_key":f"local:{target}","expires_at":expires.isoformat()}
+
+def artifact_store():
+    return R2() if all((CONFIG.r2_endpoint,CONFIG.r2_bucket,CONFIG.r2_access_key,CONFIG.r2_secret_key)) else LocalArtifacts()

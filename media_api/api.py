@@ -1,6 +1,8 @@
 from __future__ import annotations
 import hashlib,json
+from pathlib import Path
 from fastapi import Depends,FastAPI,Header,HTTPException,Query
+from fastapi.responses import FileResponse
 from media_api.config import CONFIG
 from media_api.engine import R2,inspect,validate_url
 from media_api.models import InspectRequest,JobRequest
@@ -47,4 +49,12 @@ def cancel(job_id:str,_:str=Depends(auth)): store.cancel(job_id); return {"job_i
 def url(job_id:str,artifact_id:str,_:str=Depends(auth)):
     a=next((x for x in store.artifacts(job_id) if x["artifact_id"]==artifact_id),None)
     if not a: raise HTTPException(404,detail={"code":"artifact_not_found"})
-    return {"url":R2().url(a["object_key"]),"filename":a["filename"],"media_type":a["media_type"],"expires_in":CONFIG.signed_url_ttl_seconds}
+    artifact_url = f"/v1/jobs/{job_id}/artifacts/{artifact_id}/content" if a["object_key"].startswith("local:") else R2().url(a["object_key"])
+    return {"url":artifact_url,"filename":a["filename"],"media_type":a["media_type"],"expires_in":CONFIG.signed_url_ttl_seconds}
+@app.get("/v1/jobs/{job_id}/artifacts/{artifact_id}/content")
+def content(job_id:str,artifact_id:str,_:str=Depends(auth)):
+    a=next((x for x in store.artifacts(job_id) if x["artifact_id"]==artifact_id),None)
+    if not a or not a["object_key"].startswith("local:"): raise HTTPException(404,detail={"code":"artifact_not_found"})
+    path=Path(a["object_key"].removeprefix("local:"))
+    if not path.is_file(): raise HTTPException(410,detail={"code":"artifact_expired"})
+    return FileResponse(path,media_type=a["media_type"],filename=a["filename"])
