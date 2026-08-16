@@ -1,7 +1,7 @@
 import re
 
 
-_TEXT_ONLY_OPTION = re.compile(r"(?<!\S)(?:--|\u2014|\u2013)text-only\b\s*")
+_TEXT_ONLY_OPTION = re.compile(r"(?<!\S)(?:--|\u2014|\u2013)text(?:-only|=only)\b\s*")
 
 
 def extract_text_only_option(text: str) -> tuple[str, bool]:

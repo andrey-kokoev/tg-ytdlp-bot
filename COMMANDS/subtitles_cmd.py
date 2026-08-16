@@ -42,6 +42,8 @@ from CONFIG.messages import Messages, safe_get_messages
 from CONFIG.logger_msg import LoggerMsg
 import os
 import glob
+import shutil
+import tempfile
 
 # Get app instance for decorators
 app = get_app()
@@ -1579,6 +1581,8 @@ def download_subtitles_only(
     user_id = message.chat.id
     user_dir = os.path.join("users", str(user_id))
     create_directory(user_dir)
+    work_dir = tempfile.mkdtemp(prefix=f"subs_{message.id}_", dir=user_dir)
+    logger.info(f"[SUBS] request={message.id} text_only={text_only} work_dir={work_dir}")
     
     try:
         # Check if subtitles are enabled
@@ -1622,7 +1626,7 @@ def download_subtitles_only(
         )
         
         # Download subtitles
-        subs_path = download_subtitles_ytdlp(url, user_id, user_dir, available_langs)
+        subs_path = download_subtitles_ytdlp(url, user_id, work_dir, available_langs)
         
         if subs_path and os.path.exists(subs_path):
             # Process subtitle file
@@ -1669,6 +1673,10 @@ def download_subtitles_only(
                     )
                 
                 # Send subtitle file
+                logger.info(
+                    f"[SUBS] sending request={message.id} text_only={text_only} "
+                    f"path={document_path} extension={os.path.splitext(document_path)[1]}"
+                )
                 sent_msg = app.send_document(
                     chat_id=user_id,
                     document=document_path,
@@ -1711,6 +1719,8 @@ def download_subtitles_only(
             safe_send_message(user_id, error_msg)
             from HELPERS.logger import log_error_to_channel
             log_error_to_channel(message, error_msg)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def get_language_keyboard(page=0, user_id=None, langs_override=None, per_page_rows=8):
