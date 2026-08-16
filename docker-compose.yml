@@ -66,6 +66,8 @@ services:
     logging: *default-logging
     expose:
       - "4416"
+    networks:
+      - bot-network
 
   configuration-webserver:
     image: caddy:2-alpine
