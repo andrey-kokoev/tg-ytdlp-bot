@@ -99,6 +99,12 @@ Use <code>/img URL</code> to download images/photos/albums from many platforms.
 • <code>/vid 3-7 URL</code> → becomes <code>URL*3*7</code>
 • <code>/vid -3-7 URL</code> → becomes <code>URL*-3*-7</code>
 
+💬 <b>Subtitles:</b>
+• <code>/subs</code> → choose subtitle language
+• <code>/sub YOUTUBE_VIDEO_URL</code> → one video's subtitles
+• <code>/sub https://www.youtube.com/playlist?list=...</code> → numbered ZIP
+• Add <code>--text-only</code> for plain-text output
+
 🍪 <b>Cookies & Private:</b>
 • Upload *.txt cookie for private videos
 • <code>/cookie [service]</code> → download cookies (youtube/tiktok/x/custom)

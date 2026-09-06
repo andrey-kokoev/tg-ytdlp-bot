@@ -99,6 +99,12 @@ class Messages(object):
 • <code>/vid 3-7 URL</code> → يصبح <code>URL*3*7</code>
 • <code>/vid -3-7 URL</code> → يصبح <code>URL*-3*-7</code>
 
+💬 <b>الترجمات:</b>
+• <code>/subs</code> → اختيار لغة الترجمة
+• <code>/sub YOUTUBE_VIDEO_URL</code> → ترجمات فيديو واحد
+• <code>/sub https://www.youtube.com/playlist?list=...</code> → ملف ZIP مرقّم
+• أضف <code>--text-only</code> للحصول على نص عادي
+
 🍪 <b>ملفات تعريف الارتباط والخاص:</b>
 • ارفع ملف تعريف الارتباط *.txt للفيديوهات الخاصة
 • <code>/cookie [خدمة]</code> → تحميل ملفات تعريف الارتباط (youtube/tiktok/x/custom)

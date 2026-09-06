@@ -99,6 +99,12 @@ class Messages(object):
 • <code>/vid 3-7 URL</code> → <code>URL*3*7</code> बन जाता है
 • <code>/vid -3-7 URL</code> → <code>URL*-3*-7</code> बन जाता है
 
+💬 <b>उपशीर्षक:</b>
+• <code>/subs</code> → उपशीर्षक भाषा चुनें
+• <code>/sub YOUTUBE_VIDEO_URL</code> → एक वीडियो के उपशीर्षक
+• <code>/sub https://www.youtube.com/playlist?list=...</code> → क्रमांकित ZIP
+• सादा टेक्स्ट के लिए <code>--text-only</code> जोड़ें
+
 🍪 <b>कुकीज़ और निजी:</b>
 • निजी वीडियो के लिए *.txt कुकी अपलोड करें
 • <code>/cookie [service]</code> → कुकीज़ डाउनलोड करें (youtube/tiktok/x/custom)

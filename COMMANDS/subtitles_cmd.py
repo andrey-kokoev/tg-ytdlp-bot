@@ -468,7 +468,11 @@ def subs_command_logic(app, message, request=None):
         safe_get_messages(user_id).SUBS_SETTINGS_ADDITIONAL_MSG +
         safe_get_messages(user_id).SUBS_SET_LANGUAGE_CODE_MSG +
         "• <code>/subs ru</code> - set language\n" +
-        "• <code>/subs ru auto</code> - set language with AUTO/TRANS",
+        "• <code>/subs ru auto</code> - set language with AUTO/TRANS\n\n" +
+        "<b>Download subtitles:</b>\n" +
+        "• <code>/sub YOUTUBE_VIDEO_URL</code> - one video\n" +
+        "• <code>/sub YOUTUBE_PLAYLIST_URL</code> - numbered ZIP\n" +
+        "• Add <code>--text-only</code> for plain-text files",
         reply_markup=get_language_keyboard(page=0, user_id=user_id, per_page_rows=8),
         parse_mode=enums.ParseMode.HTML,
         message=message
@@ -506,6 +510,9 @@ def subtitle_download_command(app, message):
                 "Examples:\n"
                 "<code>/sub https://www.youtube.com/watch?v=dQw4w9WgXcQ</code>\n"
                 "<code>/sub --text-only https://www.youtube.com/watch?v=dQw4w9WgXcQ</code>\n"
+                "<code>/sub https://www.youtube.com/playlist?list=...</code>\n"
+                "<code>/sub --text-only https://www.youtube.com/playlist?list=...</code>\n\n"
+                "For a playlist, copy its URL from YouTube (it contains <code>list=</code>) and the bot sends a numbered ZIP.\n"
                 "Choose subtitle language first with <code>/subs en auto</code>."
             ),
             parse_mode=enums.ParseMode.HTML,

@@ -99,6 +99,12 @@ class Messages(object):
 • <code>/vid 3-7 URL</code> → становится <code>URL*3*7</code>
 • <code>/vid -3-7 URL</code> → становится <code>URL*-3*-7</code>
 
+💬 <b>Субтитры:</b>
+• <code>/subs</code> → выбрать язык субтитров
+• <code>/sub YOUTUBE_VIDEO_URL</code> → субтитры одного видео
+• <code>/sub https://www.youtube.com/playlist?list=...</code> → нумерованный ZIP
+• Добавьте <code>--text-only</code> для обычного текста
+
 🍪 <b>Cookies и приватные:</b>
 • Загрузите *.txt cookie для приватных видео
 • <code>/cookie [сервис]</code> → скачать куки (youtube/tiktok/x/custom)
