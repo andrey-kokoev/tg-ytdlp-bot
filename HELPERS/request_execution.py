@@ -130,6 +130,24 @@ def handle_subtitle_only_request(
     )
 
 
+def handle_subtitle_playlist_request(
+    app,
+    execution_context: TelegramExecutionContext,
+    request: SubtitleOnlyRequested,
+) -> None:
+    from COMMANDS.subtitles_cmd import download_playlist_subtitles_only
+    from URL_PARSERS.tags import save_user_tags
+
+    save_user_tags(request.user_id, request.tags)
+    download_playlist_subtitles_only(
+        app,
+        execution_context.source_message,
+        request.url,
+        request.tags,
+        text_only=request.text_only,
+    )
+
+
 def handle_subtitle_settings_command_request(
     app,
     execution_context: TelegramExecutionContext,

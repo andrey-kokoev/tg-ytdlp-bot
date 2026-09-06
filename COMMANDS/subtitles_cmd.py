@@ -5,7 +5,11 @@ import time
 import re
 import random
 import json
+import html
+import unicodedata
+import zipfile
 from typing import Any, cast
+from urllib.parse import parse_qs, urlparse
 from HELPERS.app_instance import get_app
 from HELPERS.filesystem_hlp import create_directory
 from HELPERS.decorators import reply_with_keyboard, background_handler
@@ -27,6 +31,7 @@ from HELPERS.request_execution import (
     build_callback_execution_context,
     build_message_execution_context,
     handle_subtitle_only_request,
+    handle_subtitle_playlist_request,
     handle_subtitle_settings_command_request,
     handle_subtitle_settings_selection_request,
 )
@@ -509,6 +514,27 @@ def subtitle_download_command(app, message):
         return
 
     video_count = abs(video_end_with - video_start_with) + 1
+    if is_youtube_playlist_url(url):
+        if video_count > 1:
+            from HELPERS.safe_messeger import safe_send_message
+            safe_send_message(
+                user_id,
+                "Playlist subtitle ZIP currently accepts the full playlist URL, without a range.",
+                reply_parameters=ReplyParameters(message_id=message.id),
+            )
+            return
+        request = build_subtitle_only_request(
+            envelope,
+            url=url,
+            tags=list(tags),
+            text_only=text_only,
+            playlist_name=playlist_name,
+            video_count=video_count,
+            video_start_with=video_start_with,
+        )
+        handle_subtitle_playlist_request(app, build_message_execution_context(message), request)
+        return
+
     if video_count > 1:
         from HELPERS.safe_messeger import safe_send_message
         safe_send_message(
@@ -1561,6 +1587,258 @@ def download_subtitles_ytdlp(url, user_id, video_dir, available_langs):
             return None
 
     return None
+
+
+def is_youtube_playlist_url(url: str) -> bool:
+    """Return true for a playlist URL, but keep watch URLs with ``v=`` single-video."""
+    try:
+        parsed = urlparse(str(url or ""))
+        host = (parsed.netloc or "").lower().split(":", 1)[0]
+        if host.startswith("www."):
+            host = host[4:]
+        if host not in {"youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}:
+            return False
+        query = parse_qs(parsed.query)
+        if parsed.path.rstrip("/").lower().endswith("/playlist"):
+            return bool(query.get("list"))
+        # A watch URL carrying both v= and list= is an individual video.
+        return bool(query.get("list")) and not bool(query.get("v"))
+    except Exception:
+        return False
+
+
+def _slugify_kebab(value: str | None, fallback: str = "episode") -> str:
+    """Create a filesystem-safe, readable kebab-case episode name."""
+    normalized = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
+    normalized = re.sub(r"[^\w\s-]", "", normalized, flags=re.UNICODE)
+    normalized = re.sub(r"[\s_-]+", "-", normalized, flags=re.UNICODE).strip("-")
+    return normalized[:120] or fallback
+
+
+def _playlist_entry_url(entry: dict[str, Any]) -> str | None:
+    """Resolve a flat yt-dlp playlist entry to a direct YouTube URL."""
+    for key in ("webpage_url", "original_url", "url"):
+        candidate = entry.get(key)
+        if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+            return candidate
+    video_id = entry.get("id")
+    if isinstance(video_id, str) and video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return None
+
+
+def _extract_youtube_playlist_entries(
+    url: str,
+    user_id: int,
+) -> tuple[str | None, list[dict[str, Any]], int | None]:
+    """Read playlist metadata without downloading media or subtitle tracks."""
+    from HELPERS.proxy_helper import add_proxy_to_ytdl_opts
+
+    max_count = max(1, int(getattr(Config, "MAX_PLAYLIST_COUNT", 50) or 50))
+    client = _subs_check_cache.get(f"{url}_{user_id}_client", "tv")
+    ytdl_opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": True,
+        "ignoreerrors": True,
+        "noplaylist": False,
+        "playlistend": max_count,
+        "retries": 4,
+        "extractor_retries": 2,
+        "extractor_args": {"youtube": {"player_client": [client]}},
+        "referer": url,
+        "geo_bypass": True,
+        "check_certificate": False,
+    }
+
+    user_cookie_path = os.path.join("users", str(user_id), "cookie.txt")
+    if os.path.exists(user_cookie_path):
+        ytdl_opts["cookiefile"] = user_cookie_path
+    elif hasattr(Config, "COOKIE_FILE_PATH") and os.path.exists(Config.COOKIE_FILE_PATH):
+        ytdl_opts["cookiefile"] = Config.COOKIE_FILE_PATH
+
+    ytdl_opts = add_proxy_to_ytdl_opts(ytdl_opts, url, user_id=user_id)
+    ytdl_opts = add_pot_to_ytdl_opts(ytdl_opts, url)
+
+    with yt_dlp.YoutubeDL(cast(Any, ytdl_opts)) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    if not isinstance(info, dict):
+        return None, [], None
+
+    raw_entries = info.get("entries") or []
+    entries = [entry for entry in raw_entries if isinstance(entry, dict)]
+    playlist_title = info.get("title") or info.get("playlist_title")
+    total_count = info.get("playlist_count")
+    try:
+        total_count = int(total_count) if total_count is not None else None
+    except (TypeError, ValueError):
+        total_count = None
+    return (str(playlist_title) if playlist_title else None), entries, total_count
+
+
+def download_playlist_subtitles_only(
+    app,
+    message,
+    url: str,
+    tags: list[str],
+    text_only: bool = False,
+) -> None:
+    """Download each playlist episode's subtitles and send one numbered ZIP."""
+    user_id = message.chat.id
+    subs_lang = get_user_subs_language(user_id)
+    user_dir = os.path.join("users", str(user_id))
+    create_directory(user_dir)
+    work_dir = tempfile.mkdtemp(prefix=f"subs_playlist_{message.id}_", dir=user_dir)
+    status_msg = None
+    archive_path = None
+
+    def _edit_status(text: str) -> None:
+        if status_msg is None or not getattr(status_msg, "id", None):
+            return
+        try:
+            app.edit_message_text(user_id, status_msg.id, text)
+        except Exception:
+            pass
+
+    try:
+        if not subs_lang or subs_lang == "OFF":
+            from HELPERS.safe_messeger import safe_send_message
+            error_msg = safe_get_messages(user_id).SUBS_DISABLED_ERROR_MSG
+            safe_send_message(user_id, error_msg, reply_parameters=ReplyParameters(message_id=message.id))
+            from HELPERS.logger import log_error_to_channel
+            log_error_to_channel(message, error_msg)
+            return
+
+        if not is_youtube_url(url):
+            from HELPERS.safe_messeger import safe_send_message
+            error_msg = safe_get_messages(user_id).SUBS_YOUTUBE_ONLY_MSG
+            safe_send_message(user_id, error_msg, reply_parameters=ReplyParameters(message_id=message.id))
+            from HELPERS.logger import log_error_to_channel
+            log_error_to_channel(message, error_msg)
+            return
+
+        from HELPERS.safe_messeger import safe_send_message
+        status_msg = safe_send_message(
+            user_id,
+            "📚 Preparing playlist subtitles...",
+            reply_parameters=ReplyParameters(message_id=message.id),
+        )
+
+        playlist_title, entries, total_count = _extract_youtube_playlist_entries(url, user_id)
+        if not entries:
+            raise RuntimeError("No accessible videos were found in this playlist.")
+
+        display_title = playlist_title or "YouTube playlist"
+        archive_path = os.path.join(
+            work_dir,
+            f"{_slugify_kebab(display_title, fallback='youtube-playlist')}-subtitles.zip",
+        )
+        successful = 0
+        failures: list[str] = []
+
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for index, entry in enumerate(entries, start=1):
+                entry_title = str(entry.get("title") or f"episode-{index}")
+                entry_url = _playlist_entry_url(entry)
+                subs_path = None
+                document_path = None
+                try:
+                    if not entry_url:
+                        raise RuntimeError("playlist entry has no video URL")
+
+                    _edit_status(f"📚 Playlist subtitles: {index}/{len(entries)} — {entry_title}")
+                    normal_langs, auto_langs = get_or_compute_subs_langs(user_id, entry_url)
+                    available_langs = sorted(set((normal_langs or []) + (auto_langs or [])))
+                    if not available_langs:
+                        raise RuntimeError("no subtitles in the selected language")
+
+                    subs_path = download_subtitles_ytdlp(
+                        entry_url,
+                        user_id,
+                        work_dir,
+                        available_langs,
+                    )
+                    if not subs_path or not os.path.exists(subs_path):
+                        raise RuntimeError("subtitle download returned no file")
+
+                    subs_path = ensure_utf8_srt(subs_path)
+                    if subs_path and subs_lang in {'ar', 'fa', 'ur', 'ps', 'iw', 'he'}:
+                        subs_path = force_fix_arabic_encoding(subs_path, subs_lang)
+                    if not subs_path or not os.path.exists(subs_path) or os.path.getsize(subs_path) == 0:
+                        raise RuntimeError("subtitle file was empty or invalid")
+
+                    document_path = subs_path
+                    extension = "srt"
+                    if text_only:
+                        document_path = subtitles_to_plain_text(subs_path)
+                        extension = "txt"
+                    if not document_path or not os.path.exists(document_path):
+                        raise RuntimeError("failed to convert subtitles to plain text")
+
+                    episode_name = _slugify_kebab(entry_title, fallback=f"episode-{index}")
+                    archive_index = successful + 1
+                    archive_name = f"{archive_index:03d}-{episode_name}.{extension}"
+                    archive.write(document_path, arcname=archive_name)
+                    successful += 1
+                except Exception as entry_error:
+                    failures.append(entry_title)
+                    logger.warning(
+                        f"[SUBS] playlist entry {index} skipped ({entry_title}): {entry_error}"
+                    )
+                finally:
+                    for candidate in {subs_path, document_path}:
+                        if candidate and os.path.exists(candidate):
+                            try:
+                                os.remove(candidate)
+                            except OSError:
+                                pass
+
+                if index == len(entries) or index % 5 == 0:
+                    _edit_status(f"📚 Playlist subtitles: {index}/{len(entries)} processed")
+
+        if successful == 0:
+            raise RuntimeError("No playlist videos had subtitles in the selected language.")
+
+        tags_line = f"\n<b>Tags:</b> {html.escape(' '.join(tags))}" if tags else ""
+        limit_line = ""
+        if total_count and total_count > len(entries):
+            limit_line = f"\n<i>Limited to the first {len(entries)} of {total_count} episodes.</i>"
+        skipped_line = f"\n<i>Skipped: {len(failures)}</i>" if failures else ""
+        format_line = "\n<b>Format:</b> plain text" if text_only else ""
+        caption = (
+            "📦 <b>Playlist subtitles</b>\n"
+            f"<b>Playlist:</b> {html.escape(display_title)}\n"
+            f"<b>Files:</b> {successful}/{len(entries)}"
+            f"{format_line}{limit_line}{skipped_line}{tags_line}"
+        )
+        sent_msg = app.send_document(
+            chat_id=user_id,
+            document=archive_path,
+            caption=caption,
+            reply_parameters=ReplyParameters(message_id=message.id),
+            parse_mode=enums.ParseMode.HTML,
+        )
+        if sent_msg is not None and getattr(sent_msg, "id", None):
+            from HELPERS.logger import get_log_channel
+            safe_forward_messages(get_log_channel("video"), user_id, [sent_msg.id])
+        send_to_logger(message, f"📦 Playlist subtitle ZIP sent ({successful} files).")
+        if status_msg is not None and getattr(status_msg, "id", None):
+            try:
+                app.delete_messages(user_id, status_msg.id)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"Error downloading playlist subtitles: {e}")
+        _edit_status(safe_get_messages(user_id).ERROR_SUBTITLES_NOT_FOUND_MSG.format(error=str(e)))
+        if status_msg is None:
+            from HELPERS.safe_messeger import safe_send_message
+            safe_send_message(user_id, safe_get_messages(user_id).SUBS_ERROR_MSG.format(error=str(e)))
+        from HELPERS.logger import log_error_to_channel
+        log_error_to_channel(message, str(e))
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def download_subtitles_only(

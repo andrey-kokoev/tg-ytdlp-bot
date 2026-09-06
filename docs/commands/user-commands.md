@@ -55,6 +55,7 @@
 | `/subs` | Configure subtitles | `/subs en auto` |
 | `/sub` | Download subtitle file only | `/sub https://youtube.com/watch?v=...` |
 | `/sub --text-only` | Download subtitle text as plain `.txt` | `/sub --text-only https://youtube.com/watch?v=...` |
+| `/sub` with a playlist URL | Download all available episode subtitles as a numbered ZIP | `/sub https://youtube.com/playlist?list=...` |
 
 ### Cookie Commands
 
@@ -116,13 +117,16 @@ For more information about advanced features, see the [Advanced Features documen
 /subs en auto   # English with auto-translate
 /sub https://youtube.com/watch?v=...   # Download subtitle file only
 /sub --text-only https://youtube.com/watch?v=...   # Download subtitle text only
+/sub https://youtube.com/playlist?list=...   # Download playlist subtitles as a ZIP
+/sub --text-only https://youtube.com/playlist?list=...   # Playlist ZIP with plain-text files
 ```
 
 Notes:
 - `/sub` uses your current `/subs` language setting.
 - `/sub` is currently YouTube-only.
-- `/sub` currently supports one video URL at a time.
+- A YouTube playlist URL produces one ZIP containing files named `001-episode-name.srt`, `002-next-episode.srt`, and so on (up to the configured playlist limit).
 - `/sub --text-only` strips timestamps/cues and sends plain text as a `.txt` file.
+- For playlists, `--text-only` puts the same numbered kebab-case names in the ZIP with a `.txt` extension.
 
 ### Cookie Services
 ```bash
