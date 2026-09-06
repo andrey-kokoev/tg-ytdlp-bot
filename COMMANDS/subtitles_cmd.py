@@ -1601,6 +1601,9 @@ def is_youtube_playlist_url(url: str) -> bool:
         query = parse_qs(parsed.query)
         if parsed.path.rstrip("/").lower().endswith("/playlist"):
             return bool(query.get("list"))
+        if host == "youtu.be" and parsed.path.strip("/"):
+            # Short links identify one video even when YouTube adds list= context.
+            return False
         # A watch URL carrying both v= and list= is an individual video.
         return bool(query.get("list")) and not bool(query.get("v"))
     except Exception:
