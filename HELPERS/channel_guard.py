@@ -112,7 +112,6 @@ class ChannelGuard:
         self._block_executor: Optional[Callable[[int, Optional[str]], None]] = None
         self._user_session_string = getattr(Config, "CHANNEL_GUARD_SESSION_STRING", "").strip()
         self._user_client: Optional[PyroClient] = None
-        self._bot_admin_log_allowed = True
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -170,7 +169,17 @@ class ChannelGuard:
             except Exception as exc:
                 logger.error(f"[ChannelGuard] Failed to start user session: {exc}")
                 self._user_client = None
-        self._scan_task = self._loop.create_task(self._scan_loop())
+
+        # Telegram does not allow bot accounts to invoke channels.GetAdminLog.
+        # Only start the periodic scan when an authenticated user session is
+        # available; otherwise every scan would repeat the same RPC error.
+        if self._user_client:
+            self._scan_task = self._loop.create_task(self._scan_loop())
+        else:
+            logger.warning(
+                "[ChannelGuard] Admin-log scanning disabled: "
+                "configure CHANNEL_GUARD_SESSION_STRING with an admin user session."
+            )
         self._auto_task = self._loop.create_task(self._auto_loop())
         logger.info("[ChannelGuard] Guard started")
 
@@ -382,9 +391,10 @@ class ChannelGuard:
                 return None
 
     async def _fetch_leave_events(self) -> List[Tuple[Any, Dict[str, Any]]]:
+        if not self.can_read_admin_log():
+            return []
         client = self._get_admin_log_client()
         if not client:
-            logger.error("[ChannelGuard] No client available for admin logs")
             return []
         # Use the same client for resolve_peer so the user client can access the channel
         peer = cast(Any, await client.resolve_peer(cast(int | str, self._channel_id)))
@@ -436,12 +446,10 @@ class ChannelGuard:
         return leave_events
 
     async def _fetch_recent_activity(self, hours: int = 48, limit: int = 500) -> List[Dict[str, Any]]:
+        if not self.can_read_admin_log():
+            return []
         client = self._get_admin_log_client()
         if not client:
-            logger.error("[ChannelGuard] No client available for admin logs")
-            return []
-        if not self.can_read_admin_log():
-            logger.error("[ChannelGuard] Cannot read admin logs: bot method invalid and no user session provided")
             return []
         # Use the same client for resolve_peer so the user client can access the channel
         peer = cast(Any, await client.resolve_peer(cast(int | str, self._channel_id)))
@@ -553,24 +561,23 @@ class ChannelGuard:
         return []
 
     def _get_admin_log_client(self):
-        """Return the appropriate client for admin log operations (user client preferred, bot client as fallback)."""
-        return self._user_client or self._app
+        """Return the user client required for admin log operations."""
+        return self._user_client
 
     def can_read_admin_log(self) -> bool:
-        """Check if admin logs can be read (either via user client or bot is allowed)."""
-        return self._user_client is not None or self._bot_admin_log_allowed
+        """Check whether an authenticated user session can read admin logs."""
+        return self._user_client is not None
 
     def _handle_admin_log_error(self, exc: RPCError, client) -> None:
         """Handle admin log errors, especially bot permission issues."""
         error_str = str(exc)
         logger.error(f"[ChannelGuard] GetAdminLog RPC error: {exc}")
         
-        if "BOT_METHOD_INVALID" in error_str and client is self._app:
-            if self._bot_admin_log_allowed:
-                self._bot_admin_log_allowed = False
-                logger.error(
-                    "[ChannelGuard] Telegram forbids bots from reading channel admin logs. Provide CHANNEL_GUARD_SESSION_STRING with a user session to enable this feature."
-                )
+        if "BOT_METHOD_INVALID" in error_str:
+            logger.warning(
+                "[ChannelGuard] Telegram rejected admin-log access. "
+                "Provide CHANNEL_GUARD_SESSION_STRING with a user session to enable this feature."
+            )
         elif "CHANNEL_INVALID" in error_str:
             logger.error(
                 f"[ChannelGuard] Channel {self._channel_id} is invalid or user session doesn't have access. "
